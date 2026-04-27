@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anki-maker-japanese-backend"
+version = "0.1.0"
+description = "Local-first FastAPI backend for turning Japanese study-book images into reviewable Anki card candidates."
+requires-python = ">=3.9"
+dependencies = [
+  "eval-type-backport>=0.2.2",
+  "fastapi>=0.115",
+  "numpy>=2.0",
+  "opencv-python-headless>=4.10",
+  "pillow>=10.4",
+  "pydantic>=2.8",
+  "python-dotenv>=1.0",
+  "python-multipart>=0.0.9",
+  "requests>=2.32",
+  "uvicorn[standard]>=0.30",
+]
+
+[project.optional-dependencies]
+ocr = [
+  "paddleocr==3.5.0",
+  "paddlepaddle>=3.3,<3.4",
+]
+ocr-vl = [
+  "paddleocr[doc-parser]==3.5.0",
+  "paddlepaddle>=3.3,<3.4",
+]
+cloud = [
+  "google-cloud-vision>=3.8",
+]
+
+[dependency-groups]
+dev = [
+  "httpx>=0.28",
+  "pytest>=8.4",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["app/tests"]
+
+[tool.uv]
+package = false

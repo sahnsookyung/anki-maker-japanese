@@ -1,0 +1,875 @@
+{
+  "schema_version": 1,
+  "pages": [
+    {
+      "page_id": "new_upload_category_1_page",
+      "image_path": "new upload (category 1 page).jpg",
+      "category": "vocab_table",
+      "expected_page_type": "vocab_table",
+      "notes": "Clearer two-column vocabulary page. Rows below are a small golden subset, not the whole page.",
+      "language_columns": {
+        "surface": "ja",
+        "reading": "ja_kana",
+        "meaning": "ko"
+      },
+      "expected_rows": [
+        [
+          {
+            "row_id": "new-cat1-a-001",
+            "section": "あ",
+            "column": "left",
+            "surface": "間",
+            "reading": "あいだ",
+            "meaning_ko": "사이"
+          },
+          {
+            "row_id": "new-cat1-a-002",
+            "section": "あ",
+            "column": "left",
+            "surface": "足",
+            "reading": "あし",
+            "meaning_ko": "발, 다리"
+          },
+          {
+            "row_id": "new-cat1-a-003",
+            "section": "あ",
+            "column": "left",
+            "surface": "言う",
+            "reading": "いう",
+            "meaning_ko": "말하다"
+          },
+          {
+            "row_id": "new-cat1-a-004",
+            "section": "あ",
+            "column": "left",
+            "surface": "五つ",
+            "reading": "いつつ",
+            "meaning_ko": "5개"
+          },
+          {
+            "row_id": "new-cat1-a-005",
+            "section": "あ",
+            "column": "left",
+            "surface": "上",
+            "reading": "うえ",
+            "meaning_ko": "위"
+          },
+          {
+            "row_id": "new-cat1-a-006",
+            "section": "あ",
+            "column": "left",
+            "surface": "お金",
+            "reading": "おかね",
+            "meaning_ko": "돈"
+          },
+          {
+            "row_id": "new-cat1-a-007",
+            "section": "あ",
+            "column": "left",
+            "surface": "お父さん",
+            "reading": "おとうさん",
+            "meaning_ko": "아버지"
+          },
+          {
+            "row_id": "new-cat1-a-008",
+            "section": "あ",
+            "column": "left",
+            "surface": "女の子",
+            "reading": "おんなのこ",
+            "meaning_ko": "여자아이"
+          },
+          {
+            "row_id": "new-cat1-a-009",
+            "section": "あ",
+            "column": "right",
+            "surface": "会う",
+            "reading": "あう",
+            "meaning_ko": "만나다"
+          },
+          {
+            "row_id": "new-cat1-a-010",
+            "section": "あ",
+            "column": "right",
+            "surface": "雨",
+            "reading": "あめ",
+            "meaning_ko": "비"
+          },
+          {
+            "row_id": "new-cat1-a-011",
+            "section": "あ",
+            "column": "right",
+            "surface": "五日",
+            "reading": "いつか",
+            "meaning_ko": "5일"
+          },
+          {
+            "row_id": "new-cat1-a-012",
+            "section": "あ",
+            "column": "right",
+            "surface": "犬",
+            "reading": "いぬ",
+            "meaning_ko": "개"
+          },
+          {
+            "row_id": "new-cat1-a-013",
+            "section": "あ",
+            "column": "right",
+            "surface": "お母さん",
+            "reading": "おかあさん",
+            "meaning_ko": "어머니"
+          },
+          {
+            "row_id": "new-cat1-a-014",
+            "section": "あ",
+            "column": "right",
+            "surface": "お国",
+            "reading": "おくに",
+            "meaning_ko": "(남의) 고향"
+          },
+          {
+            "row_id": "new-cat1-a-015",
+            "section": "あ",
+            "column": "right",
+            "surface": "男の人",
+            "reading": "おとこのひと",
+            "meaning_ko": "남자"
+          },
+          {
+            "row_id": "new-cat1-a-016",
+            "section": "あ",
+            "column": "right",
+            "surface": "女の人",
+            "reading": "おんなのひと",
+            "meaning_ko": "여자"
+          },
+          {
+            "row_id": "new-cat1-ka-001",
+            "section": "か",
+            "column": "left",
+            "surface": "外国",
+            "reading": "がいこく",
+            "meaning_ko": "외국"
+          },
+          {
+            "row_id": "new-cat1-ka-002",
+            "section": "か",
+            "column": "left",
+            "surface": "書く",
+            "reading": "かく",
+            "meaning_ko": "쓰다"
+          },
+          {
+            "row_id": "new-cat1-ka-003",
+            "section": "か",
+            "column": "left",
+            "surface": "火よう日",
+            "reading": "かようび",
+            "meaning_ko": "화요일"
+          },
+          {
+            "row_id": "new-cat1-ka-004",
+            "section": "か",
+            "column": "left",
+            "surface": "北がわ",
+            "reading": "きたがわ",
+            "meaning_ko": "북쪽"
+          },
+          {
+            "row_id": "new-cat1-ka-005",
+            "section": "か",
+            "column": "left",
+            "surface": "九千円",
+            "reading": "きゅうせんえん",
+            "meaning_ko": "9000엔"
+          },
+          {
+            "row_id": "new-cat1-ka-006",
+            "section": "か",
+            "column": "left",
+            "surface": "九月",
+            "reading": "くがつ",
+            "meaning_ko": "9월"
+          },
+          {
+            "row_id": "new-cat1-ka-007",
+            "section": "か",
+            "column": "left",
+            "surface": "国",
+            "reading": "くに",
+            "meaning_ko": "나라, 국가"
+          },
+          {
+            "row_id": "new-cat1-ka-008",
+            "section": "か",
+            "column": "left",
+            "surface": "車",
+            "reading": "くるま",
+            "meaning_ko": "자동차"
+          },
+          {
+            "row_id": "new-cat1-ka-009",
+            "section": "か",
+            "column": "left",
+            "surface": "午後",
+            "reading": "ごご",
+            "meaning_ko": "오후"
+          },
+          {
+            "row_id": "new-cat1-ka-010",
+            "section": "か",
+            "column": "left",
+            "surface": "五分",
+            "reading": "ごふん",
+            "meaning_ko": "5분"
+          },
+          {
+            "row_id": "new-cat1-ka-011",
+            "section": "か",
+            "column": "right",
+            "surface": "会社",
+            "reading": "かいしゃ",
+            "meaning_ko": "회사"
+          },
+          {
+            "row_id": "new-cat1-ka-012",
+            "section": "か",
+            "column": "right",
+            "surface": "学校",
+            "reading": "がっこう",
+            "meaning_ko": "학교"
+          },
+          {
+            "row_id": "new-cat1-ka-013",
+            "section": "か",
+            "column": "right",
+            "surface": "川",
+            "reading": "かわ",
+            "meaning_ko": "강"
+          },
+          {
+            "row_id": "new-cat1-ka-014",
+            "section": "か",
+            "column": "right",
+            "surface": "北口",
+            "reading": "きたぐち",
+            "meaning_ko": "북쪽 출입구"
+          },
+          {
+            "row_id": "new-cat1-ka-015",
+            "section": "か",
+            "column": "right",
+            "surface": "金よう日",
+            "reading": "きんようび",
+            "meaning_ko": "금요일"
+          },
+          {
+            "row_id": "new-cat1-ka-016",
+            "section": "か",
+            "column": "right",
+            "surface": "九時",
+            "reading": "くじ",
+            "meaning_ko": "9시"
+          },
+          {
+            "row_id": "new-cat1-ka-017",
+            "section": "か",
+            "column": "right",
+            "surface": "来る",
+            "reading": "くる",
+            "meaning_ko": "오다"
+          },
+          {
+            "row_id": "new-cat1-ka-018",
+            "section": "か",
+            "column": "right",
+            "surface": "元気だ",
+            "reading": "げんきだ",
+            "meaning_ko": "건강하다"
+          },
+          {
+            "row_id": "new-cat1-ka-019",
+            "section": "か",
+            "column": "right",
+            "surface": "九つ",
+            "reading": "ここのつ",
+            "meaning_ko": "9개"
+          },
+          {
+            "row_id": "new-cat1-ka-020",
+            "section": "か",
+            "column": "right",
+            "surface": "今週",
+            "reading": "こんしゅう",
+            "meaning_ko": "이번 주"
+          }
+        ]
+      ],
+      "scoring": {
+        "surface_exact": true,
+        "reading_exact": true,
+        "meaning_contains_any": true,
+        "ignore_whitespace": true,
+        "minimum_rows_to_pass": 8
+      }
+    },
+    {
+      "page_id": "new_category_2_reading_mcq_page",
+      "image_path": "new upload (category 2 page).jpg",
+      "category": "reading_mcq",
+      "expected_page_type": "reading_mcq",
+      "stub": false,
+      "notes": "Golden reading multiple-choice page with kanji/kana targets and kana answer choices.",
+      "language_roles": {
+        "sentence": "ja",
+        "target": "ja_surface",
+        "choices": "ja_kana",
+        "correct_answer": "ja_kana"
+      },
+      "expected_questions": [
+        {
+          "question_id": "new-cat2-q001",
+          "question_no": 1,
+          "sentence": "わたしの会社は土よう日と日よう日が休みです。",
+          "target": "土よう日",
+          "choices": [
+            "とようび",
+            "どようび",
+            "かようび",
+            "がようび"
+          ],
+          "correct_choice_no": 2,
+          "correct_answer": "どようび",
+          "answer_source": "answer_strip"
+        },
+        {
+          "question_id": "new-cat2-q002",
+          "question_no": 2,
+          "sentence": "あとでおふろに入ります。",
+          "target": "入ります",
+          "choices": [
+            "はいります",
+            "しまります",
+            "いります",
+            "おります"
+          ],
+          "correct_choice_no": 1,
+          "correct_answer": "はいります",
+          "answer_source": "answer_strip"
+        },
+        {
+          "question_id": "new-cat2-q003",
+          "question_no": 3,
+          "sentence": "50の半分は25です。",
+          "target": "半分",
+          "choices": [
+            "ほんぶん",
+            "はんぶん",
+            "ほんふん",
+            "はんふん"
+          ],
+          "correct_choice_no": 2,
+          "correct_answer": "はんぶん",
+          "answer_source": "answer_strip"
+        },
+        {
+          "question_id": "new-cat2-q004",
+          "question_no": 4,
+          "sentence": "四月は花がきれいです。",
+          "target": "花",
+          "choices": [
+            "そら",
+            "はな",
+            "もり",
+            "みどり"
+          ],
+          "correct_choice_no": 2,
+          "correct_answer": "はな",
+          "answer_source": "answer_strip"
+        },
+        {
+          "question_id": "new-cat2-q005",
+          "question_no": 5,
+          "sentence": "こんげつのなのかは木よう日です。",
+          "target": "木よう日",
+          "choices": [
+            "げつようび",
+            "すいようび",
+            "もくようび",
+            "きんようび"
+          ],
+          "correct_choice_no": 3,
+          "correct_answer": "もくようび",
+          "answer_source": "answer_strip"
+        },
+        {
+          "question_id": "new-cat2-q006",
+          "question_no": 6,
+          "sentence": "きょうの午後は、ひとりで本をよみます。",
+          "target": "午後",
+          "choices": [
+            "ごこ",
+            "ごこう",
+            "ごご",
+            "ごごう"
+          ],
+          "correct_choice_no": 3,
+          "correct_answer": "ごご",
+          "answer_source": "answer_strip"
+        },
+        {
+          "question_id": "new-cat2-q007",
+          "question_no": 7,
+          "sentence": "ともだちが外国からきました。",
+          "target": "外国",
+          "choices": [
+            "がいごく",
+            "かいこく",
+            "がいこく",
+            "かいごく"
+          ],
+          "correct_choice_no": 3,
+          "correct_answer": "がいこく",
+          "answer_source": "answer_strip"
+        },
+        {
+          "question_id": "new-cat2-q008",
+          "question_no": 8,
+          "sentence": "きょうは天気がよくて空がきれいだ。",
+          "target": "空",
+          "choices": [
+            "そら",
+            "あき",
+            "はる",
+            "うみ"
+          ],
+          "correct_choice_no": 1,
+          "correct_answer": "そら",
+          "answer_source": "answer_strip"
+        },
+        {
+          "question_id": "new-cat2-q009",
+          "question_no": 9,
+          "sentence": "きのうともだちといっしょにえいがを見ました。",
+          "target": "見ました",
+          "choices": [
+            "しました",
+            "みました",
+            "わすれました",
+            "おぼえました"
+          ],
+          "correct_choice_no": 2,
+          "correct_answer": "みました",
+          "answer_source": "answer_strip"
+        },
+        {
+          "question_id": "new-cat2-q010",
+          "question_no": 10,
+          "sentence": "このしろいさかなは高いです。",
+          "target": "高い",
+          "choices": [
+            "ほそい",
+            "ひくい",
+            "ふとい",
+            "たかい"
+          ],
+          "correct_choice_no": 4,
+          "correct_answer": "たかい",
+          "answer_source": "answer_strip"
+        }
+      ],
+      "scoring": {
+        "sentence_contains_target": true,
+        "target_exact": true,
+        "choices_exact_ordered": true,
+        "correct_choice_exact": true,
+        "minimum_questions_to_pass": 1
+      }
+    },
+    {
+      "page_id": "new_category_3_spelling_vocab_page",
+      "image_path": "new upload (category 3 page).jpg",
+      "category": "spelling_vocab_table",
+      "expected_page_type": "vocab_table",
+      "stub": false,
+      "language_roles": {
+        "reading": "ja_kana",
+        "surface": "ja_surface",
+        "meaning_ko": "ko"
+      },
+      "expected_entries": [
+        {
+          "row_id": "new-cat3-a-001",
+          "section": "あ",
+          "column": "left",
+          "reading": "あたらしい",
+          "surface": "新しい",
+          "meaning_ko": "새롭다"
+        },
+        {
+          "row_id": "new-cat3-a-002",
+          "section": "あ",
+          "column": "left",
+          "reading": "いつか",
+          "surface": "五日",
+          "meaning_ko": "5일"
+        },
+        {
+          "row_id": "new-cat3-a-003",
+          "section": "あ",
+          "column": "left",
+          "reading": "うえ",
+          "surface": "上",
+          "meaning_ko": "위"
+        },
+        {
+          "row_id": "new-cat3-a-004",
+          "section": "あ",
+          "column": "left",
+          "reading": "えいご",
+          "surface": "英語",
+          "meaning_ko": "영어"
+        },
+        {
+          "row_id": "new-cat3-a-005",
+          "section": "あ",
+          "column": "left",
+          "reading": "おおい",
+          "surface": "多い",
+          "meaning_ko": "많다"
+        },
+        {
+          "row_id": "new-cat3-a-006",
+          "section": "あ",
+          "column": "left",
+          "reading": "おとこのひと",
+          "surface": "男の人",
+          "meaning_ko": "남자"
+        },
+        {
+          "row_id": "new-cat3-a-007",
+          "section": "あ",
+          "column": "right",
+          "reading": "いう",
+          "surface": "言う",
+          "meaning_ko": "말하다"
+        },
+        {
+          "row_id": "new-cat3-a-008",
+          "section": "あ",
+          "column": "right",
+          "reading": "いま",
+          "surface": "今",
+          "meaning_ko": "지금"
+        },
+        {
+          "row_id": "new-cat3-a-009",
+          "section": "あ",
+          "column": "right",
+          "reading": "えあこん",
+          "surface": "エアコン",
+          "meaning_ko": "에어컨"
+        },
+        {
+          "row_id": "new-cat3-a-010",
+          "section": "あ",
+          "column": "right",
+          "reading": "えれべえたあ",
+          "surface": "エレベーター",
+          "meaning_ko": "엘리베이터"
+        },
+        {
+          "row_id": "new-cat3-a-011",
+          "section": "あ",
+          "column": "right",
+          "reading": "おおきい",
+          "surface": "大きい",
+          "meaning_ko": "크다"
+        },
+        {
+          "row_id": "new-cat3-a-012",
+          "section": "あ",
+          "column": "right",
+          "reading": "おりる",
+          "surface": "下りる",
+          "meaning_ko": "내리다, 내려오다"
+        },
+        {
+          "row_id": "new-cat3-ka-001",
+          "section": "か",
+          "column": "left",
+          "reading": "かいしゃ",
+          "surface": "会社",
+          "meaning_ko": "회사"
+        },
+        {
+          "row_id": "new-cat3-ka-002",
+          "section": "か",
+          "column": "left",
+          "reading": "かく",
+          "surface": "書く",
+          "meaning_ko": "쓰다"
+        },
+        {
+          "row_id": "new-cat3-ka-003",
+          "section": "か",
+          "column": "left",
+          "reading": "がっこう",
+          "surface": "学校",
+          "meaning_ko": "학교"
+        },
+        {
+          "row_id": "new-cat3-ka-004",
+          "section": "か",
+          "column": "left",
+          "reading": "かわ",
+          "surface": "川",
+          "meaning_ko": "강"
+        },
+        {
+          "row_id": "new-cat3-ka-005",
+          "section": "か",
+          "column": "left",
+          "reading": "ごご",
+          "surface": "午後",
+          "meaning_ko": "오후"
+        },
+        {
+          "row_id": "new-cat3-ka-006",
+          "section": "か",
+          "column": "left",
+          "reading": "ごぜん",
+          "surface": "午前",
+          "meaning_ko": "오전"
+        },
+        {
+          "row_id": "new-cat3-ka-007",
+          "section": "か",
+          "column": "right",
+          "reading": "かう",
+          "surface": "買う",
+          "meaning_ko": "사다"
+        },
+        {
+          "row_id": "new-cat3-ka-008",
+          "section": "か",
+          "column": "right",
+          "reading": "がくせい",
+          "surface": "学生",
+          "meaning_ko": "학생"
+        },
+        {
+          "row_id": "new-cat3-ka-009",
+          "section": "か",
+          "column": "right",
+          "reading": "かようび",
+          "surface": "火よう日",
+          "meaning_ko": "화요일"
+        },
+        {
+          "row_id": "new-cat3-ka-010",
+          "section": "か",
+          "column": "right",
+          "reading": "きく",
+          "surface": "聞く",
+          "meaning_ko": "듣다"
+        },
+        {
+          "row_id": "new-cat3-ka-011",
+          "section": "か",
+          "column": "right",
+          "reading": "ここのつ",
+          "surface": "九つ",
+          "meaning_ko": "9개"
+        },
+        {
+          "row_id": "new-cat3-ka-012",
+          "section": "か",
+          "column": "right",
+          "reading": "こんしゅう",
+          "surface": "今週",
+          "meaning_ko": "이번 주"
+        }
+      ],
+      "scoring": {
+        "section_exact": true,
+        "column_exact": true,
+        "reading_exact": true,
+        "surface_exact": true,
+        "meaning_exact": true,
+        "minimum_entries_to_pass": 1
+      }
+    },
+    {
+      "page_id": "new_category_4_spelling_mcq_page",
+      "image_path": "new upload (category 4 page).jpg",
+      "category": "spelling_mcq",
+      "expected_page_type": "spelling_mcq",
+      "stub": false,
+      "language_roles": {
+        "sentence": "ja",
+        "target": "ja_kana",
+        "choices": "ja_surface",
+        "correct_answer": "ja_surface"
+      },
+      "expected_questions": [
+        {
+          "question_id": "new-cat4-q001",
+          "question_no": 1,
+          "sentence": "そのほんはうえのたなにあるよ。",
+          "target": "うえ",
+          "choices": [
+            "上",
+            "下",
+            "止",
+            "午"
+          ],
+          "correct_choice_no": 1,
+          "correct_answer": "上",
+          "answer_source": "answer_strip"
+        },
+        {
+          "question_id": "new-cat4-q002",
+          "question_no": 2,
+          "sentence": "まいにちあたらしいかんじをいつつおぼえます。",
+          "target": "あたらしい",
+          "choices": [
+            "新しい",
+            "親しい",
+            "新い",
+            "親い"
+          ],
+          "correct_choice_no": 1,
+          "correct_answer": "新しい",
+          "answer_source": "answer_strip"
+        },
+        {
+          "question_id": "new-cat4-q003",
+          "question_no": 3,
+          "sentence": "なつやすみにがいこくりょこうをするひとがおおくなっている。",
+          "target": "おおく",
+          "choices": [
+            "大く",
+            "太く",
+            "広く",
+            "多く"
+          ],
+          "correct_choice_no": 4,
+          "correct_answer": "多く",
+          "answer_source": "answer_strip"
+        },
+        {
+          "question_id": "new-cat4-q004",
+          "question_no": 4,
+          "sentence": "だれかがきょうしつのそとにたっています。",
+          "target": "たって",
+          "choices": [
+            "赤って",
+            "並って",
+            "丘って",
+            "立って"
+          ],
+          "correct_choice_no": 4,
+          "correct_answer": "立って",
+          "answer_source": "answer_strip"
+        },
+        {
+          "question_id": "new-cat4-q005",
+          "question_no": 5,
+          "sentence": "あしたのてんきははれるでしょう。",
+          "target": "てんき",
+          "choices": [
+            "天気",
+            "天气",
+            "夫気",
+            "夫气"
+          ],
+          "correct_choice_no": 1,
+          "correct_answer": "天気",
+          "answer_source": "answer_strip"
+        },
+        {
+          "question_id": "new-cat4-q006",
+          "question_no": 6,
+          "sentence": "じぶんのものにはなまえをかいてください。",
+          "target": "なまえ",
+          "choices": [
+            "各前",
+            "名前",
+            "各萌",
+            "名萌"
+          ],
+          "correct_choice_no": 2,
+          "correct_answer": "名前",
+          "answer_source": "answer_strip"
+        },
+        {
+          "question_id": "new-cat4-q007",
+          "question_no": 7,
+          "sentence": "たかいやまのうえからがっこうがみえます。",
+          "target": "やま",
+          "choices": [
+            "川",
+            "土",
+            "山",
+            "田"
+          ],
+          "correct_choice_no": 3,
+          "correct_answer": "山",
+          "answer_source": "answer_strip"
+        },
+        {
+          "question_id": "new-cat4-q008",
+          "question_no": 8,
+          "sentence": "そのまちにはがっこうがいつつあります。",
+          "target": "がっこう",
+          "choices": [
+            "学枚",
+            "学枚",
+            "学校",
+            "学校"
+          ],
+          "correct_choice_no": 4,
+          "correct_answer": "学校",
+          "answer_source": "answer_strip"
+        },
+        {
+          "question_id": "new-cat4-q009",
+          "question_no": 9,
+          "sentence": "にかいでだれかがラジオをきいています。",
+          "target": "きいて",
+          "choices": [
+            "問いて",
+            "開いて",
+            "関いて",
+            "聞いて"
+          ],
+          "correct_choice_no": 4,
+          "correct_answer": "聞いて",
+          "answer_source": "answer_strip"
+        },
+        {
+          "question_id": "new-cat4-q010",
+          "question_no": 10,
+          "sentence": "にわにしろいはながさきました。",
+          "target": "はな",
+          "choices": [
+            "木",
+            "化",
+            "芙",
+            "花"
+          ],
+          "correct_choice_no": 4,
+          "correct_answer": "花",
+          "answer_source": "answer_strip"
+        }
+      ],
+      "scoring": {
+        "sentence_contains_target": true,
+        "target_exact": true,
+        "choices_exact_ordered": true,
+        "correct_choice_exact": true,
+        "minimum_questions_to_pass": 1
+      }
+    }
+  ]
+}

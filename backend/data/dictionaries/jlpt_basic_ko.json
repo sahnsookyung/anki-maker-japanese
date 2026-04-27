@@ -1,0 +1,327 @@
+[
+  {
+    "surface": "間",
+    "reading": "あいだ",
+    "meaning_ko": "사이"
+  },
+  {
+    "surface": "足",
+    "reading": "あし",
+    "meaning_ko": "발, 다리"
+  },
+  {
+    "surface": "言う",
+    "reading": "いう",
+    "meaning_ko": "말하다"
+  },
+  {
+    "surface": "五つ",
+    "reading": "いつつ",
+    "meaning_ko": "5개"
+  },
+  {
+    "surface": "上",
+    "reading": "うえ",
+    "meaning_ko": "위"
+  },
+  {
+    "surface": "お金",
+    "reading": "おかね",
+    "meaning_ko": "돈"
+  },
+  {
+    "surface": "お父さん",
+    "reading": "おとうさん",
+    "meaning_ko": "아버지"
+  },
+  {
+    "surface": "女の子",
+    "reading": "おんなのこ",
+    "meaning_ko": "여자아이"
+  },
+  {
+    "surface": "会う",
+    "reading": "あう",
+    "meaning_ko": "만나다"
+  },
+  {
+    "surface": "雨",
+    "reading": "あめ",
+    "meaning_ko": "비"
+  },
+  {
+    "surface": "五日",
+    "reading": "いつか",
+    "meaning_ko": "5일"
+  },
+  {
+    "surface": "犬",
+    "reading": "いぬ",
+    "meaning_ko": "개"
+  },
+  {
+    "surface": "お母さん",
+    "reading": "おかあさん",
+    "meaning_ko": "어머니"
+  },
+  {
+    "surface": "お国",
+    "reading": "おくに",
+    "meaning_ko": "(남의) 고향"
+  },
+  {
+    "surface": "男の人",
+    "reading": "おとこのひと",
+    "meaning_ko": "남자"
+  },
+  {
+    "surface": "女の人",
+    "reading": "おんなのひと",
+    "meaning_ko": "여자"
+  },
+  {
+    "surface": "外国",
+    "reading": "がいこく",
+    "meaning_ko": "외국"
+  },
+  {
+    "surface": "書く",
+    "reading": "かく",
+    "meaning_ko": "쓰다"
+  },
+  {
+    "surface": "火よう日",
+    "reading": "かようび",
+    "meaning_ko": "화요일"
+  },
+  {
+    "surface": "北がわ",
+    "reading": "きたがわ",
+    "meaning_ko": "북쪽"
+  },
+  {
+    "surface": "九千円",
+    "reading": "きゅうせんえん",
+    "meaning_ko": "9000엔"
+  },
+  {
+    "surface": "九月",
+    "reading": "くがつ",
+    "meaning_ko": "9월"
+  },
+  {
+    "surface": "国",
+    "reading": "くに",
+    "meaning_ko": "나라, 국가"
+  },
+  {
+    "surface": "車",
+    "reading": "くるま",
+    "meaning_ko": "자동차"
+  },
+  {
+    "surface": "午後",
+    "reading": "ごご",
+    "meaning_ko": "오후"
+  },
+  {
+    "surface": "五分",
+    "reading": "ごふん",
+    "meaning_ko": "5분"
+  },
+  {
+    "surface": "会社",
+    "reading": "かいしゃ",
+    "meaning_ko": "회사"
+  },
+  {
+    "surface": "学校",
+    "reading": "がっこう",
+    "meaning_ko": "학교"
+  },
+  {
+    "surface": "川",
+    "reading": "かわ",
+    "meaning_ko": "강"
+  },
+  {
+    "surface": "北口",
+    "reading": "きたぐち",
+    "meaning_ko": "북쪽 출입구"
+  },
+  {
+    "surface": "金よう日",
+    "reading": "きんようび",
+    "meaning_ko": "금요일"
+  },
+  {
+    "surface": "九時",
+    "reading": "くじ",
+    "meaning_ko": "9시"
+  },
+  {
+    "surface": "来る",
+    "reading": "くる",
+    "meaning_ko": "오다"
+  },
+  {
+    "surface": "元気だ",
+    "reading": "げんきだ",
+    "meaning_ko": "건강하다"
+  },
+  {
+    "surface": "九つ",
+    "reading": "ここのつ",
+    "meaning_ko": "9개"
+  },
+  {
+    "surface": "今週",
+    "reading": "こんしゅう",
+    "meaning_ko": "이번 주"
+  },
+  {
+    "surface": "新しい",
+    "reading": "あたらしい",
+    "meaning_ko": "새롭다"
+  },
+  {
+    "surface": "今",
+    "reading": "いま",
+    "meaning_ko": "지금"
+  },
+  {
+    "surface": "エアコン",
+    "reading": "えあこん",
+    "meaning_ko": "에어컨"
+  },
+  {
+    "surface": "エレベーター",
+    "reading": "えれべえたあ",
+    "meaning_ko": "엘리베이터"
+  },
+  {
+    "surface": "大きい",
+    "reading": "おおきい",
+    "meaning_ko": "크다"
+  },
+  {
+    "surface": "下りる",
+    "reading": "おりる",
+    "meaning_ko": "내리다, 내려오다"
+  },
+  {
+    "surface": "英語",
+    "reading": "えいご",
+    "meaning_ko": "영어"
+  },
+  {
+    "surface": "買う",
+    "reading": "かう",
+    "meaning_ko": "사다"
+  },
+  {
+    "surface": "学生",
+    "reading": "がくせい",
+    "meaning_ko": "학생"
+  },
+  {
+    "surface": "聞く",
+    "reading": "きく",
+    "meaning_ko": "듣다"
+  },
+  {
+    "surface": "午前",
+    "reading": "ごぜん",
+    "meaning_ko": "오전"
+  },
+  {
+    "surface": "土よう日",
+    "reading": "どようび",
+    "meaning_ko": "토요일"
+  },
+  {
+    "surface": "日よう日",
+    "reading": "にちようび",
+    "meaning_ko": "일요일"
+  },
+  {
+    "surface": "入ります",
+    "reading": "はいります",
+    "meaning_ko": "들어갑니다"
+  },
+  {
+    "surface": "半分",
+    "reading": "はんぶん",
+    "meaning_ko": "절반"
+  },
+  {
+    "surface": "花",
+    "reading": "はな",
+    "meaning_ko": "꽃"
+  },
+  {
+    "surface": "木よう日",
+    "reading": "もくようび",
+    "meaning_ko": "목요일"
+  },
+  {
+    "surface": "本",
+    "reading": "ほん",
+    "meaning_ko": "책"
+  },
+  {
+    "surface": "空",
+    "reading": "そら",
+    "meaning_ko": "하늘"
+  },
+  {
+    "surface": "見ました",
+    "reading": "みました",
+    "meaning_ko": "보았습니다"
+  },
+  {
+    "surface": "高い",
+    "reading": "たかい",
+    "meaning_ko": "비싸다, 높다"
+  },
+  {
+    "surface": "下",
+    "reading": "した",
+    "meaning_ko": "아래"
+  },
+  {
+    "surface": "立って",
+    "reading": "たって",
+    "meaning_ko": "서서"
+  },
+  {
+    "surface": "天気",
+    "reading": "てんき",
+    "meaning_ko": "날씨"
+  },
+  {
+    "surface": "名前",
+    "reading": "なまえ",
+    "meaning_ko": "이름"
+  },
+  {
+    "surface": "山",
+    "reading": "やま",
+    "meaning_ko": "산"
+  },
+  {
+    "surface": "多く",
+    "reading": "おおく",
+    "meaning_ko": "많이"
+  },
+  {
+    "surface": "聞いて",
+    "reading": "きいて",
+    "meaning_ko": "듣고"
+  },
+  {
+    "surface": "多い",
+    "reading": "おおい",
+    "meaning_ko": "많다"
+  }
+]
