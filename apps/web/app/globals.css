@@ -498,8 +498,8 @@ textarea {
 
 .warnings {
   border-radius: 1rem;
-  background: rgba(180, 59, 59, 0.08);
-  color: #5f1d1d;
+  background: #f8dedd;
+  color: #3b0f0f;
   padding: 0.65rem 0.85rem;
 }
 
