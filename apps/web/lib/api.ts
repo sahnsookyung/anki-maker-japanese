@@ -3,6 +3,7 @@ export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhos
 export type Page = {
   id: string;
   original_image_path: string;
+  display_name?: string | null;
   processed_image_path?: string | null;
   page_type: string;
   page_type_confidence: number;
@@ -97,6 +98,16 @@ export async function processPage(pageId: string): Promise<ProcessResult> {
   return response.json();
 }
 
+export async function updatePage(pageId: string, displayName: string): Promise<Page> {
+  const response = await fetch(`${API_BASE}/api/pages/${pageId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ display_name: displayName })
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+
 export async function approveCard(cardId: string): Promise<CardCandidate> {
   const response = await fetch(`${API_BASE}/api/cards/${cardId}/approve`, { method: "POST" });
   if (!response.ok) throw new Error(await response.text());
@@ -120,11 +131,25 @@ export async function updateCard(card: CardCandidate): Promise<CardCandidate> {
   return response.json();
 }
 
-export async function exportTsv(pageIds: string[]): Promise<{ card_count: number; download_url: string }> {
+export type ExportOptions = {
+  approved_only?: boolean;
+  include_yellow?: boolean;
+  include_red?: boolean;
+};
+
+export async function exportTsv(
+  pageIds: string[],
+  options: ExportOptions = {}
+): Promise<{ card_count: number; download_url: string }> {
   const response = await fetch(`${API_BASE}/api/exports/tsv`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ page_ids: pageIds, include_yellow: true, include_red: false, approved_only: true })
+    body: JSON.stringify({
+      page_ids: pageIds,
+      approved_only: options.approved_only ?? true,
+      include_yellow: options.include_yellow ?? true,
+      include_red: options.include_red ?? false
+    })
   });
   if (!response.ok) throw new Error(await response.text());
   return response.json();

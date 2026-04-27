@@ -20,6 +20,7 @@ class OcrToken(BaseModel):
 class Page(BaseModel):
     id: str
     original_image_path: str
+    display_name: str | None = None
     processed_image_path: str | None = None
     page_type: str = "unprocessed"
     page_type_confidence: float = 0.0
@@ -91,6 +92,10 @@ class CardUpdate(BaseModel):
     status: Literal["pending_review", "approved", "skipped"] | None = None
     review_state: Literal["green", "yellow", "red"] | None = None
     source: dict[str, Any] | None = None
+
+
+class PageUpdate(BaseModel):
+    display_name: str | None = None
 
 
 class ExportRequest(BaseModel):

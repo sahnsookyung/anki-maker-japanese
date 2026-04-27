@@ -68,6 +68,9 @@ def extract_mcq_items(tokens: list[OcrToken], answer_map: dict[int, int], page_t
         if len(choices) != 4:
             warnings.append("Could not extract exactly four choices.")
         bbox = union_bbox([token.bbox for token in block])
+        token_roles = _token_roles(block, target, correct_answer)
+        target_tokens = [token for token in block if _token_role(token, target, correct_answer) == "target"]
+        target_bbox = union_bbox([token.bbox for token in target_tokens]) if target_tokens else None
         confidence = min((token.confidence for token in block), default=0.5)
         items.append(
             {
@@ -77,12 +80,14 @@ def extract_mcq_items(tokens: list[OcrToken], answer_map: dict[int, int], page_t
                 "question_no": question_no,
                 "sentence": sentence,
                 "target": target,
-                "target_bbox": None,
+                "target_bbox": target_bbox,
                 "choices": choices,
                 "correct_choice_no": correct_choice_no,
                 "correct_answer": correct_answer,
                 "answer_source": "answer_strip" if question_no in answer_map else "local_glossary" if resolved_choice_no else "unknown",
                 "bbox": bbox,
+                "evidence_tokens": [token.id for token in block],
+                "token_roles": token_roles,
                 "confidence": round(confidence, 3),
                 "needs_review": bool(warnings),
                 "warnings": warnings,
@@ -127,6 +132,21 @@ def _question_no(tokens: list[OcrToken]) -> int | None:
         if match:
             return int(match.group(1))
     return None
+
+
+def _token_roles(tokens: list[OcrToken], target: str, correct_answer: str) -> list[dict[str, str]]:
+    return [{"token_id": token.id, "role": _token_role(token, target, correct_answer)} for token in tokens]
+
+
+def _token_role(token: OcrToken, target: str, correct_answer: str) -> str:
+    normalized = _normalize_for_match(token.text)
+    if target and _normalize_for_match(target) in normalized:
+        return "target"
+    if correct_answer and _normalize_for_match(correct_answer) in normalized:
+        return "answer"
+    if _is_choice_token(token.text):
+        return "choice"
+    return "sentence"
 
 
 def _extract_choices(tokens: list[OcrToken]) -> list[str]:

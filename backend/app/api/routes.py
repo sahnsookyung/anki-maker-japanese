@@ -11,7 +11,7 @@ from app.core.ids import new_id
 from app.db import database
 from app.export.tsv import write_tsv
 from app.extraction.pipeline import process_page
-from app.models.schemas import CardUpdate, DocumentParseResult, ExportRequest, ExportResponse, OcrComparison, Page
+from app.models.schemas import CardUpdate, DocumentParseResult, ExportRequest, ExportResponse, OcrComparison, Page, PageUpdate
 from app.ocr.comparison import compare_ocr_tokens
 from app.vision.paddle_ocr_vl import get_paddle_ocr_vl_parser
 
@@ -41,6 +41,7 @@ async def upload_page(file: UploadFile = File(...)) -> dict[str, str]:
     page = Page(
         id=page_id,
         original_image_path=str(destination),
+        display_name=Path(file.filename or page_id).stem or page_id,
         processed_image_path=None,
         page_type="uploaded",
         page_type_confidence=0.0,
@@ -48,6 +49,20 @@ async def upload_page(file: UploadFile = File(...)) -> dict[str, str]:
     )
     database.upsert_page(page)
     return {"page_id": page_id, "status": "uploaded"}
+
+
+@router.patch("/pages/{page_id}", response_model=Page)
+def update_page(page_id: str, patch: PageUpdate) -> Page:
+    page = database.get_page(page_id)
+    if not page:
+        raise HTTPException(status_code=404, detail="Page not found.")
+    display_name = patch.display_name.strip() if patch.display_name is not None else page.display_name
+    if display_name == "":
+        display_name = None
+    updated = database.update_page_display_name(page_id, display_name)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Page not found.")
+    return updated
 
 
 @router.post("/pages/{page_id}/process")

@@ -61,6 +61,7 @@ def process_page(page: Page) -> ProcessResult:
     processed_page = Page(
         id=page.id,
         original_image_path=page.original_image_path,
+        display_name=page.display_name,
         processed_image_path=str(processed_path),
         page_type=page_type,
         page_type_confidence=page_confidence,

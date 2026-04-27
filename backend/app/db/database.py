@@ -34,6 +34,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS pages (
                 id TEXT PRIMARY KEY,
                 original_image_path TEXT NOT NULL,
+                display_name TEXT,
                 processed_image_path TEXT,
                 page_type TEXT NOT NULL,
                 page_type_confidence REAL NOT NULL,
@@ -76,6 +77,7 @@ def init_db() -> None:
             );
             """
         )
+        _ensure_page_columns(conn)
 
 
 def upsert_page(page: Page) -> None:
@@ -83,11 +85,12 @@ def upsert_page(page: Page) -> None:
         conn.execute(
             """
             INSERT INTO pages (
-                id, original_image_path, processed_image_path, page_type,
+                id, original_image_path, display_name, processed_image_path, page_type,
                 page_type_confidence, image_width, image_height, warnings_json, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
+                display_name=COALESCE(excluded.display_name, pages.display_name),
                 processed_image_path=excluded.processed_image_path,
                 page_type=excluded.page_type,
                 page_type_confidence=excluded.page_type_confidence,
@@ -98,6 +101,7 @@ def upsert_page(page: Page) -> None:
             (
                 page.id,
                 page.original_image_path,
+                page.display_name,
                 page.processed_image_path,
                 page.page_type,
                 page.page_type_confidence,
@@ -107,6 +111,13 @@ def upsert_page(page: Page) -> None:
                 page.created_at,
             ),
         )
+
+
+def update_page_display_name(page_id: str, display_name: str | None) -> Page | None:
+    with connect() as conn:
+        conn.execute("UPDATE pages SET display_name = ? WHERE id = ?", (display_name, page_id))
+        row = conn.execute("SELECT * FROM pages WHERE id = ?", (page_id,)).fetchone()
+    return _page_from_row(row) if row else None
 
 
 def list_pages() -> list[Page]:
@@ -213,9 +224,11 @@ def _insert_cards(conn: sqlite3.Connection, cards: list[CardCandidate]) -> None:
 
 
 def _page_from_row(row: sqlite3.Row) -> Page:
+    display_name = row["display_name"] if "display_name" in row.keys() else None
     return Page(
         id=row["id"],
         original_image_path=row["original_image_path"],
+        display_name=display_name or _default_display_name(row["original_image_path"], row["id"]),
         processed_image_path=row["processed_image_path"],
         page_type=row["page_type"],
         page_type_confidence=row["page_type_confidence"],
@@ -224,6 +237,17 @@ def _page_from_row(row: sqlite3.Row) -> Page:
         warnings=json.loads(row["warnings_json"]),
         created_at=row["created_at"],
     )
+
+
+def _ensure_page_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(pages)").fetchall()}
+    if "display_name" not in columns:
+        conn.execute("ALTER TABLE pages ADD COLUMN display_name TEXT")
+
+
+def _default_display_name(original_image_path: str, page_id: str) -> str:
+    stem = Path(original_image_path).stem.strip()
+    return stem or page_id
 
 
 def _token_from_row(row: sqlite3.Row) -> OcrToken:

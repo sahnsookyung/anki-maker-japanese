@@ -2,7 +2,7 @@
 
 Local-first web app for turning Japanese study-book photos into reviewable Anki card candidates.
 
-The app intentionally creates candidates, not trusted final decks. OCR/VLM output is shown with evidence, confidence, warnings, and edit/approve controls before TSV export.
+The app intentionally creates candidates, not trusted final decks. OCR output is shown with focused visual evidence, confidence, warnings, and edit/approve controls before TSV export.
 
 ## Quick Start
 
@@ -70,7 +70,7 @@ export LLAMA_CPP_MODEL=your-local-vision-model
 
 The code defaults to local providers only. No cloud API key is required for the implemented MVP.
 
-At the moment, lightweight PaddleOCR-only mode is stable and sufficient for preprocessing, OCR overlays, and page classification, but it is not yet sufficient to reliably produce vocabulary cards from the supplied sample photos. The Korean gloss column is still degraded badly enough that OCR-only extraction returns zero vocab cards on those pages. Keep `VLM_CLEANUP_ENABLED=false` for the lowest-memory local workflow, and use either PaddleOCR-VL or the existing local VLM cleanup path only when you want a second-pass cleanup layer.
+The lightweight PaddleOCR path is the default local workflow. It uses Japanese OCR, optional Korean OCR for gloss columns, local glossary normalization, and review-state warnings so output remains editable and auditable. Keep `VLM_CLEANUP_ENABLED=false` for the lowest-memory local workflow, and use either PaddleOCR-VL or the existing local VLM cleanup path only when you want a second-pass cleanup layer.
 
 Optional dictionary validation reads `DICTIONARY_PATH`, a JSON array shaped like:
 
@@ -80,7 +80,9 @@ Optional dictionary validation reads `DICTIONARY_PATH`, a JSON array shaped like
 
 ## Sample Images
 
-The app accepts uploads from the browser. If macOS blocks terminal access to `~/Downloads`, move or copy sample images into a folder the app can read, or upload them through the web UI.
+The four `new upload (category N page).jpg` files are canonical benchmark fixtures. Other uploaded images, processed images, crops, exports, and SQLite databases are local runtime artifacts and can be deleted safely.
+
+The app accepts uploads from the browser. Uploaded pages can be renamed in the UI; renaming changes only display metadata and does not rename image files on disk.
 
 ## Export
 
@@ -89,3 +91,5 @@ Approved cards export as UTF-8 TSV with columns:
 ```tsv
 note_type	front	back	source_page	source_bbox	confidence	tags
 ```
+
+Only approved cards are exported by default, and red/blocked cards stay excluded.

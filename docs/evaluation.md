@@ -12,9 +12,14 @@ The starter file is:
 data/evaluation/golden_pages.example.json
 ```
 
-The current starter data covers one source category only: `vocab_table`. That is useful, but its score should not be generalized to reading MCQ or spelling MCQ pages.
+The current benchmark set covers four canonical fixture images in the repo root:
 
-The starter file also includes `stub: true` entries for the remaining categories. These are templates only: replace the `TODO` image paths and expected fields before treating those pages as benchmark data.
+- `new upload (category 1 page).jpg`
+- `new upload (category 2 page).jpg`
+- `new upload (category 3 page).jpg`
+- `new upload (category 4 page).jpg`
+
+Do not treat generated uploads, processed images, crops, exports, or SQLite databases as benchmark fixtures. Those files are disposable runtime state and are intentionally ignored by Git.
 
 Each page entry has:
 
@@ -58,6 +63,17 @@ For MCQ pages, annotate:
 - `answer_source`
 
 For category stubs, keep `stub: true` until the page has a real image and manually transcribed expected values. Stubs should not be counted as passing or failing benchmark rows.
+
+## Runtime Cleanup
+
+It is safe to delete local runtime artifacts when resetting the app:
+
+```bash
+find backend/uploads backend/processed backend/crops backend/exports -type f ! -name .gitkeep -delete
+find backend -maxdepth 1 -type f -name "*.db" -delete
+```
+
+The browser upload flow and evaluator will recreate runtime files as needed.
 
 ## Metrics To Track
 
