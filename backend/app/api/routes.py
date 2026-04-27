@@ -167,7 +167,9 @@ def export_tsv(request: ExportRequest) -> ExportResponse:
 
 @router.get("/exports/{filename}")
 def download_export(filename: str):
+    if Path(filename).name != filename or not filename.endswith(".tsv"):
+        raise HTTPException(status_code=404, detail="Export not found.")
     path = EXPORT_DIR / filename
-    if not path.exists() or path.suffix != ".tsv":
+    if not path.exists():
         raise HTTPException(status_code=404, detail="Export not found.")
     return FileResponse(path, media_type="text/tab-separated-values; charset=utf-8", filename=filename)

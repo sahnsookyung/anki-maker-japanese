@@ -9,6 +9,7 @@ import {
   type OcrToken,
   type Page,
   apiGet,
+  apiErrorMessage,
   approveCard,
   compareOcr,
   exportTsv,
@@ -17,7 +18,7 @@ import {
   processPage,
   updateCard,
   updatePage,
-  uploadImage
+  uploadImages
 } from "../lib/api";
 
 type OverlayMode = "focused" | "region" | "all" | "off";
@@ -39,7 +40,6 @@ export function StudyWorkbench() {
   const [selectedPage, setSelectedPage] = useState<Page | null>(null);
   const [tokens, setTokens] = useState<OcrToken[]>([]);
   const [cards, setCards] = useState<CardCandidate[]>([]);
-  const [pageCardCounts, setPageCardCounts] = useState<Record<string, number>>({});
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [overlayMode, setOverlayMode] = useState<OverlayMode>("focused");
   const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("all");
@@ -60,16 +60,23 @@ export function StudyWorkbench() {
   const exportableCount = cards.filter((card) => card.status === "approved" && card.review_state !== "red").length;
 
   async function refreshPages(preferredPageId?: string) {
-    const nextPages = await apiGet<Page[]>("/api/pages");
-    const counts = await pageCounts(nextPages);
-    setPages(nextPages);
-    setPageCardCounts(counts);
-    const nextSelected =
-      nextPages.find((page) => page.id === preferredPageId) ??
-      nextPages.find((page) => page.id === selectedPage?.id) ??
-      nextPages[0];
-    if (nextSelected) {
-      await selectPage(nextSelected, false);
+    try {
+      const nextPages = await apiGet<Page[]>("/api/pages");
+      setPages(nextPages);
+      const nextSelected =
+        nextPages.find((page) => page.id === preferredPageId) ??
+        nextPages.find((page) => page.id === selectedPage?.id) ??
+        nextPages[0];
+      if (nextSelected) {
+        await selectPage(nextSelected, false);
+      }
+    } catch (error) {
+      setPages([]);
+      setSelectedPage(null);
+      setTokens([]);
+      setCards([]);
+      setSelectedCardId(null);
+      setMessage(apiErrorMessage(error, "Could not load pages."));
     }
   }
 
@@ -82,19 +89,28 @@ export function StudyWorkbench() {
     setSelectedPage(ocr.page);
     setTokens(ocr.tokens);
     setCards(pageCards);
-    setPageCardCounts((current) => ({ ...current, [page.id]: pageCards.length }));
+    syncPageCardSummary(page.id, pageCards);
     setSelectedCardId(pageCards[0]?.id ?? null);
     setComparison(null);
     setDocumentParse(null);
     if (clearMessage) setMessage(`Selected ${pageTitle(ocr.page)}.`);
   }
 
-  async function onUpload(file: File | undefined) {
-    if (!file) return;
-    setMessage("Uploading image...");
-    const result = await uploadImage(file);
-    setMessage("Image uploaded. Run processing to create review candidates.");
-    await refreshPages(result.page_id);
+  async function onUpload(files: FileList | null) {
+    const selectedFiles = Array.from(files ?? []);
+    if (!selectedFiles.length) return;
+    setMessage(`Uploading ${selectedFiles.length} page${selectedFiles.length === 1 ? "" : "s"}...`);
+    const result = await uploadImages(selectedFiles);
+    const lastPageId = result.uploaded.at(-1)?.pageId;
+    if (lastPageId) {
+      await refreshPages(lastPageId);
+    }
+    if (result.failed.length) {
+      const failedNames = result.failed.map((failure) => failure.fileName).join(", ");
+      setMessage(`Uploaded ${result.uploaded.length}/${selectedFiles.length} pages. Failed: ${failedNames}.`);
+    } else {
+      setMessage(`Uploaded ${result.uploaded.length} page${result.uploaded.length === 1 ? "" : "s"}. Run processing to create review candidates.`);
+    }
   }
 
   function onProcess() {
@@ -112,33 +128,55 @@ export function StudyWorkbench() {
         setMessage(`Processed as ${pageTypeLabel(result.page.page_type)}. Generated ${result.cards.length} candidates.`);
         await refreshPages(result.page.id);
       } catch (error) {
-        setMessage(error instanceof Error ? error.message : "Processing failed.");
+        setMessage(apiErrorMessage(error, "Processing failed."));
       }
     });
   }
 
   async function renamePage(page: Page, displayName: string) {
-    const updated = await updatePage(page.id, displayName);
-    setPages((current) => current.map((item) => (item.id === updated.id ? updated : item)));
-    if (selectedPage?.id === updated.id) setSelectedPage(updated);
-    setMessage(`Renamed page to ${pageTitle(updated)}.`);
+    try {
+      const updated = await updatePage(page.id, displayName);
+      setPages((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      if (selectedPage?.id === updated.id) setSelectedPage(updated);
+      setMessage(`Renamed page to ${pageTitle(updated)}.`);
+    } catch (error) {
+      setMessage(apiErrorMessage(error, "Rename failed."));
+    }
   }
 
   async function saveCard(card: CardCandidate) {
-    const updated = await updateCard(card);
-    setCards((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+    try {
+      const updated = await updateCard(card);
+      const nextCards = cards.map((item) => (item.id === updated.id ? updated : item));
+      setCards(nextCards);
+      syncPageCardSummary(updated.page_id, nextCards);
+      setMessage("Saved card edits.");
+    } catch (error) {
+      setMessage(apiErrorMessage(error, "Saving card failed."));
+    }
   }
 
   async function approve(cardId: string) {
-    const updated = await approveCard(cardId);
-    setCards((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+    try {
+      const updated = await approveCard(cardId);
+      const nextCards = cards.map((item) => (item.id === updated.id ? updated : item));
+      setCards(nextCards);
+      syncPageCardSummary(updated.page_id, nextCards);
+      setMessage("Approved card.");
+    } catch (error) {
+      setMessage(apiErrorMessage(error, "Approving card failed."));
+    }
   }
 
   async function onExport() {
     if (!selectedPage) return;
-    const result = await exportTsv([selectedPage.id], { approved_only: true, include_yellow: true, include_red: false });
-    setMessage(`Exported ${result.card_count} approved cards.`);
-    window.open(`${API_BASE}${result.download_url}`, "_blank");
+    try {
+      const result = await exportTsv([selectedPage.id], { approved_only: true, include_yellow: true, include_red: false });
+      setMessage(`Exported ${result.card_count} approved cards.`);
+      window.open(`${API_BASE}${result.download_url}`, "_blank");
+    } catch (error) {
+      setMessage(apiErrorMessage(error, "Export failed."));
+    }
   }
 
   async function onCompareOcr() {
@@ -149,7 +187,7 @@ export function StudyWorkbench() {
       setComparison(result);
       setMessage(`OCR comparison complete: ${Math.round(result.agreement * 100)}% token agreement.`);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "OCR comparison failed.");
+      setMessage(apiErrorMessage(error, "OCR comparison failed."));
     }
   }
 
@@ -161,7 +199,7 @@ export function StudyWorkbench() {
       setDocumentParse(result);
       setMessage(`PaddleOCR-VL returned ${result.block_count} document blocks.`);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "PaddleOCR-VL parsing failed.");
+      setMessage(apiErrorMessage(error, "PaddleOCR-VL parsing failed."));
     }
   }
 
@@ -179,6 +217,22 @@ export function StudyWorkbench() {
     });
   }
 
+  function syncPageCardSummary(pageId: string, pageCards: CardCandidate[]) {
+    const summary = summarizeCards(pageCards);
+    setPages((current) =>
+      current.map((page) =>
+        page.id === pageId
+          ? {
+              ...page,
+              card_count: summary.total,
+              approved_card_count: summary.approved,
+              red_card_count: summary.red
+            }
+          : page
+      )
+    );
+  }
+
   const processedUrl = imageUrl(selectedPage?.processed_image_path);
   const originalUrl = imageUrl(selectedPage?.original_image_path);
   const visibleUrl = processedUrl ?? originalUrl;
@@ -194,9 +248,17 @@ export function StudyWorkbench() {
           </p>
         </div>
         <label className="upload-card">
-          <span>Upload page</span>
-          <small>JPG, PNG, WEBP, TIFF</small>
-          <input type="file" accept="image/*" onChange={(event) => void onUpload(event.target.files?.[0])} />
+          <span>Upload pages</span>
+          <small>Multi-select JPG, PNG, WEBP, TIFF</small>
+          <input
+            type="file"
+            accept="image/*"
+            multiple
+            onChange={(event) => {
+              void onUpload(event.target.files);
+              event.target.value = "";
+            }}
+          />
         </label>
       </header>
 
@@ -235,7 +297,7 @@ export function StudyWorkbench() {
               key={page.id}
               page={page}
               active={page.id === selectedPage?.id}
-              candidateCount={page.id === selectedPage?.id ? cards.length : pageCardCounts[page.id] ?? 0}
+              candidateCount={page.id === selectedPage?.id ? cards.length : page.card_count ?? 0}
               onSelect={() => void selectPage(page)}
               onRename={(name) => renamePage(page, name)}
             />
@@ -252,16 +314,14 @@ export function StudyWorkbench() {
               setOverlayMode={setOverlayMode}
             />
             {visibleUrl ? (
-              <div className="image-stage">
-                <img src={visibleUrl} alt="Uploaded study page" />
-                <TokenOverlay
-                  page={selectedPage}
-                  tokens={tokens}
-                  card={selectedCard}
-                  mode={overlayMode}
-                  activeFilters={activeTokenFilters}
-                />
-              </div>
+              <EvidenceStage
+                imageUrl={visibleUrl}
+                page={selectedPage}
+                tokens={tokens}
+                card={selectedCard}
+                mode={overlayMode}
+                activeFilters={activeTokenFilters}
+              />
             ) : (
               <div className="empty">Upload a page to see review evidence.</div>
             )}
@@ -341,6 +401,9 @@ function PageCard({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(pageTitle(page));
   useEffect(() => setDraft(pageTitle(page)), [page]);
+  const approvedCount = page.approved_card_count ?? 0;
+  const redCount = page.red_card_count ?? 0;
+  const cardSummary = candidateCount ? `${approvedCount}/${candidateCount} approved · ${redCount} blocked` : "No candidates";
   return (
     <article className={active ? "page-card active" : "page-card"}>
       {editing ? (
@@ -360,7 +423,7 @@ function PageCard({
         <button className="page-select" onClick={onSelect}>
           <strong>{pageTitle(page)}</strong>
           <span>{pageTypeLabel(page.page_type)} · {Math.round(page.page_type_confidence * 100)}%</span>
-          <small>{page.warnings.length} warnings · {candidateCount || "No"} candidates</small>
+          <small>{page.warnings.length} warnings · {cardSummary}</small>
         </button>
       )}
       {!editing ? <button className="rename" onClick={() => setEditing(true)}>Rename</button> : null}
@@ -401,6 +464,46 @@ function EvidenceHeader({
   );
 }
 
+function EvidenceStage({
+  imageUrl,
+  page,
+  tokens,
+  card,
+  mode,
+  activeFilters
+}: {
+  imageUrl: string;
+  page: Page | null;
+  tokens: OcrToken[];
+  card: CardCandidate | null;
+  mode: OverlayMode;
+  activeFilters: Set<string>;
+}) {
+  if (!page?.image_width || !page.image_height) {
+    return (
+      <div className="image-stage">
+        <img src={imageUrl} alt="Uploaded study page" />
+      </div>
+    );
+  }
+  const focusBox = mode === "focused" || mode === "region" ? focusBbox(card, tokens) : null;
+  const viewBox = evidenceViewBox(page, focusBox);
+  return (
+    <div className={focusBox ? "image-stage zoomed" : "image-stage"}>
+      <svg
+        className="evidence-svg"
+        viewBox={viewBox}
+        role="img"
+        aria-label="Uploaded study page with OCR evidence overlay"
+        preserveAspectRatio="xMidYMid meet"
+      >
+        <image href={imageUrl} width={page.image_width} height={page.image_height} />
+        <TokenOverlay page={page} tokens={tokens} card={card} mode={mode} activeFilters={activeFilters} />
+      </svg>
+    </div>
+  );
+}
+
 function TokenOverlay({
   page,
   tokens,
@@ -416,13 +519,13 @@ function TokenOverlay({
 }) {
   if (!page?.image_width || !page.image_height || mode === "off") return null;
   const relevantIds = focusedTokenIds(card);
-  const sourceBox = card?.source_bbox ?? bboxFromSource(card?.source);
+  const sourceBox = sourceBbox(card);
   const filteredTokens = activeFilters.size
     ? tokens.filter((token) => activeFilters.has(token.script_class) || activeFilters.has(token.source))
     : tokens;
   const shouldRenderTokens = mode === "all" || mode === "focused";
   return (
-    <svg viewBox={`0 0 ${page.image_width} ${page.image_height}`} className="overlay">
+    <g className="overlay">
       {mode !== "all" && sourceBox ? <EvidenceBox bbox={sourceBox} className="source-region" /> : null}
       {shouldRenderTokens
         ? filteredTokens.map((token) => {
@@ -443,7 +546,7 @@ function TokenOverlay({
             );
           })
         : null}
-    </svg>
+    </g>
   );
 }
 
@@ -588,16 +691,6 @@ function workflowClass(index: number, page: Page | null, cards: CardCandidate[],
   return complete ? "step complete" : "step";
 }
 
-async function pageCounts(pages: Page[]): Promise<Record<string, number>> {
-  const entries = await Promise.all(
-    pages.map(async (page) => {
-      const pageCards = await apiGet<CardCandidate[]>(`/api/pages/${page.id}/cards`).catch(() => []);
-      return [page.id, pageCards.length] as const;
-    })
-  );
-  return Object.fromEntries(entries);
-}
-
 function summarizeCards(cards: CardCandidate[]) {
   return {
     total: cards.length,
@@ -618,6 +711,48 @@ function focusedTokenIds(card: CardCandidate | null): Set<string> {
   const tokens = card?.source.evidence_tokens;
   if (!Array.isArray(tokens)) return new Set();
   return new Set(tokens.filter((token): token is string => typeof token === "string"));
+}
+
+function focusBbox(card: CardCandidate | null, tokens: OcrToken[]): number[] | null {
+  const relevantIds = focusedTokenIds(card);
+  const relevantBoxes = tokens.filter((token) => relevantIds.has(token.id)).map((token) => token.bbox);
+  return unionBoxes(relevantBoxes) ?? sourceBbox(card);
+}
+
+function sourceBbox(card: CardCandidate | null): number[] | null {
+  return card?.source_bbox ?? bboxFromSource(card?.source);
+}
+
+function unionBoxes(boxes: number[][]): number[] | null {
+  const valid = boxes.filter((box) => box.length === 4 && box.every((value) => Number.isFinite(value)));
+  if (!valid.length) return null;
+  return [
+    Math.min(...valid.map((box) => box[0])),
+    Math.min(...valid.map((box) => box[1])),
+    Math.max(...valid.map((box) => box[2])),
+    Math.max(...valid.map((box) => box[3]))
+  ];
+}
+
+function evidenceViewBox(page: Page, bbox: number[] | null): string {
+  if (!bbox || !page.image_width || !page.image_height) {
+    return `0 0 ${page.image_width ?? 1} ${page.image_height ?? 1}`;
+  }
+  const [x1, y1, x2, y2] = bbox;
+  const width = Math.max(x2 - x1, page.image_width * 0.22);
+  const height = Math.max(y2 - y1, page.image_height * 0.18);
+  const padding = Math.max(width, height) * 0.45;
+  const focusWidth = Math.min(page.image_width, width + padding * 2);
+  const focusHeight = Math.min(page.image_height, height + padding * 2);
+  const centerX = (x1 + x2) / 2;
+  const centerY = (y1 + y2) / 2;
+  const viewX = clamp(centerX - focusWidth / 2, 0, page.image_width - focusWidth);
+  const viewY = clamp(centerY - focusHeight / 2, 0, page.image_height - focusHeight);
+  return `${viewX} ${viewY} ${focusWidth} ${focusHeight}`;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), Math.max(min, max));
 }
 
 function bboxFromSource(source: Record<string, unknown> | undefined): number[] | null {

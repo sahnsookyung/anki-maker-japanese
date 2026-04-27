@@ -1,4 +1,23 @@
-export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+export const API_BASE = resolveApiBase(process.env.NEXT_PUBLIC_API_BASE_URL);
+
+export function resolveApiBase(configuredBase?: string): string {
+  const browserHost = typeof window !== "undefined" ? window.location.hostname : "";
+  const localBrowserHost = browserHost === "localhost" || browserHost === "127.0.0.1";
+  const fallbackHost = localBrowserHost ? browserHost : "127.0.0.1";
+  const fallbackBase = `http://${fallbackHost}:8000`;
+  if (!configuredBase) return fallbackBase;
+
+  try {
+    const url = new URL(configuredBase);
+    const localApiHost = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+    if (localBrowserHost && localApiHost) {
+      url.hostname = browserHost;
+    }
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return configuredBase.replace(/\/$/, "");
+  }
+}
 
 export type Page = {
   id: string;
@@ -11,6 +30,9 @@ export type Page = {
   image_height?: number | null;
   warnings: string[];
   created_at: string;
+  card_count?: number;
+  approved_card_count?: number;
+  red_card_count?: number;
 };
 
 export type OcrToken = {
@@ -78,44 +100,71 @@ export type DocumentParseResult = {
   warnings: string[];
 };
 
-export async function apiGet<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
-  if (!response.ok) throw new Error(await response.text());
+export function apiErrorMessage(error: unknown, fallback = "Request failed."): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
+async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, init);
+  } catch {
+    throw new Error(`Could not reach the backend at ${API_BASE}. Start FastAPI and try again.`);
+  }
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(detail || `Backend request failed with HTTP ${response.status}.`);
+  }
   return response.json() as Promise<T>;
+}
+
+export async function apiGet<T>(path: string): Promise<T> {
+  return requestJson<T>(path, { cache: "no-store" });
 }
 
 export async function uploadImage(file: File): Promise<{ page_id: string; status: string }> {
   const form = new FormData();
   form.append("file", file);
-  const response = await fetch(`${API_BASE}/api/pages/upload`, { method: "POST", body: form });
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
+  return requestJson<{ page_id: string; status: string }>("/api/pages/upload", { method: "POST", body: form });
+}
+
+export type BatchUploadResult = {
+  uploaded: Array<{ fileName: string; pageId: string }>;
+  failed: Array<{ fileName: string; message: string }>;
+};
+
+export async function uploadImages(files: File[]): Promise<BatchUploadResult> {
+  const uploaded: BatchUploadResult["uploaded"] = [];
+  const failed: BatchUploadResult["failed"] = [];
+  for (const file of files) {
+    try {
+      const result = await uploadImage(file);
+      uploaded.push({ fileName: file.name, pageId: result.page_id });
+    } catch (error) {
+      failed.push({ fileName: file.name, message: apiErrorMessage(error, "Upload failed.") });
+    }
+  }
+  return { uploaded, failed };
 }
 
 export async function processPage(pageId: string): Promise<ProcessResult> {
-  const response = await fetch(`${API_BASE}/api/pages/${pageId}/process`, { method: "POST" });
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
+  return requestJson<ProcessResult>(`/api/pages/${pageId}/process`, { method: "POST" });
 }
 
 export async function updatePage(pageId: string, displayName: string): Promise<Page> {
-  const response = await fetch(`${API_BASE}/api/pages/${pageId}`, {
+  return requestJson<Page>(`/api/pages/${pageId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ display_name: displayName })
   });
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
 }
 
 export async function approveCard(cardId: string): Promise<CardCandidate> {
-  const response = await fetch(`${API_BASE}/api/cards/${cardId}/approve`, { method: "POST" });
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
+  return requestJson<CardCandidate>(`/api/cards/${cardId}/approve`, { method: "POST" });
 }
 
 export async function updateCard(card: CardCandidate): Promise<CardCandidate> {
-  const response = await fetch(`${API_BASE}/api/cards/${card.id}`, {
+  return requestJson<CardCandidate>(`/api/cards/${card.id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -127,8 +176,6 @@ export async function updateCard(card: CardCandidate): Promise<CardCandidate> {
       source: card.source
     })
   });
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
 }
 
 export type ExportOptions = {
@@ -141,7 +188,7 @@ export async function exportTsv(
   pageIds: string[],
   options: ExportOptions = {}
 ): Promise<{ card_count: number; download_url: string }> {
-  const response = await fetch(`${API_BASE}/api/exports/tsv`, {
+  return requestJson<{ card_count: number; download_url: string }>("/api/exports/tsv", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -151,8 +198,6 @@ export async function exportTsv(
       include_red: options.include_red ?? false
     })
   });
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
 }
 
 export async function compareOcr(pageId: string, provider = "google_vision"): Promise<OcrComparison> {
@@ -160,9 +205,7 @@ export async function compareOcr(pageId: string, provider = "google_vision"): Pr
 }
 
 export async function parseDocument(pageId: string): Promise<DocumentParseResult> {
-  const response = await fetch(`${API_BASE}/api/pages/${pageId}/document/parse`, { method: "POST" });
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
+  return requestJson<DocumentParseResult>(`/api/pages/${pageId}/document/parse`, { method: "POST" });
 }
 
 export function imageUrl(path?: string | null): string | null {

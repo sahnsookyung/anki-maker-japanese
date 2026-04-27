@@ -4,10 +4,12 @@ import json
 import sqlite3
 
 from app.core.script import classify_script
+from app.api import routes
 from app.db import database
 from app.extraction.answer_strip import parse_answer_strip_text
 from app.export.tsv import clean_tsv_field
-from app.models.schemas import Page
+from app.models.schemas import CardCandidate, Page
+from fastapi import HTTPException
 
 
 def test_script_classifier() -> None:
@@ -93,3 +95,67 @@ def test_page_display_name_migrates_and_persists(tmp_path, monkeypatch) -> None:
     cleared = database.update_page_display_name("legacy-page", None)
     assert cleared is not None
     assert cleared.display_name == "new upload (category 1 page)"
+
+
+def test_export_download_rejects_path_traversal(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(routes, "EXPORT_DIR", tmp_path)
+
+    safe_file = tmp_path / "export_123.tsv"
+    safe_file.write_text("note_type\tfront\n", encoding="utf-8")
+
+    response = routes.download_export("export_123.tsv")
+    assert response.path == safe_file
+
+    for filename in ("../secret.tsv", "nested/export.tsv", "export_123.txt"):
+        try:
+            routes.download_export(filename)
+        except HTTPException as exc:
+            assert exc.status_code == 404
+        else:
+            raise AssertionError(f"{filename} should not be downloadable")
+
+
+def test_list_pages_includes_card_counts(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "counts.db")
+    database.init_db()
+    database.upsert_page(
+        Page(
+            id="counted-page",
+            original_image_path="/tmp/page.jpg",
+            display_name="Counted page",
+            page_type="vocab_table",
+            page_type_confidence=1.0,
+            warnings=[],
+            created_at="2026-04-27T00:00:00+00:00",
+        )
+    )
+    database.replace_cards(
+        "counted-page",
+        [
+            _card("card-1", status="approved", review_state="green"),
+            _card("card-2", status="pending_review", review_state="red"),
+        ],
+    )
+
+    page = database.list_pages()[0]
+
+    assert page.card_count == 2
+    assert page.approved_card_count == 1
+    assert page.red_card_count == 1
+
+
+def _card(card_id: str, *, status: str, review_state: str) -> CardCandidate:
+    return CardCandidate(
+        id=card_id,
+        page_id="counted-page",
+        source_type="vocab_item",
+        source_id="source-1",
+        source={},
+        note_type="jp_vocab_reading",
+        front="front",
+        back="back",
+        confidence=0.9,
+        status=status,
+        review_state=review_state,
+        warnings=[],
+    )

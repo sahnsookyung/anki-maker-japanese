@@ -56,7 +56,7 @@ PADDLE_OCR_VL_USE_LAYOUT_DETECTION = os.getenv(
     "PADDLE_OCR_VL_USE_LAYOUT_DETECTION", "false"
 ).lower() in {"1", "true", "yes", "on"}
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
 VLM_PROVIDER = os.getenv("VLM_PROVIDER", "ollama")
 LLAMA_CPP_BASE_URL = os.getenv("LLAMA_CPP_BASE_URL", "http://localhost:8080")
 LLAMA_CPP_MODEL = os.getenv("LLAMA_CPP_MODEL", "Qwen3-VL-8B-Instruct")

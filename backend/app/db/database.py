@@ -122,7 +122,26 @@ def update_page_display_name(page_id: str, display_name: str | None) -> Page | N
 
 def list_pages() -> list[Page]:
     with connect() as conn:
-        rows = conn.execute("SELECT * FROM pages ORDER BY created_at DESC").fetchall()
+        rows = conn.execute(
+            """
+            SELECT
+                pages.*,
+                COALESCE(card_summary.card_count, 0) AS card_count,
+                COALESCE(card_summary.approved_card_count, 0) AS approved_card_count,
+                COALESCE(card_summary.red_card_count, 0) AS red_card_count
+            FROM pages
+            LEFT JOIN (
+                SELECT
+                    page_id,
+                    COUNT(*) AS card_count,
+                    SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved_card_count,
+                    SUM(CASE WHEN review_state = 'red' THEN 1 ELSE 0 END) AS red_card_count
+                FROM cards
+                GROUP BY page_id
+            ) AS card_summary ON card_summary.page_id = pages.id
+            ORDER BY pages.created_at DESC
+            """
+        ).fetchall()
     return [_page_from_row(row) for row in rows]
 
 
@@ -224,7 +243,8 @@ def _insert_cards(conn: sqlite3.Connection, cards: list[CardCandidate]) -> None:
 
 
 def _page_from_row(row: sqlite3.Row) -> Page:
-    display_name = row["display_name"] if "display_name" in row.keys() else None
+    keys = set(row.keys())
+    display_name = row["display_name"] if "display_name" in keys else None
     return Page(
         id=row["id"],
         original_image_path=row["original_image_path"],
@@ -236,6 +256,9 @@ def _page_from_row(row: sqlite3.Row) -> Page:
         image_height=row["image_height"],
         warnings=json.loads(row["warnings_json"]),
         created_at=row["created_at"],
+        card_count=int(row["card_count"]) if "card_count" in keys else 0,
+        approved_card_count=int(row["approved_card_count"]) if "approved_card_count" in keys else 0,
+        red_card_count=int(row["red_card_count"]) if "red_card_count" in keys else 0,
     )
 
 

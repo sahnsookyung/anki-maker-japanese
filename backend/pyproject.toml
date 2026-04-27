@@ -37,11 +37,23 @@ cloud = [
 dev = [
   "httpx>=0.28",
   "pytest>=8.4",
+  "pytest-cov>=7.1.0",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["app/tests"]
+
+[tool.coverage.run]
+source = ["app"]
+omit = [
+  "app/tests/*",
+]
+
+[tool.coverage.report]
+omit = [
+  "app/tests/*",
+]
 
 [tool.uv]
 package = false

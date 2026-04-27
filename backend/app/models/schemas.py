@@ -28,6 +28,9 @@ class Page(BaseModel):
     image_height: int | None = None
     warnings: list[str] = Field(default_factory=list)
     created_at: str
+    card_count: int = 0
+    approved_card_count: int = 0
+    red_card_count: int = 0
 
 
 class CardCandidate(BaseModel):
