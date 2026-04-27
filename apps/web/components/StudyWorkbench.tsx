@@ -391,13 +391,13 @@ function PageCard({
   candidateCount,
   onSelect,
   onRename
-}: {
+}: Readonly<{
   page: Page;
   active: boolean;
   candidateCount: number;
   onSelect: () => void;
   onRename: (name: string) => Promise<void>;
-}) {
+}>) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(pageTitle(page));
   useEffect(() => setDraft(pageTitle(page)), [page]);
@@ -426,7 +426,7 @@ function PageCard({
           <small>{page.warnings.length} warnings · {cardSummary}</small>
         </button>
       )}
-      {!editing ? <button className="rename" onClick={() => setEditing(true)}>Rename</button> : null}
+      {editing ? null : <button className="rename" onClick={() => setEditing(true)}>Rename</button>}
     </article>
   );
 }
@@ -437,13 +437,19 @@ function EvidenceHeader({
   selectedCard,
   overlayMode,
   setOverlayMode
-}: {
+}: Readonly<{
   page: Page | null;
   tokenCount: number;
   selectedCard: CardCandidate | null;
   overlayMode: OverlayMode;
   setOverlayMode: (mode: OverlayMode) => void;
-}) {
+}>) {
+  const overlayLabels: Record<OverlayMode, string> = {
+    focused: "Focused",
+    region: "Source region",
+    all: "All OCR",
+    off: "Off"
+  };
   return (
     <div className="evidence-header">
       <div>
@@ -456,7 +462,7 @@ function EvidenceHeader({
       <div className="segmented">
         {(["focused", "region", "all", "off"] as OverlayMode[]).map((mode) => (
           <button className={overlayMode === mode ? "active" : ""} key={mode} onClick={() => setOverlayMode(mode)}>
-            {mode === "focused" ? "Focused" : mode === "region" ? "Source region" : mode === "all" ? "All OCR" : "Off"}
+            {overlayLabels[mode]}
           </button>
         ))}
       </div>
@@ -471,14 +477,14 @@ function EvidenceStage({
   card,
   mode,
   activeFilters
-}: {
+}: Readonly<{
   imageUrl: string;
   page: Page | null;
   tokens: OcrToken[];
   card: CardCandidate | null;
   mode: OverlayMode;
   activeFilters: Set<string>;
-}) {
+}>) {
   if (!page?.image_width || !page.image_height) {
     return (
       <div className="image-stage">
@@ -493,7 +499,6 @@ function EvidenceStage({
       <svg
         className="evidence-svg"
         viewBox={viewBox}
-        role="img"
         aria-label="Uploaded study page with OCR evidence overlay"
         preserveAspectRatio="xMidYMid meet"
       >
@@ -510,13 +515,13 @@ function TokenOverlay({
   card,
   mode,
   activeFilters
-}: {
+}: Readonly<{
   page: Page | null;
   tokens: OcrToken[];
   card: CardCandidate | null;
   mode: OverlayMode;
   activeFilters: Set<string>;
-}) {
+}>) {
   if (!page?.image_width || !page.image_height || mode === "off") return null;
   const relevantIds = focusedTokenIds(card);
   const sourceBox = sourceBbox(card);
@@ -550,7 +555,7 @@ function TokenOverlay({
   );
 }
 
-function EvidenceBox({ bbox, className }: { bbox: number[]; className: string }) {
+function EvidenceBox({ bbox, className }: Readonly<{ bbox: number[]; className: string }>) {
   const [x1, y1, x2, y2] = bbox;
   return <rect x={x1} y={y1} width={x2 - x1} height={y2 - y1} className={className} />;
 }
@@ -561,43 +566,44 @@ function CardEditor({
   onSelect,
   onChange,
   onApprove
-}: {
+}: Readonly<{
   card: CardCandidate;
   selected: boolean;
   onSelect: () => void;
   onChange: (card: CardCandidate) => Promise<void>;
   onApprove: (cardId: string) => Promise<void>;
-}) {
+}>) {
   const [draft, setDraft] = useState(card);
   useEffect(() => setDraft(card), [card]);
   const source = card.source;
-  const provenance = String(source.answer_source ?? "");
+  const provenance = textValue(source.answer_source);
   return (
-    <article className={`candidate ${draft.review_state} ${selected ? "selected" : ""}`} onClick={onSelect}>
-      <div className="candidate-head">
-        <div>
-          <strong>{candidateTitle(card)}</strong>
-          <p>{candidateSubtitle(card)}</p>
+    <article className={`candidate ${draft.review_state} ${selected ? "selected" : ""}`}>
+      <button className="candidate-select" onClick={onSelect} type="button">
+        <div className="candidate-head">
+          <div>
+            <strong>{candidateTitle(card)}</strong>
+            <p>{candidateSubtitle(card)}</p>
+          </div>
+          <div className="badges">
+            <span className={`badge ${draft.review_state}`}>{draft.review_state}</span>
+            {draft.status === "approved" ? <span className="badge approved">approved</span> : null}
+            {provenance ? <span className={`badge ${provenance}`}>{provenanceLabel(provenance)}</span> : null}
+          </div>
         </div>
-        <div className="badges">
-          <span className={`badge ${draft.review_state}`}>{draft.review_state}</span>
-          {draft.status === "approved" ? <span className="badge approved">approved</span> : null}
-          {provenance ? <span className={`badge ${provenance}`}>{provenanceLabel(provenance)}</span> : null}
-        </div>
-      </div>
-
+      </button>
       <SourceSummary card={card} />
 
       <label>
-        Front
+        <span>Front</span>
         <textarea value={draft.front} onChange={(event) => setDraft({ ...draft, front: event.target.value })} />
       </label>
       <label>
-        Back
+        <span>Back</span>
         <textarea value={draft.back} onChange={(event) => setDraft({ ...draft, back: event.target.value })} />
       </label>
       <label>
-        Tags
+        <span>Tags</span>
         <input
           value={draft.tags.join(" ")}
           onChange={(event) => setDraft({ ...draft, tags: event.target.value.split(/\s+/).filter(Boolean) })}
@@ -614,29 +620,29 @@ function CardEditor({
   );
 }
 
-function SourceSummary({ card }: { card: CardCandidate }) {
+function SourceSummary({ card }: Readonly<{ card: CardCandidate }>) {
   const source = card.source;
   if (card.source_type === "vocab_item") {
     return (
       <div className="source-summary vocab">
-        <span><b>Surface</b>{String(source.surface ?? "")}</span>
-        <span><b>Reading</b>{String(source.reading ?? "")}</span>
-        <span><b>Korean</b>{String(source.meaning_ko ?? "")}</span>
+        <span><b>Surface</b>{textValue(source.surface)}</span>
+        <span><b>Reading</b>{textValue(source.reading)}</span>
+        <span><b>Korean</b>{textValue(source.meaning_ko)}</span>
       </div>
     );
   }
   const choices = Array.isArray(source.choices) ? source.choices.map(String) : [];
   return (
     <div className="source-summary mcq">
-      <span><b>Q</b>{String(source.question_no ?? "")}</span>
-      <span><b>Target</b>{String(source.target ?? "")}</span>
-      <span><b>Answer</b>{String(source.correct_choice_no ?? "?")}. {String(source.correct_answer ?? "")}</span>
+      <span><b>Q</b>{textValue(source.question_no)}</span>
+      <span><b>Target</b>{textValue(source.target)}</span>
+      <span><b>Answer</b>{textValue(source.correct_choice_no, "?")}. {textValue(source.correct_answer)}</span>
       {choices.length ? <p>{choices.map((choice, index) => `${index + 1}. ${choice}`).join("  ·  ")}</p> : null}
     </div>
   );
 }
 
-function WarningList({ warnings, compact = false }: { warnings: string[]; compact?: boolean }) {
+function WarningList({ warnings, compact = false }: Readonly<{ warnings: string[]; compact?: boolean }>) {
   return (
     <div className={compact ? "warnings compact" : "warnings"}>
       {warnings.map((warning) => (
@@ -646,7 +652,7 @@ function WarningList({ warnings, compact = false }: { warnings: string[]; compac
   );
 }
 
-function DocumentParsePanel({ result }: { result: DocumentParseResult }) {
+function DocumentParsePanel({ result }: Readonly<{ result: DocumentParseResult }>) {
   return (
     <div className="comparison">
       <h3>{result.provider}: {result.block_count} blocks via {result.backend}</h3>
@@ -661,7 +667,7 @@ function DocumentParsePanel({ result }: { result: DocumentParseResult }) {
   );
 }
 
-function OcrComparisonPanel({ comparison }: { comparison: OcrComparison }) {
+function OcrComparisonPanel({ comparison }: Readonly<{ comparison: OcrComparison }>) {
   return (
     <div className="comparison">
       <h3>OCR comparison</h3>
@@ -777,9 +783,9 @@ function evidenceSummary(card: CardCandidate): string {
 
 function candidateTitle(card: CardCandidate): string {
   if (card.source_type === "vocab_item") {
-    return `${String(card.source.surface ?? "Vocab")} · ${String(card.source.reading ?? "")}`;
+    return `${textValue(card.source.surface, "Vocab")} · ${textValue(card.source.reading)}`;
   }
-  return `Question ${String(card.source.question_no ?? "?")} · ${String(card.source.target ?? "target")}`;
+  return `Question ${textValue(card.source.question_no, "?")} · ${textValue(card.source.target, "target")}`;
 }
 
 function candidateSubtitle(card: CardCandidate): string {
@@ -790,4 +796,10 @@ function provenanceLabel(value: string): string {
   if (value === "answer_strip") return "answer strip";
   if (value === "local_glossary") return "review carefully";
   return value.replaceAll("_", " ");
+}
+
+function textValue(value: unknown, fallback = ""): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return fallback;
 }

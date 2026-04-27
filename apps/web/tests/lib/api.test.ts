@@ -1,6 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { apiErrorMessage, apiGet, resolveApiBase, uploadImages } from "../../lib/api";
+import {
+  apiErrorMessage,
+  apiGet,
+  approveCard,
+  compareOcr,
+  exportTsv,
+  imageUrl,
+  parseDocument,
+  processPage,
+  resolveApiBase,
+  updateCard,
+  updatePage,
+  uploadImages,
+  type CardCandidate
+} from "../../lib/api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -41,6 +55,10 @@ describe("resolveApiBase", () => {
     vi.stubGlobal("window", { location: { hostname: "localhost" } });
 
     expect(resolveApiBase("http://127.0.0.1:8000")).toBe("http://localhost:8000");
+  });
+
+  it("trims trailing slashes from non-URL fallback values", () => {
+    expect(resolveApiBase("api/backend/")).toBe("api/backend");
   });
 });
 
@@ -92,3 +110,65 @@ describe("uploadImages", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });
+
+describe("API helpers", () => {
+  it("calls page and card mutation endpoints", async () => {
+    const card = candidate();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ page_type: "uploaded" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "page-1", display_name: "Renamed" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...card, status: "approved" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...card, front: "updated" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ card_count: 1, download_url: "/api/exports/export.tsv" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ agreement: 0.75 })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ block_count: 2 })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(processPage("page-1")).resolves.toEqual({ page_type: "uploaded" });
+    await expect(updatePage("page-1", "Renamed")).resolves.toEqual({ id: "page-1", display_name: "Renamed" });
+    await expect(approveCard("card-1")).resolves.toMatchObject({ status: "approved" });
+    await expect(updateCard(card)).resolves.toMatchObject({ front: "updated" });
+    await expect(exportTsv(["page-1"], { approved_only: false, include_yellow: false, include_red: true })).resolves.toEqual({
+      card_count: 1,
+      download_url: "/api/exports/export.tsv"
+    });
+    await expect(compareOcr("page-1", "google vision")).resolves.toEqual({ agreement: 0.75 });
+    await expect(parseDocument("page-1")).resolves.toEqual({ block_count: 2 });
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "http://127.0.0.1:8000/api/pages/page-1/process",
+      "http://127.0.0.1:8000/api/pages/page-1",
+      "http://127.0.0.1:8000/api/cards/card-1/approve",
+      "http://127.0.0.1:8000/api/cards/card-1",
+      "http://127.0.0.1:8000/api/exports/tsv",
+      "http://127.0.0.1:8000/api/pages/page-1/ocr/compare?provider=google%20vision",
+      "http://127.0.0.1:8000/api/pages/page-1/document/parse"
+    ]);
+  });
+
+  it("builds image URLs only for known backend image directories", () => {
+    expect(imageUrl("/tmp/backend/processed/page.png")).toBe("http://127.0.0.1:8000/files/processed/page.png");
+    expect(imageUrl("/tmp/backend/uploads/page.jpg")).toBe("http://127.0.0.1:8000/files/uploads/page.jpg");
+    expect(imageUrl("/tmp/backend/exports/page.tsv")).toBeNull();
+    expect(imageUrl(null)).toBeNull();
+  });
+});
+
+function candidate(): CardCandidate {
+  return {
+    id: "card-1",
+    page_id: "page-1",
+    source_type: "vocab_item",
+    source_id: "source-1",
+    source: { surface: "学校" },
+    note_type: "jp_vocab_reading",
+    front: "学校",
+    back: "がっこう",
+    tags: ["jlpt"],
+    confidence: 0.9,
+    status: "pending_review",
+    review_state: "yellow",
+    warnings: []
+  };
+}

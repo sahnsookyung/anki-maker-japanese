@@ -141,7 +141,7 @@ def _extract_vocab_items_from_layout(
                 "warnings": warnings,
             }
         )
-    items.extend(_supplement_vocab_items_from_glossary(japanese_tokens, korean_tokens, split_x, validator, items, glossary))
+    items.extend(_supplement_vocab_items_from_glossary(japanese_tokens, korean_tokens, validator, items, glossary))
     return items
 
 
@@ -354,7 +354,6 @@ def _nearest_reading_token(
 def _supplement_vocab_items_from_glossary(
     japanese_tokens: list[OcrToken],
     korean_tokens: list[OcrToken],
-    split_x: float,
     validator: DictionaryValidator,
     existing_items: list[dict],
     glossary: dict[str, dict[str, str]],

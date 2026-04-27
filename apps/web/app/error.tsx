@@ -1,6 +1,8 @@
 "use client";
 
-export default function Error({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
+type ErrorBoundaryProps = Readonly<{ error: Error & { digest?: string }; reset: () => void }>;
+
+export default function ErrorBoundary({ error, reset }: ErrorBoundaryProps) {
   return (
     <main className="app-shell">
       <section className="panel error-screen">

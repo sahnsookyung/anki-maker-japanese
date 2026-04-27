@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-
 from app.models.schemas import OcrToken
 
 
@@ -21,9 +19,12 @@ _CIRCLED = {
 
 def parse_answer_strip_text(text: str) -> dict[int, int]:
     normalized = text.translate(str.maketrans({k: str(v) for k, v in _CIRCLED.items()}))
+    normalized = normalized.translate(str.maketrans({":": " ", ".": " ", "-": " "}))
+    numbers = [int(part) for part in normalized.split() if part.isdigit()]
     pairs: dict[int, int] = {}
-    for question, answer in re.findall(r"\b(10|[1-9])\s*[:.\-]?\s*([1-4])\b", normalized):
-        pairs[int(question)] = int(answer)
+    for question, answer in zip(numbers[::2], numbers[1::2]):
+        if 1 <= question <= 10 and 1 <= answer <= 4:
+            pairs[question] = answer
     return pairs
 
 

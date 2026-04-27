@@ -1,6 +1,8 @@
 "use client";
 
-export default function GlobalError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
+type GlobalErrorProps = Readonly<{ error: Error & { digest?: string }; reset: () => void }>;
+
+export default function GlobalError({ error, reset }: GlobalErrorProps) {
   return (
     <html lang="en">
       <body>

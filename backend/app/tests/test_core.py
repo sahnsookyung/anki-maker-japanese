@@ -58,7 +58,7 @@ def test_page_display_name_migrates_and_persists(tmp_path, monkeypatch) -> None:
             """,
             (
                 "legacy-page",
-                "/tmp/new upload (category 1 page).jpg",
+                str(tmp_path / "new upload (category 1 page).jpg"),
                 None,
                 "unprocessed",
                 0.0,
@@ -79,9 +79,9 @@ def test_page_display_name_migrates_and_persists(tmp_path, monkeypatch) -> None:
     database.upsert_page(
         Page(
             id="legacy-page",
-            original_image_path="/tmp/new upload (category 1 page).jpg",
+            original_image_path=str(tmp_path / "new upload (category 1 page).jpg"),
             display_name=None,
-            processed_image_path="/tmp/processed.jpg",
+            processed_image_path=str(tmp_path / "processed.jpg"),
             page_type="vocab",
             page_type_confidence=0.99,
             image_width=1200,
@@ -121,7 +121,7 @@ def test_list_pages_includes_card_counts(tmp_path, monkeypatch) -> None:
     database.upsert_page(
         Page(
             id="counted-page",
-            original_image_path="/tmp/page.jpg",
+            original_image_path=str(tmp_path / "page.jpg"),
             display_name="Counted page",
             page_type="vocab_table",
             page_type_confidence=1.0,

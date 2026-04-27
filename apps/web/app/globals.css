@@ -379,7 +379,6 @@ button:disabled {
   border-radius: 1.1rem;
   background: white;
   padding: 0.85rem;
-  cursor: pointer;
 }
 
 .candidate.selected {
@@ -402,6 +401,21 @@ button:disabled {
   margin: 0.25rem 0 0;
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+.candidate-select {
+  width: 100%;
+  border: 0;
+  border-radius: 0.85rem;
+  background: transparent;
+  color: var(--ink);
+  padding: 0;
+  text-align: left;
+  box-shadow: none;
+}
+
+.candidate-select:hover {
+  box-shadow: none;
 }
 
 .badge {
@@ -485,7 +499,7 @@ textarea {
 .warnings {
   border-radius: 1rem;
   background: rgba(180, 59, 59, 0.08);
-  color: #7f2d2d;
+  color: #5f1d1d;
   padding: 0.65rem 0.85rem;
 }
 

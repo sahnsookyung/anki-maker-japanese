@@ -12,8 +12,8 @@ from app.models.schemas import OcrToken
 
 
 QUESTION_NO_RE = re.compile(r"^(10|[1-9]|①|②|③|④|⑤|⑥|⑦|⑧|⑨|⑩)$")
-CHOICE_NO_RE = re.compile(r"^[1-4①②③④]$")
-CHOICE_CHUNK_RE = re.compile(r"([1-4①②③④])([^1-4①②③④]+)")
+CHOICE_NO_RE = re.compile(r"^[1-4①-④]$")
+CHOICE_CHUNK_RE = re.compile(r"([1-4①-④])([^1-4①-④]+)")
 CIRCLED = {"①": 1, "②": 2, "③": 3, "④": 4, "⑤": 5, "⑥": 6, "⑦": 7, "⑧": 8, "⑨": 9, "⑩": 10}
 FULLWIDTH_DIGITS = str.maketrans("１２３４５６７８９０", "1234567890")
 
@@ -84,7 +84,7 @@ def extract_mcq_items(tokens: list[OcrToken], answer_map: dict[int, int], page_t
                 "choices": choices,
                 "correct_choice_no": correct_choice_no,
                 "correct_answer": correct_answer,
-                "answer_source": "answer_strip" if question_no in answer_map else "local_glossary" if resolved_choice_no else "unknown",
+                "answer_source": _answer_source(question_no, answer_map, resolved_choice_no),
                 "bbox": bbox,
                 "evidence_tokens": [token.id for token in block],
                 "token_roles": token_roles,
@@ -157,19 +157,25 @@ def _extract_choices(tokens: list[OcrToken]) -> list[str]:
         token = ordered[idx]
         text = _normalize_digits(token.text)
         marker_num = _choice_marker_no(text)
-        if "？" in text or "?" in text:
-            for number, choice in _choice_chunks(text):
+        chunks = _choice_chunks(text)
+        if chunks:
+            for number, choice in chunks:
                 _set_choice(found, number, _clean_choice(choice), priority=0)
         elif marker_num and _choice_text_after_marker(text):
             _set_choice(found, marker_num, _clean_choice(_choice_text_after_marker(text)), priority=0)
         elif marker_num and idx + 1 < len(ordered):
             _set_choice(found, marker_num, _clean_choice(ordered[idx + 1].text), priority=1)
             idx += 1
-        else:
-            for number, choice in _choice_chunks(text):
-                _set_choice(found, number, _clean_choice(choice), priority=0)
         idx += 1
     return [found[number][1] for number in range(1, 5) if found.get(number)]
+
+
+def _answer_source(question_no: int, answer_map: dict[int, int], resolved_choice_no: int | None) -> str:
+    if question_no in answer_map:
+        return "answer_strip"
+    if resolved_choice_no:
+        return "local_glossary"
+    return "unknown"
 
 
 def _guess_target(tokens: list[OcrToken], page_type: str) -> str:
@@ -184,24 +190,26 @@ def _guess_target(tokens: list[OcrToken], page_type: str) -> str:
 
 
 def _choice_marker_no(text: str) -> int | None:
-    stripped = text.strip().translate(FULLWIDTH_DIGITS)
+    stripped = text.strip().translate(FULLWIDTH_DIGITS).lstrip("「『【[(（ \t")
     if stripped.startswith("10"):
         return None
     if stripped in CIRCLED:
         return CIRCLED[stripped]
     if CHOICE_NO_RE.match(stripped):
         return int(stripped)
-    match = re.match(r"^[「『【\\[\\(（\\s]*([1-4①②③④])", stripped)
-    if not match:
+    if not stripped:
         return None
-    marker = match.group(1)
+    marker = stripped[0]
+    if marker not in CIRCLED and marker not in {"1", "2", "3", "4"}:
+        return None
     return CIRCLED[marker] if marker in CIRCLED else int(marker)
 
 
 def _choice_text_after_marker(text: str) -> str:
-    stripped = text.strip().translate(FULLWIDTH_DIGITS)
-    match = re.match(r"^[「『【\\[\\(（\\s]*[1-4①②③④][\\s.．:：・\\-]*(.+)$", stripped)
-    return match.group(1).strip() if match else ""
+    stripped = text.strip().translate(FULLWIDTH_DIGITS).lstrip("「『【[(（ \t")
+    if not stripped or stripped[0] not in {"1", "2", "3", "4", "①", "②", "③", "④"}:
+        return ""
+    return stripped[1:].lstrip(" \t.．:：・-").strip()
 
 
 def _choice_chunks(text: str) -> list[tuple[int, str]]:
@@ -346,8 +354,10 @@ def _choices_from_question_mark_placeholder(text: str) -> list[tuple[int, str]]:
     marker = "？" if "？" in text else "?"
     if text.startswith(marker):
         return [(2, text[1:])]
-    match = re.match(r"^([1-4])(.+?)[？?](.+)$", text)
-    if not match:
+    if not text or text[0] not in {"1", "2", "3", "4"}:
         return []
-    number = int(match.group(1))
-    return [(number, match.group(2)), (min(4, number + 1), match.group(3))]
+    split_at = text.find(marker)
+    if split_at <= 1:
+        return []
+    number = int(text[0])
+    return [(number, text[1:split_at]), (min(4, number + 1), text[split_at + 1 :])]

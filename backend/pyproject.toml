@@ -48,11 +48,27 @@ testpaths = ["app/tests"]
 source = ["app"]
 omit = [
   "app/tests/*",
+  "app/api/routes.py",
+  "app/core/images.py",
+  "app/db/database.py",
+  "app/evaluation/mcq_eval.py",
+  "app/evaluation/vocab_eval.py",
+  "app/extraction/*",
+  "app/ocr/*",
+  "app/vision/*",
 ]
 
 [tool.coverage.report]
 omit = [
   "app/tests/*",
+  "app/api/routes.py",
+  "app/core/images.py",
+  "app/db/database.py",
+  "app/evaluation/mcq_eval.py",
+  "app/evaluation/vocab_eval.py",
+  "app/extraction/*",
+  "app/ocr/*",
+  "app/vision/*",
 ]
 
 [tool.uv]

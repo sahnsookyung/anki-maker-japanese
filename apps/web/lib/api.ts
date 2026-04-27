@@ -1,7 +1,7 @@
 export const API_BASE = resolveApiBase(process.env.NEXT_PUBLIC_API_BASE_URL);
 
 export function resolveApiBase(configuredBase?: string): string {
-  const browserHost = typeof window !== "undefined" ? window.location.hostname : "";
+  const browserHost = typeof globalThis.window === "object" ? globalThis.window.location.hostname : "";
   const localBrowserHost = browserHost === "localhost" || browserHost === "127.0.0.1";
   const fallbackHost = localBrowserHost ? browserHost : "127.0.0.1";
   const fallbackBase = `http://${fallbackHost}:8000`;

@@ -1,23 +1,22 @@
 from __future__ import annotations
 
 from collections import Counter
-import re
 
 from app.models.schemas import OcrToken
 
 
-CHOICE_PREFIX_RE = re.compile(r"^[^\d１２３４①②③④]{0,2}([1-4１２３４①②③④])\s*[\-:：.．・]?\s*(.+)$")
-QUESTION_PREFIX_RE = re.compile(r"^[^\d]{0,2}(10|[1-9]|１０|[１-９])\D+")
+DIGIT_MARKERS = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"}
+CHOICE_MARKERS = {"1", "2", "3", "4", "①", "②", "③", "④"}
 
 
 def classify_page(tokens: list[OcrToken], image_height: int | None = None) -> tuple[str, float, dict[str, int]]:
     scripts = Counter(token.script_class for token in tokens)
     texts = [token.text for token in tokens]
     checkbox_count = sum(1 for text in texts if text in {"□", "☐", "▢", "口", "ロ"} or any(mark in text for mark in ("□", "☐", "▢", "口", "ロ")))
-    question_numbers = sum(1 for text in texts if re.fullmatch(r"(?:[1-9]|10|①|②|③|④|⑤|⑥|⑦|⑧|⑨|⑩)", text))
-    choice_markers = sum(1 for text in texts if re.fullmatch(r"[1-4①②③④]", text))
+    question_numbers = sum(1 for text in texts if _normalize_digits(text.strip()) in DIGIT_MARKERS)
+    choice_markers = sum(1 for text in texts if _normalize_digits(text.strip()) in CHOICE_MARKERS)
     prefixed_choices = [_choice_text(text) for text in texts if _choice_text(text)]
-    prefixed_questions = sum(1 for text in texts if QUESTION_PREFIX_RE.match(_normalize_digits(text)))
+    prefixed_questions = sum(1 for text in texts if _has_question_prefix(text))
     bottom_tokens = 0
     if image_height:
         bottom_tokens = sum(1 for token in tokens if token.bbox[1] > image_height * 0.82)
@@ -53,10 +52,26 @@ def classify_page(tokens: list[OcrToken], image_height: int | None = None) -> tu
 
 
 def _choice_text(text: str) -> str:
-    match = CHOICE_PREFIX_RE.match(_normalize_digits(text.strip()))
-    if not match:
+    normalized = _normalize_digits(text.strip())
+    marker_index = _first_marker_index(normalized, CHOICE_MARKERS)
+    if marker_index is None or marker_index > 2:
         return ""
-    return match.group(2).strip()
+    after_marker = normalized[marker_index + 1 :].lstrip(" \t-:：.．・")
+    return after_marker.strip()
+
+
+def _has_question_prefix(text: str) -> bool:
+    normalized = _normalize_digits(text.strip())
+    if normalized.startswith("10"):
+        return len(normalized) > 2 and not normalized[2].isdigit()
+    return bool(normalized and normalized[0] in "123456789" and len(normalized) > 1 and not normalized[1].isdigit())
+
+
+def _first_marker_index(text: str, markers: set[str]) -> int | None:
+    for index, char in enumerate(text[:3]):
+        if char in markers:
+            return index
+    return None
 
 
 def _normalize_digits(text: str) -> str:

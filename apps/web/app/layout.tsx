@@ -6,7 +6,9 @@ export const metadata: Metadata = {
   description: "Review OCR-derived Japanese Anki card candidates from study-book photos."
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+type RootLayoutProps = Readonly<{ children: React.ReactNode }>;
+
+export default function RootLayout({ children }: RootLayoutProps) {
   return (
     <html lang="en">
       <body>{children}</body>

@@ -56,7 +56,6 @@ def cleanup_mcq_items(
     answer_map: dict[int, int],
 ) -> tuple[list[dict[str, Any]], list[str]]:
     warnings: list[str] = []
-    token_map = {token.id: token for token in tokens}
     client = _client_or_warning(warnings)
     if not client:
         return items, warnings
