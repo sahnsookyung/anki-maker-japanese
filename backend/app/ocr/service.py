@@ -3,17 +3,24 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from app.core.config import OCR_PROVIDER
+from app.core.config import OCR_PROVIDER, OCR_PROVIDER_CACHE_ENABLED
 from app.models.schemas import OcrToken
 from app.ocr.providers import OcrProvider
 
 
 def get_ocr_provider(provider_name: str | None = None) -> OcrProvider:
-    return _build_ocr_provider(provider_name or OCR_PROVIDER)
+    provider_name = provider_name or OCR_PROVIDER
+    if OCR_PROVIDER_CACHE_ENABLED:
+        return _build_ocr_provider_cached(provider_name)
+    return _build_ocr_provider_uncached(provider_name)
 
 
 @lru_cache(maxsize=8)
-def _build_ocr_provider(provider_name: str) -> OcrProvider:
+def _build_ocr_provider_cached(provider_name: str) -> OcrProvider:
+    return _build_ocr_provider_uncached(provider_name)
+
+
+def _build_ocr_provider_uncached(provider_name: str) -> OcrProvider:
     provider_name = provider_name or OCR_PROVIDER
     errors: list[str] = []
     if provider_name in ("auto", "paddle"):

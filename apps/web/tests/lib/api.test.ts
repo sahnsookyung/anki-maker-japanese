@@ -5,6 +5,7 @@ import {
   apiGet,
   approveCard,
   compareOcr,
+  deletePage,
   exportTsv,
   imageUrl,
   parseDocument,
@@ -109,6 +110,22 @@ describe("uploadImages", () => {
     });
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
+
+  it("returns the backend connectivity message for upload network failures", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("connection refused")));
+
+    const files = [new File(["a"], "page-a.jpg")];
+
+    await expect(uploadImages(files)).resolves.toEqual({
+      uploaded: [],
+      failed: [
+        {
+          fileName: "page-a.jpg",
+          message: "Could not reach the backend at http://127.0.0.1:8000. Start FastAPI and try again."
+        }
+      ]
+    });
+  });
 });
 
 describe("API helpers", () => {
@@ -118,6 +135,7 @@ describe("API helpers", () => {
       .fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ page_type: "uploaded" })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: "page-1", display_name: "Renamed" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ page_id: "page-1", status: "deleted" })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ ...card, status: "approved" })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ ...card, front: "updated" })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ card_count: 1, download_url: "/api/exports/export.tsv" })))
@@ -127,6 +145,7 @@ describe("API helpers", () => {
 
     await expect(processPage("page-1")).resolves.toEqual({ page_type: "uploaded" });
     await expect(updatePage("page-1", "Renamed")).resolves.toEqual({ id: "page-1", display_name: "Renamed" });
+    await expect(deletePage("page-1")).resolves.toEqual({ page_id: "page-1", status: "deleted" });
     await expect(approveCard("card-1")).resolves.toMatchObject({ status: "approved" });
     await expect(updateCard(card)).resolves.toMatchObject({ front: "updated" });
     await expect(exportTsv(["page-1"], { approved_only: false, include_yellow: false, include_red: true })).resolves.toEqual({
@@ -139,12 +158,14 @@ describe("API helpers", () => {
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "http://127.0.0.1:8000/api/pages/page-1/process",
       "http://127.0.0.1:8000/api/pages/page-1",
+      "http://127.0.0.1:8000/api/pages/page-1",
       "http://127.0.0.1:8000/api/cards/card-1/approve",
       "http://127.0.0.1:8000/api/cards/card-1",
       "http://127.0.0.1:8000/api/exports/tsv",
       "http://127.0.0.1:8000/api/pages/page-1/ocr/compare?provider=google%20vision",
       "http://127.0.0.1:8000/api/pages/page-1/document/parse"
     ]);
+    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({ method: "DELETE" });
   });
 
   it("builds image URLs only for known backend image directories", () => {

@@ -20,6 +20,7 @@ DB_PATH = BACKEND_DIR / os.getenv("ANKI_MAKER_DB", "app.db")
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 OCR_PROVIDER = os.getenv("OCR_PROVIDER", "auto")
+OCR_PROVIDER_CACHE_ENABLED = os.getenv("OCR_PROVIDER_CACHE_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 OCR_COMPARE_PROVIDER = os.getenv("OCR_COMPARE_PROVIDER", "google_vision")
 PREPROCESS_MAX_SIDE_LEN = int(os.getenv("PREPROCESS_MAX_SIDE_LEN", "1800"))
 PADDLE_OCR_MAX_SIDE_LEN = int(os.getenv("PADDLE_OCR_MAX_SIDE_LEN", "1600"))
@@ -46,7 +47,7 @@ PADDLE_OCR_KOREAN_TEXT_RECOGNITION_MODEL_NAME = os.getenv(
     "PADDLE_OCR_KOREAN_TEXT_RECOGNITION_MODEL_NAME", "korean_PP-OCRv5_mobile_rec"
 )
 VOCAB_DUAL_OCR_ENABLED = os.getenv("VOCAB_DUAL_OCR_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
-PADDLE_OCR_VL_BACKEND = os.getenv("PADDLE_OCR_VL_BACKEND", "native")
+PADDLE_OCR_VL_BACKEND = os.getenv("PADDLE_OCR_VL_BACKEND", "")
 PADDLE_OCR_VL_SERVER_URL = os.getenv("PADDLE_OCR_VL_SERVER_URL", "")
 PADDLE_OCR_VL_API_MODEL_NAME = os.getenv("PADDLE_OCR_VL_API_MODEL_NAME", "")
 PADDLE_OCR_VL_API_KEY = os.getenv("PADDLE_OCR_VL_API_KEY", "")

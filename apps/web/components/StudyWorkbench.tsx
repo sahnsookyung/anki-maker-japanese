@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { type MutableRefObject, useEffect, useRef, useState, useTransition } from "react";
 import {
   API_BASE,
   type CardCandidate,
@@ -12,6 +12,7 @@ import {
   apiErrorMessage,
   approveCard,
   compareOcr,
+  deletePage,
   exportTsv,
   imageUrl,
   parseDocument,
@@ -23,6 +24,9 @@ import {
 
 type OverlayMode = "focused" | "region" | "all" | "off";
 type ReviewFilter = "all" | "needs_review" | "approved" | "green" | "yellow" | "red";
+type CardScrollTarget = "evidence" | "card" | "none";
+const HIGH_CONFIDENCE_THRESHOLD = 0.9;
+const REVIEW_CONFIDENCE_THRESHOLD = 0.75;
 
 const PAGE_TYPE_LABELS: Record<string, string> = {
   uploaded: "Uploaded",
@@ -47,8 +51,10 @@ export function StudyWorkbench() {
   const [comparison, setComparison] = useState<OcrComparison | null>(null);
   const [documentParse, setDocumentParse] = useState<DocumentParseResult | null>(null);
   const [message, setMessage] = useState("Upload a study-book photo to begin.");
+  const [isBatchProcessing, setIsBatchProcessing] = useState(false);
   const [isPending, startTransition] = useTransition();
   const evidenceRef = useRef<HTMLElement | null>(null);
+  const cardRefs = useRef<Record<string, HTMLElement | null>>({});
 
   useEffect(() => {
     void refreshPages();
@@ -106,7 +112,7 @@ export function StudyWorkbench() {
       await refreshPages(lastPageId);
     }
     if (result.failed.length) {
-      const failedNames = result.failed.map((failure) => failure.fileName).join(", ");
+      const failedNames = result.failed.map((failure) => `${failure.fileName} (${failure.message})`).join(", ");
       setMessage(`Uploaded ${result.uploaded.length}/${selectedFiles.length} pages. Failed: ${failedNames}.`);
     } else {
       setMessage(`Uploaded ${result.uploaded.length} page${result.uploaded.length === 1 ? "" : "s"}. Run processing to create review candidates.`);
@@ -133,6 +139,40 @@ export function StudyWorkbench() {
     });
   }
 
+  async function onProcessAllPages() {
+    if (!pages.length || isBatchProcessing) return;
+    setIsBatchProcessing(true);
+    const failures: string[] = [];
+    let lastSelectedResult: Awaited<ReturnType<typeof processPage>> | null = null;
+    try {
+      for (const [index, page] of pages.entries()) {
+        setMessage(`Processing page ${index + 1}/${pages.length}: ${pageTitle(page)}...`);
+        try {
+          const result = await processPage(page.id);
+          if (page.id === selectedPage?.id) {
+            lastSelectedResult = result;
+          }
+        } catch (error) {
+          failures.push(`${pageTitle(page)} (${apiErrorMessage(error, "Processing failed.")})`);
+        }
+      }
+      if (lastSelectedResult) {
+        setSelectedPage(lastSelectedResult.page);
+        setTokens(lastSelectedResult.tokens);
+        setCards(lastSelectedResult.cards);
+        setSelectedCardId(lastSelectedResult.cards[0]?.id ?? null);
+      }
+      await refreshPages(selectedPage?.id);
+      setMessage(
+        failures.length
+          ? `Processed ${pages.length - failures.length}/${pages.length} pages. Failed: ${failures.join(", ")}.`
+          : `Processed ${pages.length} page${pages.length === 1 ? "" : "s"} sequentially.`
+      );
+    } finally {
+      setIsBatchProcessing(false);
+    }
+  }
+
   async function renamePage(page: Page, displayName: string) {
     try {
       const updated = await updatePage(page.id, displayName);
@@ -141,6 +181,32 @@ export function StudyWorkbench() {
       setMessage(`Renamed page to ${pageTitle(updated)}.`);
     } catch (error) {
       setMessage(apiErrorMessage(error, "Rename failed."));
+    }
+  }
+
+  async function removePage(page: Page) {
+    const title = pageTitle(page);
+    const confirmed = window.confirm(`Delete "${title}" and its generated OCR/cards? This only removes local app state.`);
+    if (!confirmed) return;
+    try {
+      await deletePage(page.id);
+      const remainingPages = pages.filter((item) => item.id !== page.id);
+      setPages(remainingPages);
+      if (selectedPage?.id === page.id) {
+        const nextPage = remainingPages[0];
+        setSelectedPage(null);
+        setTokens([]);
+        setCards([]);
+        setSelectedCardId(null);
+        setComparison(null);
+        setDocumentParse(null);
+        if (nextPage) {
+          await selectPage(nextPage, false);
+        }
+      }
+      setMessage(`Deleted ${title}.`);
+    } catch (error) {
+      setMessage(apiErrorMessage(error, "Delete failed."));
     }
   }
 
@@ -165,6 +231,23 @@ export function StudyWorkbench() {
       setMessage("Approved card.");
     } catch (error) {
       setMessage(apiErrorMessage(error, "Approving card failed."));
+    }
+  }
+
+  async function toggleApproval(card: CardCandidate) {
+    if (card.status !== "approved") {
+      await approve(card.id);
+      return;
+    }
+    const updatedCard = { ...card, status: "pending_review" as const };
+    try {
+      const updated = await updateCard(updatedCard);
+      const nextCards = cards.map((item) => (item.id === updated.id ? updated : item));
+      setCards(nextCards);
+      syncPageCardSummary(updated.page_id, nextCards);
+      setMessage("Moved card back to pending review.");
+    } catch (error) {
+      setMessage(apiErrorMessage(error, "Unapproving card failed."));
     }
   }
 
@@ -203,9 +286,18 @@ export function StudyWorkbench() {
     }
   }
 
-  function selectCard(card: CardCandidate) {
+  function selectCard(card: CardCandidate, scrollTarget: CardScrollTarget = "evidence") {
     setSelectedCardId(card.id);
-    evidenceRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    const target =
+      scrollTarget === "evidence" ? evidenceRef.current : scrollTarget === "card" ? cardRefs.current[card.id] : null;
+    target?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  function selectCardForToken(token: OcrToken) {
+    const card = cardForToken(cards, token);
+    if (!card) return;
+    selectCard(card, "card");
+    setMessage(`Selected ${candidateTitle(card)} from OCR evidence.`);
   }
 
   function toggleTokenFilter(value: string) {
@@ -274,7 +366,12 @@ export function StudyWorkbench() {
       <section className="command-bar">
         <p>{isPending ? "Working..." : message}</p>
         <div>
-          {selectedPage ? <button onClick={onProcess}>Process page</button> : null}
+          {selectedPage ? <button onClick={onProcess} disabled={isBatchProcessing}>Process page</button> : null}
+          {pages.length ? (
+            <button className="secondary" onClick={() => void onProcessAllPages()} disabled={isBatchProcessing}>
+              Process all pages
+            </button>
+          ) : null}
           {selectedPage ? <button className="secondary" onClick={() => void onParseDocument()}>PaddleOCR-VL</button> : null}
           {tokens.length ? <button className="secondary" onClick={onCompareOcr}>Compare GCV</button> : null}
           {cards.length ? (
@@ -300,6 +397,7 @@ export function StudyWorkbench() {
               candidateCount={page.id === selectedPage?.id ? cards.length : page.card_count ?? 0}
               onSelect={() => void selectPage(page)}
               onRename={(name) => renamePage(page, name)}
+              onDelete={() => removePage(page)}
             />
           ))}
         </aside>
@@ -318,9 +416,11 @@ export function StudyWorkbench() {
                 imageUrl={visibleUrl}
                 page={selectedPage}
                 tokens={tokens}
+                cards={cards}
                 card={selectedCard}
                 mode={overlayMode}
                 activeFilters={activeTokenFilters}
+                onSelectCard={selectCardForToken}
               />
             ) : (
               <div className="empty">Upload a page to see review evidence.</div>
@@ -366,18 +466,15 @@ export function StudyWorkbench() {
               </select>
             </div>
             {cards.length === 0 ? <div className="empty">Process the selected page to generate editable candidates.</div> : null}
-            <div className="candidate-list">
-              {filteredCards.map((card) => (
-                <CardEditor
-                  key={card.id}
-                  card={card}
-                  selected={card.id === selectedCard?.id}
-                  onSelect={() => selectCard(card)}
-                  onChange={saveCard}
-                  onApprove={approve}
-                />
-              ))}
-            </div>
+            <CandidateList
+              cards={filteredCards}
+              selectedCard={selectedCard}
+              cardRefs={cardRefs}
+              onSelect={selectCard}
+              onChange={saveCard}
+              onToggleApproval={toggleApproval}
+              grouped={reviewFilter === "all"}
+            />
           </section>
         </section>
       </div>
@@ -390,13 +487,15 @@ function PageCard({
   active,
   candidateCount,
   onSelect,
-  onRename
+  onRename,
+  onDelete
 }: Readonly<{
   page: Page;
   active: boolean;
   candidateCount: number;
   onSelect: () => void;
   onRename: (name: string) => Promise<void>;
+  onDelete: () => Promise<void>;
 }>) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(pageTitle(page));
@@ -426,7 +525,12 @@ function PageCard({
           <small>{page.warnings.length} warnings · {cardSummary}</small>
         </button>
       )}
-      {editing ? null : <button className="rename" onClick={() => setEditing(true)}>Rename</button>}
+      {editing ? null : (
+        <div className="page-actions">
+          <button className="rename" onClick={() => setEditing(true)}>Rename</button>
+          <button className="delete-page" onClick={() => void onDelete()}>Delete</button>
+        </div>
+      )}
     </article>
   );
 }
@@ -465,6 +569,13 @@ function EvidenceHeader({
             {overlayLabels[mode]}
           </button>
         ))}
+        <div className="overlay-legend" aria-label="OCR evidence color legend">
+          <span><i className="legend-dot selected-high" /> high confidence</span>
+          <span><i className="legend-dot selected-medium" /> review confidence</span>
+          <span><i className="legend-dot selected-low" /> low confidence</span>
+          <span><i className="legend-dot used-context" /> answer key/support</span>
+          <span><i className="legend-dot scanned-unused" /> unused scan</span>
+        </div>
       </div>
     </div>
   );
@@ -474,16 +585,20 @@ function EvidenceStage({
   imageUrl,
   page,
   tokens,
+  cards,
   card,
   mode,
-  activeFilters
+  activeFilters,
+  onSelectCard
 }: Readonly<{
   imageUrl: string;
   page: Page | null;
   tokens: OcrToken[];
+  cards: CardCandidate[];
   card: CardCandidate | null;
   mode: OverlayMode;
   activeFilters: Set<string>;
+  onSelectCard: (token: OcrToken) => void;
 }>) {
   if (!page?.image_width || !page.image_height) {
     return (
@@ -503,7 +618,15 @@ function EvidenceStage({
         preserveAspectRatio="xMidYMid meet"
       >
         <image href={imageUrl} width={page.image_width} height={page.image_height} />
-        <TokenOverlay page={page} tokens={tokens} card={card} mode={mode} activeFilters={activeFilters} />
+        <TokenOverlay
+          page={page}
+          tokens={tokens}
+          cards={cards}
+          card={card}
+          mode={mode}
+          activeFilters={activeFilters}
+          onSelectCard={onSelectCard}
+        />
       </svg>
     </div>
   );
@@ -512,31 +635,37 @@ function EvidenceStage({
 function TokenOverlay({
   page,
   tokens,
+  cards,
   card,
   mode,
-  activeFilters
+  activeFilters,
+  onSelectCard
 }: Readonly<{
   page: Page | null;
   tokens: OcrToken[];
+  cards: CardCandidate[];
   card: CardCandidate | null;
   mode: OverlayMode;
   activeFilters: Set<string>;
+  onSelectCard: (token: OcrToken) => void;
 }>) {
   if (!page?.image_width || !page.image_height || mode === "off") return null;
   const relevantIds = focusedTokenIds(card);
   const sourceBox = sourceBbox(card);
+  const selectedConfidenceClass = confidenceClass(card);
   const filteredTokens = activeFilters.size
     ? tokens.filter((token) => activeFilters.has(token.script_class) || activeFilters.has(token.source))
     : tokens;
   const shouldRenderTokens = mode === "all" || mode === "focused";
   return (
     <g className="overlay">
-      {mode !== "all" && sourceBox ? <EvidenceBox bbox={sourceBox} className="source-region" /> : null}
+      {mode !== "all" && sourceBox ? <EvidenceBox bbox={sourceBox} className={`source-region ${selectedConfidenceClass}`} /> : null}
       {shouldRenderTokens
         ? filteredTokens.map((token) => {
             const relevant = relevantIds.has(token.id) || (!relevantIds.size && sourceBox ? tokenInside(token, sourceBox) : false);
-            const dimmed = mode === "focused" && !relevant;
             const [x1, y1, x2, y2] = token.bbox;
+            const linkedCard = cardForToken(cards, token);
+            const displayClass = tokenDisplayClass(token, page, card, linkedCard, relevant);
             return (
               <g key={token.id}>
                 <rect
@@ -544,9 +673,17 @@ function TokenOverlay({
                   y={y1}
                   width={x2 - x1}
                   height={y2 - y1}
-                  className={`box ${token.script_class} ${relevant ? "relevant" : ""} ${dimmed ? "dimmed" : ""}`}
+                  className={`box ${token.script_class} ${displayClass} ${linkedCard ? "clickable" : ""}`}
+                  onClick={
+                    linkedCard
+                      ? (event) => {
+                          event.stopPropagation();
+                          onSelectCard(token);
+                        }
+                      : undefined
+                  }
                 />
-                <title>{`${token.text} (${token.source}, ${token.script_class}, ${Math.round(token.confidence * 100)}%)`}</title>
+                <title>{tokenTitle(token, linkedCard, relevant)}</title>
               </g>
             );
           })
@@ -560,26 +697,149 @@ function EvidenceBox({ bbox, className }: Readonly<{ bbox: number[]; className: 
   return <rect x={x1} y={y1} width={x2 - x1} height={y2 - y1} className={className} />;
 }
 
+function CandidateList({
+  cards,
+  selectedCard,
+  cardRefs,
+  onSelect,
+  onChange,
+  onToggleApproval,
+  grouped
+}: Readonly<{
+  cards: CardCandidate[];
+  selectedCard: CardCandidate | null;
+  cardRefs: MutableRefObject<Record<string, HTMLElement | null>>;
+  onSelect: (card: CardCandidate, scrollTarget?: CardScrollTarget) => void;
+  onChange: (card: CardCandidate) => Promise<void>;
+  onToggleApproval: (card: CardCandidate) => Promise<void>;
+  grouped: boolean;
+}>) {
+  if (!grouped) {
+    return (
+      <div className="candidate-list">
+        {cards.map((card) => (
+          <CardEditor
+            key={card.id}
+            card={card}
+            selected={card.id === selectedCard?.id}
+            cardRef={(element) => {
+              cardRefs.current[card.id] = element;
+            }}
+            onSelect={() => onSelect(card)}
+            onChange={onChange}
+            onToggleApproval={onToggleApproval}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  const needsReview = cards.filter((card) => !isHighConfidenceCard(card));
+  const highConfidence = cards.filter(isHighConfidenceCard);
+  return (
+    <div className="candidate-list">
+      <CandidateSection
+        title="Needs review"
+        cards={needsReview}
+        selectedCard={selectedCard}
+        cardRefs={cardRefs}
+        onSelect={onSelect}
+        onChange={onChange}
+        onToggleApproval={onToggleApproval}
+        open
+      />
+      <CandidateSection
+        title="High confidence"
+        cards={highConfidence}
+        selectedCard={selectedCard}
+        cardRefs={cardRefs}
+        onSelect={onSelect}
+        onChange={onChange}
+        onToggleApproval={onToggleApproval}
+        open
+      />
+    </div>
+  );
+}
+
+function CandidateSection({
+  title,
+  cards,
+  selectedCard,
+  cardRefs,
+  onSelect,
+  onChange,
+  onToggleApproval,
+  open
+}: Readonly<{
+  title: string;
+  cards: CardCandidate[];
+  selectedCard: CardCandidate | null;
+  cardRefs: MutableRefObject<Record<string, HTMLElement | null>>;
+  onSelect: (card: CardCandidate, scrollTarget?: CardScrollTarget) => void;
+  onChange: (card: CardCandidate) => Promise<void>;
+  onToggleApproval: (card: CardCandidate) => Promise<void>;
+  open?: boolean;
+}>) {
+  if (!cards.length) return null;
+  return (
+    <details className="candidate-section" open={open}>
+      <summary>
+        <span>{title}</span>
+        <b>{cards.length}</b>
+      </summary>
+      <div className="candidate-section-body">
+        {cards.map((card) => (
+          <CardEditor
+            key={card.id}
+            card={card}
+            selected={card.id === selectedCard?.id}
+            cardRef={(element) => {
+              cardRefs.current[card.id] = element;
+            }}
+            onSelect={() => onSelect(card)}
+            onChange={onChange}
+            onToggleApproval={onToggleApproval}
+          />
+        ))}
+      </div>
+    </details>
+  );
+}
+
 function CardEditor({
   card,
   selected,
+  cardRef,
   onSelect,
   onChange,
-  onApprove
+  onToggleApproval
 }: Readonly<{
   card: CardCandidate;
   selected: boolean;
+  cardRef: (element: HTMLElement | null) => void;
   onSelect: () => void;
   onChange: (card: CardCandidate) => Promise<void>;
-  onApprove: (cardId: string) => Promise<void>;
+  onToggleApproval: (card: CardCandidate) => Promise<void>;
 }>) {
   const [draft, setDraft] = useState(card);
   useEffect(() => setDraft(card), [card]);
   const source = card.source;
   const provenance = textValue(source.answer_source);
   return (
-    <article className={`candidate ${draft.review_state} ${selected ? "selected" : ""}`}>
-      <button className="candidate-select" onClick={onSelect} type="button">
+    <article
+      ref={cardRef}
+      className={`candidate ${draft.review_state} ${selected ? "selected" : "collapsed"}`}
+      onClick={onSelect}
+    >
+      <button
+        className="candidate-select"
+        onClick={(event) => {
+          event.stopPropagation();
+          onSelect();
+        }}
+        type="button"
+      >
         <div className="candidate-head">
           <div>
             <strong>{candidateTitle(card)}</strong>
@@ -594,29 +854,105 @@ function CardEditor({
       </button>
       <SourceSummary card={card} />
 
+      {selected ? (
+        <div className="candidate-body" onClick={(event) => event.stopPropagation()}>
+          {card.source_type === "question_item" ? (
+            <QuestionSourceEditor card={draft} onChange={setDraft} />
+          ) : null}
+          <label>
+            <span>Front</span>
+            <textarea value={draft.front} onChange={(event) => setDraft({ ...draft, front: event.target.value })} />
+          </label>
+          <label>
+            <span>Back</span>
+            <textarea value={draft.back} onChange={(event) => setDraft({ ...draft, back: event.target.value })} />
+          </label>
+          <label>
+            <span>Tags</span>
+            <input
+              value={draft.tags.join(" ")}
+              onChange={(event) => setDraft({ ...draft, tags: event.target.value.split(/\s+/).filter(Boolean) })}
+            />
+          </label>
+          <label>
+            <span>Review state</span>
+            <select
+              value={draft.review_state}
+              onChange={(event) =>
+                setDraft({ ...draft, review_state: event.target.value as CardCandidate["review_state"] })
+              }
+            >
+              <option value="green">Green: exportable after approval</option>
+              <option value="yellow">Yellow: review carefully</option>
+              <option value="red">Red: block from export</option>
+            </select>
+          </label>
+          {draft.warnings.length ? <WarningList warnings={draft.warnings} compact /> : null}
+          <div className="actions candidate-actions">
+            <button className="secondary" onClick={() => void onChange(draft)}>Save edits</button>
+            <button onClick={() => void onToggleApproval(draft)} disabled={draft.review_state === "red"}>
+              {draft.status === "approved" ? "Unapprove" : "Approve"}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <p className="candidate-fold-note">Click anywhere on this candidate to review and approve it.</p>
+      )}
+    </article>
+  );
+}
+
+function QuestionSourceEditor({
+  card,
+  onChange
+}: Readonly<{
+  card: CardCandidate;
+  onChange: (card: CardCandidate) => void;
+}>) {
+  const source = card.source;
+  function updateSource(field: string, value: string) {
+    const nextSource = { ...source, [field]: field === "question_no" || field === "correct_choice_no" ? numberOrEmpty(value) : value };
+    const nextCard = syncQuestionAnswerBack({ ...card, source: nextSource }, nextSource);
+    onChange(nextCard);
+  }
+
+  return (
+    <fieldset className="question-source-editor">
+      <legend>Question facts</legend>
       <label>
-        <span>Front</span>
-        <textarea value={draft.front} onChange={(event) => setDraft({ ...draft, front: event.target.value })} />
+        <span>Question no.</span>
+        <input value={textValue(source.question_no)} onChange={(event) => updateSource("question_no", event.target.value)} />
       </label>
       <label>
-        <span>Back</span>
-        <textarea value={draft.back} onChange={(event) => setDraft({ ...draft, back: event.target.value })} />
+        <span>Sentence</span>
+        <textarea value={textValue(source.sentence)} onChange={(event) => updateSource("sentence", event.target.value)} />
       </label>
       <label>
-        <span>Tags</span>
+        <span>Target</span>
+        <input value={textValue(source.target)} onChange={(event) => updateSource("target", event.target.value)} />
+      </label>
+      <label>
+        <span>Correct choice no.</span>
         <input
-          value={draft.tags.join(" ")}
-          onChange={(event) => setDraft({ ...draft, tags: event.target.value.split(/\s+/).filter(Boolean) })}
+          inputMode="numeric"
+          value={textValue(source.correct_choice_no)}
+          onChange={(event) => updateSource("correct_choice_no", event.target.value)}
         />
       </label>
-      {draft.warnings.length ? <WarningList warnings={draft.warnings} compact /> : null}
-      <div className="actions">
-        <button className="secondary" onClick={() => void onChange(draft)}>Save edits</button>
-        <button onClick={() => void onApprove(draft.id)} disabled={draft.review_state === "red"}>
-          Approve
-        </button>
-      </div>
-    </article>
+      <label>
+        <span>Correct answer</span>
+        <input value={textValue(source.correct_answer)} onChange={(event) => updateSource("correct_answer", event.target.value)} />
+      </label>
+      <label>
+        <span>Answer source</span>
+        <select value={textValue(source.answer_source, "manual")} onChange={(event) => updateSource("answer_source", event.target.value)}>
+          <option value="manual">Manual correction</option>
+          <option value="answer_strip">Answer strip</option>
+          <option value="local_glossary">Local glossary</option>
+          <option value="unknown">Unknown</option>
+        </select>
+      </label>
+    </fieldset>
   );
 }
 
@@ -645,8 +981,8 @@ function SourceSummary({ card }: Readonly<{ card: CardCandidate }>) {
 function WarningList({ warnings, compact = false }: Readonly<{ warnings: string[]; compact?: boolean }>) {
   return (
     <div className={compact ? "warnings compact" : "warnings"}>
-      {warnings.map((warning) => (
-        <p key={warning}>{warning}</p>
+      {warnings.map((warning, index) => (
+        <p key={warningKey(warning, index)}>{warning}</p>
       ))}
     </div>
   );
@@ -711,6 +1047,62 @@ function cardMatchesFilter(card: CardCandidate, filter: ReviewFilter): boolean {
   if (filter === "needs_review") return card.review_state === "yellow" || card.warnings.length > 0;
   if (filter === "approved") return card.status === "approved";
   return card.review_state === filter;
+}
+
+function isHighConfidenceCard(card: CardCandidate): boolean {
+  return card.review_state === "green" && card.warnings.length === 0 && card.confidence >= HIGH_CONFIDENCE_THRESHOLD;
+}
+
+export function cardForToken(cards: CardCandidate[], token: OcrToken): CardCandidate | null {
+  return (
+    cards.find((card) => focusedTokenIds(card).has(token.id)) ??
+    cards.find((card) => {
+      const bbox = sourceBbox(card);
+      return bbox ? tokenInside(token, bbox) : false;
+    }) ??
+    null
+  );
+}
+
+export function warningKey(warning: string, index: number): string {
+  return `${warning}-${index}`;
+}
+
+function tokenDisplayClass(
+  token: OcrToken,
+  page: Page,
+  selectedCard: CardCandidate | null,
+  linkedCard: CardCandidate | null,
+  relevant: boolean,
+): string {
+  if (relevant) return `candidate-evidence selected-evidence ${confidenceClass(selectedCard)}`;
+  if (linkedCard) return `candidate-evidence ${confidenceClass(linkedCard)}`;
+  if (isAnswerSupportToken(token, page)) return "used-context answer-support";
+  return `scanned-unused token-confidence-${tokenConfidenceClass(token.confidence)}`;
+}
+
+export function confidenceClass(card: CardCandidate | null): string {
+  if (!card) return "confidence-unknown";
+  if (card.confidence < REVIEW_CONFIDENCE_THRESHOLD) return "confidence-low";
+  if (card.confidence < HIGH_CONFIDENCE_THRESHOLD) return "confidence-medium";
+  return "confidence-high";
+}
+
+function tokenConfidenceClass(confidence: number): string {
+  if (confidence >= HIGH_CONFIDENCE_THRESHOLD) return "high";
+  if (confidence >= REVIEW_CONFIDENCE_THRESHOLD) return "medium";
+  return "low";
+}
+
+function tokenTitle(token: OcrToken, linkedCard: CardCandidate | null, relevant: boolean): string {
+  const use = relevant ? "selected candidate evidence" : linkedCard ? `used by ${candidateTitle(linkedCard)}` : "scanned but unused";
+  return `${token.text} (${token.source}, ${token.script_class}, OCR ${Math.round(token.confidence * 100)}%, ${use})`;
+}
+
+function isAnswerSupportToken(token: OcrToken, page: Page): boolean {
+  if (!page.image_height || !page.page_type.endsWith("_mcq")) return false;
+  if (token.bbox[1] < page.image_height * 0.82) return false;
+  return /[①②③④⑤⑥⑦⑧⑨⑩0-9]/.test(token.text);
 }
 
 function focusedTokenIds(card: CardCandidate | null): Set<string> {
@@ -795,6 +1187,7 @@ function candidateSubtitle(card: CardCandidate): string {
 function provenanceLabel(value: string): string {
   if (value === "answer_strip") return "answer strip";
   if (value === "local_glossary") return "review carefully";
+  if (value === "manual") return "manual";
   return value.replaceAll("_", " ");
 }
 
@@ -802,4 +1195,21 @@ function textValue(value: unknown, fallback = ""): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return fallback;
+}
+
+function numberOrEmpty(value: string): number | string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : trimmed;
+}
+
+function syncQuestionAnswerBack(card: CardCandidate, source: Record<string, unknown>): CardCandidate {
+  const answer = textValue(source.correct_answer);
+  if (!answer) return card;
+  if (card.note_type.endsWith("_exam")) {
+    const choiceNo = textValue(source.correct_choice_no, "?");
+    return { ...card, back: `정답: ${choiceNo}. ${answer}` };
+  }
+  return { ...card, back: answer };
 }

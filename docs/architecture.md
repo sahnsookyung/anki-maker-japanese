@@ -2,6 +2,51 @@
 
 This app is a local-first review pipeline for turning Japanese workbook photos into editable Anki TSV candidates. The core design choice is that OCR output is never treated as final truth: the backend creates candidates with evidence and warnings, and the frontend helps a human approve only the cards that are good enough to export.
 
+## Core OCR Strategy
+
+The repo does not fine-tune OCR models. The benchmarked path uses pretrained PaddleOCR models and gets usable structured output by separating raw recognition from deterministic post-processing:
+
+```text
+workbook image
+  -> image preprocessing
+  -> PaddleOCR Japanese text detection/recognition
+  -> optional PaddleOCR Korean recognition pass for vocab glosses
+  -> page-type classifier
+  -> vocab / MCQ extraction heuristics
+  -> local glossary normalization
+  -> reviewable Anki card candidates with visual evidence
+```
+
+For the four-page golden benchmark, the 100% match came from this OCR-plus-structure pipeline, not from PaddleOCR-VL and not from OCR fine-tuning.
+
+Important runtime settings:
+
+```env
+OCR_PROVIDER=paddle
+OCR_PROVIDER_CACHE_ENABLED=true
+PADDLE_OCR_MAX_SIDE_LEN=1600
+PADDLE_OCR_USE_DOC_ORIENTATION_CLASSIFY=false
+PADDLE_OCR_USE_DOC_UNWARPING=false
+PADDLE_OCR_USE_TEXTLINE_ORIENTATION=false
+PADDLE_OCR_TEXT_DETECTION_MODEL_NAME=PP-OCRv3_mobile_det
+PADDLE_OCR_TEXT_RECOGNITION_MODEL_NAME=japan_PP-OCRv3_mobile_rec
+PADDLE_OCR_KOREAN_TEXT_DETECTION_MODEL_NAME=PP-OCRv5_mobile_det
+PADDLE_OCR_KOREAN_TEXT_RECOGNITION_MODEL_NAME=korean_PP-OCRv5_mobile_rec
+VOCAB_DUAL_OCR_ENABLED=true
+KOREAN_GLOSSARY_PATH=backend/data/dictionaries/jlpt_basic_ko.json
+VLM_CLEANUP_ENABLED=false
+```
+
+Why this matters:
+
+- Japanese and Korean text are recognized with separate OCR passes instead of expecting one recognizer to infer both roles.
+- The measured production default uses Japanese-specific PP-OCRv3 recognition for Japanese workbook text and PP-OCRv5 Korean recognition for Korean glosses.
+- PaddleOCR emits text, bounding boxes, confidence, and script classes; app code decides what is a row, question, target, choice, answer, or Korean gloss.
+- The local Korean glossary normalizes known workbook vocabulary when OCR is partial or noisy.
+- Review state, warnings, and evidence overlays remain part of the product because benchmark accuracy is not a guarantee for arbitrary new pages.
+- PaddleOCR-VL is intentionally optional and exposed as a document-parse comparison endpoint, not the default card-generation path.
+- The backend caches OCR providers by default for UI responsiveness; benchmark scripts run pages in subprocesses so Paddle memory is released after each page.
+
 ## System Diagram
 
 ```text
@@ -60,11 +105,12 @@ This app is a local-first review pipeline for turning Japanese workbook photos i
 │ backend/app/extraction       │
 │                              │
 │ 1. preprocess image          │
-│ 2. OCR                       │
+│ 2. PaddleOCR JP/KR OCR       │
 │ 3. classify page type        │
 │ 4. extract vocab / MCQ items │
-│ 5. generate card candidates  │
-│ 6. store evidence metadata   │
+│ 5. normalize via glossary    │
+│ 6. generate card candidates  │
+│ 7. store evidence metadata   │
 └───────┬──────────────┬───────┘
         │              │
         ▼              ▼
@@ -88,11 +134,13 @@ This app is a local-first review pipeline for turning Japanese workbook photos i
    Browser calls POST /api/pages/{page_id}/process.
    Backend preprocesses the image into backend/processed.
    PaddleOCR reads the processed image and emits OCR tokens with text, bbox, confidence, script_class, and source.
+   Vocab-table pages can run a second Korean PaddleOCR pass for gloss columns.
    The classifier decides whether the page is vocab_table, reading_mcq, spelling_mcq, or unknown_review_required.
 
 3. Extract
    For vocabulary pages, the pipeline extracts surface, reading, Korean meaning, source_bbox, and evidence_tokens.
    For MCQ pages, the pipeline extracts question_no, sentence, target, choices, correct_answer, correct_choice_no, answer_source, source_bbox, evidence_tokens, and token_roles.
+   The Korean glossary can normalize known vocab/answers where OCR is noisy, with warnings when normalization affects the result.
    The card generator turns each extracted item into reviewable CardCandidate rows.
 
 4. Review
@@ -116,11 +164,11 @@ This app is a local-first review pipeline for turning Japanese workbook photos i
 
 ```text
 Tracked benchmark fixtures:
-  new upload (category 1 page).jpg
-  new upload (category 2 page).jpg
-  new upload (category 3 page).jpg
-  new upload (category 4 page).jpg
   data/evaluation/golden_pages.example.json
+  data/evaluation/new upload (category 1 page).jpg
+  data/evaluation/new upload (category 2 page).jpg
+  data/evaluation/new upload (category 3 page).jpg
+  data/evaluation/new upload (category 4 page).jpg
 
 Ignored disposable runtime state:
   backend/uploads/*

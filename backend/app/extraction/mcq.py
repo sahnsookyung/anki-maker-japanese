@@ -43,12 +43,12 @@ def extract_mcq_items(tokens: list[OcrToken], answer_map: dict[int, int], page_t
 
     for sequence_no, block in enumerate(filtered_blocks, start=1):
         choices = _extract_choices(block)
+        question_no = _question_no(block) or sequence_no
         sentence_tokens = [
             token
             for token in block
             if not _is_choice_token(token.text) and not QUESTION_NO_RE.match(_normalize_digits(token.text))
         ]
-        question_no = _question_no(sentence_tokens) or sequence_no
         sentence = _clean_sentence(text_of(sentence_tokens, " "))
         target = _guess_target(sentence_tokens, page_type)
         resolved_target, resolved_answer, resolved_choice_no = _resolve_from_glossary(sentence, choices, page_type)
@@ -151,7 +151,7 @@ def _token_role(token: OcrToken, target: str, correct_answer: str) -> str:
 
 def _extract_choices(tokens: list[OcrToken]) -> list[str]:
     ordered = sorted(tokens, key=lambda t: (t.bbox[1], t.bbox[0]))
-    found: dict[int, tuple[int, str]] = {}
+    found: dict[int, tuple[int, float, str]] = {}
     idx = 0
     while idx < len(ordered):
         token = ordered[idx]
@@ -160,14 +160,14 @@ def _extract_choices(tokens: list[OcrToken]) -> list[str]:
         chunks = _choice_chunks(text)
         if chunks:
             for number, choice in chunks:
-                _set_choice(found, number, _clean_choice(choice), priority=0)
+                _set_choice(found, number, _clean_choice(choice), priority=0, y=token.bbox[1])
         elif marker_num and _choice_text_after_marker(text):
-            _set_choice(found, marker_num, _clean_choice(_choice_text_after_marker(text)), priority=0)
-        elif marker_num and idx + 1 < len(ordered):
-            _set_choice(found, marker_num, _clean_choice(ordered[idx + 1].text), priority=1)
+            _set_choice(found, marker_num, _clean_choice(_choice_text_after_marker(text)), priority=0, y=token.bbox[1])
+        elif marker_num and idx + 1 < len(ordered) and not _is_choice_token(ordered[idx + 1].text):
+            _set_choice(found, marker_num, _clean_choice(ordered[idx + 1].text), priority=1, y=token.bbox[1])
             idx += 1
         idx += 1
-    return [found[number][1] for number in range(1, 5) if found.get(number)]
+    return [found[number][2] for number in range(1, 5) if found.get(number)]
 
 
 def _answer_source(question_no: int, answer_map: dict[int, int], resolved_choice_no: int | None) -> str:
@@ -191,6 +191,8 @@ def _guess_target(tokens: list[OcrToken], page_type: str) -> str:
 
 def _choice_marker_no(text: str) -> int | None:
     stripped = text.strip().translate(FULLWIDTH_DIGITS).lstrip("「『【[(（ \t")
+    if _looks_like_prefixed_question_text(stripped):
+        return None
     if stripped.startswith("10"):
         return None
     if stripped in CIRCLED:
@@ -207,6 +209,8 @@ def _choice_marker_no(text: str) -> int | None:
 
 def _choice_text_after_marker(text: str) -> str:
     stripped = text.strip().translate(FULLWIDTH_DIGITS).lstrip("「『【[(（ \t")
+    if _looks_like_prefixed_question_text(stripped):
+        return ""
     if not stripped or stripped[0] not in {"1", "2", "3", "4", "①", "②", "③", "④"}:
         return ""
     return stripped[1:].lstrip(" \t.．:：・-").strip()
@@ -214,6 +218,8 @@ def _choice_text_after_marker(text: str) -> str:
 
 def _choice_chunks(text: str) -> list[tuple[int, str]]:
     normalized = text.translate(FULLWIDTH_DIGITS)
+    if _looks_like_prefixed_question_text(normalized):
+        return []
     if normalized.strip().startswith("10"):
         return []
     placeholder = _choices_from_question_mark_placeholder(normalized)
@@ -234,6 +240,18 @@ def _is_choice_token(text: str) -> bool:
     return bool(_choice_marker_no(normalized) or _choice_chunks(normalized))
 
 
+def _looks_like_prefixed_question_text(text: str) -> bool:
+    stripped = text.strip()
+    match = re.match(r"^(10|[1-9])(.+)", stripped)
+    if not match:
+        return False
+    body = match.group(2).strip()
+    if not _has_hiragana(body):
+        return False
+    normalized_body = _normalize_for_match(body)
+    return "。" in body or len(normalized_body) >= 8
+
+
 def _looks_like_question_line(line: list[OcrToken]) -> bool:
     if not line:
         return False
@@ -248,12 +266,17 @@ def _looks_like_question_with_inline_choices(line: list[OcrToken]) -> bool:
     return bool(re.match(r"^(10|[1-9])", _normalize_digits(text))) and _has_japanese(text)
 
 
-def _set_choice(found: dict[int, tuple[int, str]], number: int, text: str, priority: int) -> None:
+def _set_choice(found: dict[int, tuple[int, float, str]], number: int, text: str, priority: int, y: float) -> None:
     if not text:
         return
     previous = found.get(number)
-    if previous is None or priority < previous[0] or (priority == previous[0] and len(text) < len(previous[1])):
-        found[number] = (priority, text)
+    if (
+        previous is None
+        or priority < previous[0]
+        or (priority == previous[0] and y > previous[1] + 8)
+        or (priority == previous[0] and abs(y - previous[1]) <= 8 and len(text) < len(previous[2]))
+    ):
+        found[number] = (priority, y, text)
 
 
 def _clean_choice(text: str) -> str:

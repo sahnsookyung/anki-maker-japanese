@@ -9,13 +9,13 @@ PaddleOCR 3.5.0 exposes `PaddleOCRVL` and the `doc_parser` CLI described in the 
 Useful local settings:
 
 ```bash
-PADDLE_OCR_VL_BACKEND=native
+PADDLE_OCR_VL_BACKEND=
 PADDLE_OCR_VL_MAX_PIXELS=1000000
 PADDLE_OCR_VL_MAX_NEW_TOKENS=1024
 PADDLE_OCR_VL_USE_LAYOUT_DETECTION=false
 ```
 
-For a separate server workflow, set `PADDLE_OCR_VL_BACKEND=mlx-vlm-server` or `PADDLE_OCR_VL_BACKEND=llama-cpp-server` and point `PADDLE_OCR_VL_SERVER_URL` at the OpenAI-compatible `/v1` server URL.
+Leave `PADDLE_OCR_VL_BACKEND` empty for PaddleOCR-VL's local PaddlePaddle path. For a separate server workflow, set `PADDLE_OCR_VL_BACKEND=mlx-vlm-server` or `PADDLE_OCR_VL_BACKEND=llama-cpp-server` and point `PADDLE_OCR_VL_SERVER_URL` at the OpenAI-compatible `/v1` server URL.
 
 ## Vocabulary Row
 

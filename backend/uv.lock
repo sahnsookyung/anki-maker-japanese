@@ -85,6 +85,7 @@ ocr = [
 ocr-vl = [
     { name = "paddleocr", extra = ["doc-parser"] },
     { name = "paddlepaddle" },
+    { name = "paddlex", extra = ["ocr"] },
 ]
 
 [package.dev-dependencies]
@@ -106,6 +107,7 @@ requires-dist = [
     { name = "paddleocr", extras = ["doc-parser"], marker = "extra == 'ocr-vl'", specifier = "==3.5.0" },
     { name = "paddlepaddle", marker = "extra == 'ocr'", specifier = ">=3.3,<3.4" },
     { name = "paddlepaddle", marker = "extra == 'ocr-vl'", specifier = ">=3.3,<3.4" },
+    { name = "paddlex", extras = ["ocr"], marker = "extra == 'ocr-vl'", specifier = "==3.5.1" },
     { name = "pillow", specifier = ">=10.4" },
     { name = "pydantic", specifier = ">=2.8" },
     { name = "python-dotenv", specifier = ">=1.0" },

@@ -263,10 +263,23 @@ button:disabled {
   color: var(--muted);
 }
 
-.rename {
+.page-actions {
+  display: flex;
+  gap: 0.45rem;
   margin-top: 0.4rem;
+}
+
+.rename,
+.delete-page {
+  margin-top: 0;
   padding: 0.35rem 0.65rem;
   font-size: 0.82rem;
+}
+
+.delete-page {
+  border-color: rgba(180, 59, 59, 0.28);
+  color: var(--red);
+  background: #fff6f4;
 }
 
 .image-stage {
@@ -298,39 +311,114 @@ button:disabled {
 
 .box {
   fill: transparent;
-  stroke: rgba(31, 111, 139, 0.65);
+  stroke: rgba(136, 128, 118, 0.55);
   stroke-width: 2;
   transition: opacity 160ms ease;
 }
 
-.box.dimmed {
-  opacity: 0.08;
+.box.clickable {
+  cursor: pointer;
+  pointer-events: auto;
 }
 
-.box.relevant {
+.box.scanned-unused {
+  stroke: rgba(132, 132, 132, 0.58);
+  opacity: 0.3;
+}
+
+.box.scanned-unused.token-confidence-low {
+  stroke-dasharray: 7 5;
+  opacity: 0.22;
+}
+
+.box.used-context {
+  stroke: rgba(111, 61, 155, 0.86);
+  opacity: 0.72;
+  stroke-width: 3;
+}
+
+.box.candidate-evidence {
   opacity: 1;
+  stroke-width: 4;
+  filter: drop-shadow(0 0 5px rgba(29, 26, 22, 0.28));
+}
+
+.box.selected-evidence {
+  stroke-width: 6;
+}
+
+.box.candidate-evidence.confidence-high,
+.source-region.confidence-high {
+  stroke: var(--green);
+}
+
+.box.candidate-evidence.confidence-medium,
+.source-region.confidence-medium {
+  stroke: #f0b33d;
+}
+
+.box.candidate-evidence.confidence-low,
+.source-region.confidence-low {
+  stroke: var(--red);
+}
+
+.box.candidate-evidence.confidence-unknown,
+.source-region.confidence-unknown {
   stroke: #f6e27f;
-  stroke-width: 5;
-  filter: drop-shadow(0 0 5px rgba(246, 226, 127, 0.7));
-}
-
-.box.hangul {
-  stroke: rgba(47, 125, 85, 0.85);
-}
-
-.box.kanji {
-  stroke: rgba(180, 59, 59, 0.85);
 }
 
 .source-region {
-  fill: rgba(246, 226, 127, 0.16);
-  stroke: #f6e27f;
+  fill: rgba(246, 226, 127, 0.12);
   stroke-width: 6;
   filter: drop-shadow(0 0 8px rgba(246, 226, 127, 0.7));
 }
 
 .segmented {
   justify-content: flex-end;
+}
+
+.overlay-legend {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.45rem 0.7rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.overlay-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+}
+
+.legend-dot {
+  display: inline-block;
+  width: 0.75rem;
+  height: 0.75rem;
+  border: 2px solid currentColor;
+  border-radius: 0.18rem;
+}
+
+.legend-dot.selected-high {
+  color: var(--green);
+}
+
+.legend-dot.selected-medium {
+  color: #f0b33d;
+}
+
+.legend-dot.selected-low {
+  color: var(--red);
+}
+
+.legend-dot.used-context {
+  color: rgba(111, 61, 155, 0.95);
+}
+
+.legend-dot.scanned-unused {
+  color: rgba(132, 132, 132, 0.72);
 }
 
 .segmented button,
@@ -373,16 +461,45 @@ button:disabled {
   gap: 0.85rem;
 }
 
+.candidate-section {
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  background: rgba(255, 250, 240, 0.62);
+  padding: 0.45rem;
+}
+
+.candidate-section summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 700;
+  padding: 0.35rem 0.45rem;
+}
+
+.candidate-section-body {
+  display: grid;
+  gap: 0.85rem;
+  padding-top: 0.45rem;
+}
+
 .candidate {
   border: 1px solid var(--line);
   border-left-width: 0.5rem;
   border-radius: 1.1rem;
   background: white;
   padding: 0.85rem;
+  cursor: pointer;
 }
 
 .candidate.selected {
   outline: 3px solid rgba(31, 111, 139, 0.2);
+  cursor: default;
+}
+
+.candidate.collapsed {
+  padding-bottom: 0.75rem;
 }
 
 .candidate.green {
@@ -416,6 +533,38 @@ button:disabled {
 
 .candidate-select:hover {
   box-shadow: none;
+}
+
+.candidate-fold-note {
+  margin: 0.65rem 0 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.candidate-actions {
+  gap: 0.9rem;
+  margin-top: 1rem;
+}
+
+.question-source-editor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  border: 1px solid rgba(31, 111, 139, 0.18);
+  border-radius: 1rem;
+  background: #f5fbfd;
+  margin-top: 0.85rem;
+  padding: 0.85rem;
+}
+
+.question-source-editor legend {
+  color: var(--accent-2);
+  font-weight: 700;
+  padding: 0 0.35rem;
+}
+
+.question-source-editor label:nth-of-type(2) {
+  grid-column: 1 / -1;
 }
 
 .badge {
@@ -590,5 +739,9 @@ textarea {
 
   .hero h1 {
     font-size: clamp(2.2rem, 14vw, 4rem);
+  }
+
+  .question-source-editor {
+    grid-template-columns: 1fr;
   }
 }

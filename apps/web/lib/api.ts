@@ -159,6 +159,10 @@ export async function updatePage(pageId: string, displayName: string): Promise<P
   });
 }
 
+export async function deletePage(pageId: string): Promise<{ page_id: string; status: string }> {
+  return requestJson<{ page_id: string; status: string }>(`/api/pages/${pageId}`, { method: "DELETE" });
+}
+
 export async function approveCard(cardId: string): Promise<CardCandidate> {
   return requestJson<CardCandidate>(`/api/cards/${cardId}/approve`, { method: "POST" });
 }

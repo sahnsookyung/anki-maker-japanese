@@ -7,7 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
-from app.core.config import EXPORT_DIR, OCR_COMPARE_PROVIDER, UPLOAD_DIR
+from app.core.config import CROP_DIR, EXPORT_DIR, OCR_COMPARE_PROVIDER, PROCESSED_DIR, UPLOAD_DIR
 from app.core.ids import new_id
 from app.db import database
 from app.export.tsv import write_tsv
@@ -74,6 +74,18 @@ def update_page(page_id: str, patch: PageUpdate) -> Page:
     if not updated:
         raise HTTPException(status_code=404, detail=PAGE_NOT_FOUND)
     return updated
+
+
+@router.delete("/pages/{page_id}", responses={404: RESPONSES[404]})
+def delete_page(page_id: str) -> dict[str, str]:
+    page = database.get_page(page_id)
+    if not page:
+        raise HTTPException(status_code=404, detail=PAGE_NOT_FOUND)
+    database.delete_page(page_id)
+    _delete_runtime_file(page.original_image_path, UPLOAD_DIR)
+    _delete_runtime_file(page.processed_image_path, PROCESSED_DIR)
+    _delete_page_crops(page_id)
+    return {"page_id": page_id, "status": "deleted"}
 
 
 @router.post("/pages/{page_id}/process", responses={404: RESPONSES[404]})
@@ -184,3 +196,23 @@ def download_export(filename: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail=EXPORT_NOT_FOUND)
     return FileResponse(path, media_type="text/tab-separated-values; charset=utf-8", filename=filename)
+
+
+def _delete_runtime_file(path_value: str | None, allowed_dir: Path) -> None:
+    if not path_value:
+        return
+    path = Path(path_value)
+    try:
+        if path.is_file() and path.resolve().parent == allowed_dir.resolve():
+            path.unlink()
+    except OSError:
+        return
+
+
+def _delete_page_crops(page_id: str) -> None:
+    for crop_path in CROP_DIR.glob(f"*{page_id}*"):
+        try:
+            if crop_path.is_file():
+                crop_path.unlink()
+        except OSError:
+            continue

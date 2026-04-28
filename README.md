@@ -6,7 +6,17 @@ The app intentionally creates candidates, not trusted final decks. OCR output is
 
 ## Quick Start
 
-Backend:
+One-command local dev:
+
+```bash
+cd apps/web
+npm install
+npm run dev
+```
+
+`npm run dev` starts the FastAPI backend on `127.0.0.1:8000` when it is not already running, waits for `/api/health`, then starts Next.js on `127.0.0.1:3000`.
+
+Manual backend:
 
 ```bash
 cd backend
@@ -14,7 +24,7 @@ uv sync --group dev --extra ocr
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
-Frontend:
+Manual frontend:
 
 ```bash
 cd apps/web
@@ -80,7 +90,7 @@ Optional dictionary validation reads `DICTIONARY_PATH`, a JSON array shaped like
 
 ## Sample Images
 
-The four `new upload (category N page).jpg` files are canonical benchmark fixtures. Other uploaded images, processed images, crops, exports, and SQLite databases are local runtime artifacts and can be deleted safely.
+The four `data/evaluation/new upload (category N page).jpg` files are canonical benchmark fixtures. Other uploaded images, processed images, crops, exports, and SQLite databases are local runtime artifacts and can be deleted safely.
 
 The app accepts uploads from the browser. Uploaded pages can be renamed in the UI; renaming changes only display metadata and does not rename image files on disk.
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from PIL import Image
 
 from app.core.images import _resize_if_needed
+from app.ocr import paddle_provider
 from app.ocr.paddle_provider import PaddleOcrProvider
 
 
@@ -21,3 +22,27 @@ def test_paddle_box_to_bbox_handles_rectangles_and_polygons() -> None:
 
     assert provider._box_to_bbox([10, 20, 30, 40]) == [10.0, 20.0, 30.0, 40.0]
     assert provider._box_to_bbox([[10, 20], [30, 20], [30, 40], [10, 40]]) == [10.0, 20.0, 30.0, 40.0]
+
+
+def test_paddle_box_to_bbox_scales_back_to_processed_image_coordinates() -> None:
+    provider = PaddleOcrProvider.__new__(PaddleOcrProvider)
+
+    assert provider._box_to_bbox([100, 200, 300, 400], scale_x=1.125, scale_y=1.125) == [
+        112.5,
+        225.0,
+        337.5,
+        450.0,
+    ]
+
+
+def test_paddle_load_image_returns_manual_resize_scale(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(paddle_provider, "PADDLE_OCR_MAX_SIDE_LEN", 1600)
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (1800, 900), "white").save(image_path)
+    provider = PaddleOcrProvider.__new__(PaddleOcrProvider)
+
+    image, scale_x, scale_y = provider._load_image(image_path)
+
+    assert image.shape[:2] == (800, 1600)
+    assert scale_x == 1.125
+    assert scale_y == 1.125

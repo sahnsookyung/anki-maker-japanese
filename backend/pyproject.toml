@@ -27,6 +27,7 @@ ocr = [
 ]
 ocr-vl = [
   "paddleocr[doc-parser]==3.5.0",
+  "paddlex[ocr]==3.5.1",
   "paddlepaddle>=3.3,<3.4",
 ]
 cloud = [

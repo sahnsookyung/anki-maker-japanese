@@ -48,7 +48,8 @@ class PaddleOcrProvider:
         )
 
     def recognize(self, image_path: Path, page_id: str) -> list[OcrToken]:
-        result = self._ocr.predict(self._load_image(image_path), **self._predict_kwargs)
+        image, scale_x, scale_y = self._load_image(image_path)
+        result = self._ocr.predict(image, **self._predict_kwargs)
         tokens: list[OcrToken] = []
         for page in result or []:
             texts = list(page.get("rec_texts") or [])
@@ -59,7 +60,7 @@ class PaddleOcrProvider:
             if hasattr(boxes, "tolist"):
                 boxes = boxes.tolist()
             for text, confidence, box in zip(texts, scores, boxes):
-                bbox = self._box_to_bbox(box)
+                bbox = self._box_to_bbox(box, scale_x=scale_x, scale_y=scale_y)
                 if bbox is None:
                     continue
                 token = make_token(page_id, str(text), bbox, float(confidence), self.name)
@@ -73,6 +74,7 @@ class PaddleOcrProvider:
 
         image = Image.open(image_path)
         image = ImageOps.exif_transpose(image).convert("RGB")
+        original_width, original_height = image.size
         longest_side = max(image.width, image.height)
         if PADDLE_OCR_MAX_SIDE_LEN > 0 and longest_side > PADDLE_OCR_MAX_SIDE_LEN:
             scale = PADDLE_OCR_MAX_SIDE_LEN / float(longest_side)
@@ -82,19 +84,26 @@ class PaddleOcrProvider:
             )
             resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
             image = image.resize(new_size, resample=resampling)
-        return np.array(image)
+        scale_x = original_width / float(image.width)
+        scale_y = original_height / float(image.height)
+        return np.array(image), scale_x, scale_y
 
-    def _box_to_bbox(self, box) -> list[float] | None:
+    def _box_to_bbox(self, box, *, scale_x: float = 1.0, scale_y: float = 1.0) -> list[float] | None:
         if box is None:
             return None
         if len(box) == 4 and not isinstance(box[0], (list, tuple)):
-            return [float(box[0]), float(box[1]), float(box[2]), float(box[3])]
+            return [
+                float(box[0]) * scale_x,
+                float(box[1]) * scale_y,
+                float(box[2]) * scale_x,
+                float(box[3]) * scale_y,
+            ]
 
         xs = [float(point[0]) for point in box]
         ys = [float(point[1]) for point in box]
         if not xs or not ys:
             return None
-        return [min(xs), min(ys), max(xs), max(ys)]
+        return [min(xs) * scale_x, min(ys) * scale_y, max(xs) * scale_x, max(ys) * scale_y]
 
 
 class PaddleKoreanOcrProvider(PaddleOcrProvider):

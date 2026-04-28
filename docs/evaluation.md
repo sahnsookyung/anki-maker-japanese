@@ -4,6 +4,26 @@ Use a small golden set to measure whether OCR and extraction changes are actuall
 
 Start with 10-20 rows per page, not the whole page. Pick rows that are visually clear and cover both columns, multiple kana sections, simple Korean glosses, and at least a few multi-word meanings.
 
+## What The Benchmark Measures
+
+The current 100% benchmark match was achieved with pretrained PaddleOCR plus deterministic extraction code. There was no OCR model fine-tuning.
+
+The evaluated path is:
+
+```text
+image preprocessing
+  -> PaddleOCR Japanese OCR
+  -> optional PaddleOCR Korean OCR for vocab glosses
+  -> page classification
+  -> vocab / MCQ extraction
+  -> local Korean glossary normalization
+  -> golden JSON comparison
+```
+
+PaddleOCR-VL, Google Cloud Vision, Ollama, and llama.cpp are comparison or optional cleanup paths. They are not part of the default benchmarked card-generation path unless explicitly enabled.
+
+Interpret the benchmark as regression coverage for the four canonical workbook pages, not as a claim that arbitrary new pages will be perfect. New uploads still need focused evidence review, warnings, and approval before export.
+
 ## Format
 
 The starter file is:
@@ -12,12 +32,12 @@ The starter file is:
 data/evaluation/golden_pages.example.json
 ```
 
-The current benchmark set covers four canonical fixture images in the repo root:
+The current benchmark set covers four canonical fixture images:
 
-- `new upload (category 1 page).jpg`
-- `new upload (category 2 page).jpg`
-- `new upload (category 3 page).jpg`
-- `new upload (category 4 page).jpg`
+- `data/evaluation/new upload (category 1 page).jpg`
+- `data/evaluation/new upload (category 2 page).jpg`
+- `data/evaluation/new upload (category 3 page).jpg`
+- `data/evaluation/new upload (category 4 page).jpg`
 
 Do not treat generated uploads, processed images, crops, exports, or SQLite databases as benchmark fixtures. Those files are disposable runtime state and are intentionally ignored by Git.
 

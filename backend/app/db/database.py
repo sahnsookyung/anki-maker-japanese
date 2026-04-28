@@ -151,6 +151,14 @@ def get_page(page_id: str) -> Page | None:
     return _page_from_row(row) if row else None
 
 
+def delete_page(page_id: str) -> bool:
+    with connect() as conn:
+        conn.execute("DELETE FROM ocr_tokens WHERE page_id = ?", (page_id,))
+        conn.execute("DELETE FROM cards WHERE page_id = ?", (page_id,))
+        cursor = conn.execute("DELETE FROM pages WHERE id = ?", (page_id,))
+        return cursor.rowcount > 0
+
+
 def replace_tokens(page_id: str, tokens: list[OcrToken]) -> None:
     with connect() as conn:
         conn.execute("DELETE FROM ocr_tokens WHERE page_id = ?", (page_id,))

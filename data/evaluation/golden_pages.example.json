@@ -3,7 +3,7 @@
   "pages": [
     {
       "page_id": "new_upload_category_1_page",
-      "image_path": "new upload (category 1 page).jpg",
+      "image_path": "data/evaluation/new upload (category 1 page).jpg",
       "category": "vocab_table",
       "expected_page_type": "vocab_table",
       "notes": "Clearer two-column vocabulary page. Rows below are a small golden subset, not the whole page.",
@@ -314,7 +314,7 @@
     },
     {
       "page_id": "new_category_2_reading_mcq_page",
-      "image_path": "new upload (category 2 page).jpg",
+      "image_path": "data/evaluation/new upload (category 2 page).jpg",
       "category": "reading_mcq",
       "expected_page_type": "reading_mcq",
       "stub": false,
@@ -487,7 +487,7 @@
     },
     {
       "page_id": "new_category_3_spelling_vocab_page",
-      "image_path": "new upload (category 3 page).jpg",
+      "image_path": "data/evaluation/new upload (category 3 page).jpg",
       "category": "spelling_vocab_table",
       "expected_page_type": "vocab_table",
       "stub": false,
@@ -701,7 +701,7 @@
     },
     {
       "page_id": "new_category_4_spelling_mcq_page",
-      "image_path": "new upload (category 4 page).jpg",
+      "image_path": "data/evaluation/new upload (category 4 page).jpg",
       "category": "spelling_mcq",
       "expected_page_type": "spelling_mcq",
       "stub": false,
