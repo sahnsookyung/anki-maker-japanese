@@ -82,7 +82,7 @@ def run_document_parse_worker(
 
 
 def _run_worker_command(cmd: list[str], *, timeout_seconds: float, max_rss_mb: float) -> subprocess.CompletedProcess[str]:
-    process = subprocess.Popen(  # NOSONAR: command vector uses this Python executable plus internal module arguments only.
+    process = subprocess.Popen(  # NOSONAR
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

@@ -1427,6 +1427,57 @@ function CardEditor({
       role={selected ? undefined : "button"}
       tabIndex={selected ? undefined : 0}
     >
+      <CandidateHeader
+        card={card}
+        draft={draft}
+        provenance={provenance}
+        reviewBadges={reviewBadges}
+        warnings={warnings}
+        onSelect={onSelect}
+      />
+      <SourceSummary card={card} />
+
+      {selected ? (
+        <CandidateBody
+          card={card}
+          draft={draft}
+          selectedField={selectedField}
+          regionDraft={regionDraft}
+          fieldPreview={fieldPreview}
+          isPreviewingField={isPreviewingField}
+          onDraftChange={setDraft}
+          onSelectField={onSelectField}
+          onRegionDraftChange={onRegionDraftChange}
+          onPreviewField={onPreviewField}
+          onApplyFieldPreview={onApplyFieldPreview}
+          onCancelFieldPreview={onCancelFieldPreview}
+          onChange={onChange}
+          onToggleApproval={onToggleApproval}
+        />
+      ) : (
+        <p className="candidate-fold-note">Click anywhere on this candidate to review and approve it.</p>
+      )}
+    </article>
+  );
+}
+
+function CandidateHeader({
+  card,
+  draft,
+  provenance,
+  reviewBadges,
+  warnings,
+  onSelect
+}: Readonly<{
+  card: CardCandidate;
+  draft: CardCandidate;
+  provenance: string;
+  reviewBadges: string[];
+  warnings: string[];
+  onSelect: () => void;
+}>) {
+  return (
+    <>
       <button
         className="candidate-select"
         onClick={(event) => {
@@ -1451,64 +1502,89 @@ function CardEditor({
         </div>
       </button>
       {warnings.length ? <WarningList warnings={warnings} compact /> : null}
-      <SourceSummary card={card} />
+    </>
+  );
+}
 
-      {selected ? (
-        <div className="candidate-body">
-          <FieldEvidenceControls
-            card={draft}
-            selectedField={selectedField}
-            regionDraft={regionDraft}
-            fieldPreview={fieldPreview}
-            isPreviewingField={isPreviewingField}
-            onSelectField={(field) => onSelectField(field, draft)}
-            onRegionDraftChange={onRegionDraftChange}
-            onPreviewField={onPreviewField}
-            onApplyFieldPreview={onApplyFieldPreview}
-            onCancelFieldPreview={onCancelFieldPreview}
-          />
-          {card.source_type === "question_item" ? (
-            <QuestionSourceEditor card={draft} onChange={setDraft} />
-          ) : null}
-          <label>
-            <span>Front</span>
-            <textarea value={draft.front} onChange={(event) => setDraft({ ...draft, front: event.target.value })} />
-          </label>
-          <label>
-            <span>Back</span>
-            <textarea value={draft.back} onChange={(event) => setDraft({ ...draft, back: event.target.value })} />
-          </label>
-          <label>
-            <span>Tags</span>
-            <input
-              value={draft.tags.join(" ")}
-              onChange={(event) => setDraft({ ...draft, tags: event.target.value.split(/\s+/).filter(Boolean) })}
-            />
-          </label>
-          <label>
-            <span>Review state</span>
-            <select
-              value={draft.review_state}
-              onChange={(event) =>
-                setDraft({ ...draft, review_state: event.target.value as CardCandidate["review_state"] })
-              }
-            >
-              <option value="green">Green: exportable after approval</option>
-              <option value="yellow">Yellow: needs review</option>
-              <option value="red">Red: block from export</option>
-            </select>
-          </label>
-          <div className="actions candidate-actions">
-            <button className="secondary" onClick={() => void onChange(draft)}>Save edits</button>
-            <button onClick={() => void onToggleApproval(draft)} disabled={draft.review_state === "red"}>
-              {draft.status === "approved" ? "Unapprove" : "Approve"}
-            </button>
-          </div>
-        </div>
-      ) : (
-        <p className="candidate-fold-note">Click anywhere on this candidate to review and approve it.</p>
-      )}
-    </article>
+function CandidateBody({
+  card,
+  draft,
+  selectedField,
+  regionDraft,
+  fieldPreview,
+  isPreviewingField,
+  onDraftChange,
+  onSelectField,
+  onRegionDraftChange,
+  onPreviewField,
+  onApplyFieldPreview,
+  onCancelFieldPreview,
+  onChange,
+  onToggleApproval
+}: Readonly<{
+  card: CardCandidate;
+  draft: CardCandidate;
+  selectedField: string | null;
+  regionDraft: FieldRegionDraft | null;
+  fieldPreview: FieldOcrPreview | null;
+  isPreviewingField: boolean;
+  onDraftChange: (card: CardCandidate) => void;
+  onSelectField: (field: string, card?: CardCandidate | null) => void;
+  onRegionDraftChange: (draft: FieldRegionDraft) => void;
+  onPreviewField: () => void;
+  onApplyFieldPreview: () => void;
+  onCancelFieldPreview: () => void;
+  onChange: (card: CardCandidate) => Promise<void>;
+  onToggleApproval: (card: CardCandidate) => Promise<void>;
+}>) {
+  return (
+    <div className="candidate-body">
+      <FieldEvidenceControls
+        card={draft}
+        selectedField={selectedField}
+        regionDraft={regionDraft}
+        fieldPreview={fieldPreview}
+        isPreviewingField={isPreviewingField}
+        onSelectField={(field) => onSelectField(field, draft)}
+        onRegionDraftChange={onRegionDraftChange}
+        onPreviewField={onPreviewField}
+        onApplyFieldPreview={onApplyFieldPreview}
+        onCancelFieldPreview={onCancelFieldPreview}
+      />
+      {card.source_type === "question_item" ? <QuestionSourceEditor card={draft} onChange={onDraftChange} /> : null}
+      <label>
+        <span>Front</span>
+        <textarea value={draft.front} onChange={(event) => onDraftChange({ ...draft, front: event.target.value })} />
+      </label>
+      <label>
+        <span>Back</span>
+        <textarea value={draft.back} onChange={(event) => onDraftChange({ ...draft, back: event.target.value })} />
+      </label>
+      <label>
+        <span>Tags</span>
+        <input
+          value={draft.tags.join(" ")}
+          onChange={(event) => onDraftChange({ ...draft, tags: event.target.value.split(/\s+/).filter(Boolean) })}
+        />
+      </label>
+      <label>
+        <span>Review state</span>
+        <select
+          value={draft.review_state}
+          onChange={(event) => onDraftChange({ ...draft, review_state: event.target.value as CardCandidate["review_state"] })}
+        >
+          <option value="green">Green: exportable after approval</option>
+          <option value="yellow">Yellow: needs review</option>
+          <option value="red">Red: block from export</option>
+        </select>
+      </label>
+      <div className="actions candidate-actions">
+        <button className="secondary" onClick={() => void onChange(draft)}>Save edits</button>
+        <button onClick={() => void onToggleApproval(draft)} disabled={draft.review_state === "red"}>
+          {draft.status === "approved" ? "Unapprove" : "Approve"}
+        </button>
+      </div>
+    </div>
   );
 }
 
