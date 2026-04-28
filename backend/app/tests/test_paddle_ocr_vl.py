@@ -36,7 +36,7 @@ def test_paddle_ocr_vl_blocks_convert_to_normalized_tokens() -> None:
     result = DocumentParseResult(
         page_id="page-vl",
         provider="paddleocr_vl",
-        source_image_path="/tmp/page.png",
+        source_image_path="test-fixtures/page.png",
         backend="fake",
         block_count=1,
         blocks=[
@@ -61,7 +61,7 @@ def test_paddle_ocr_vl_markdown_without_boxes_uses_synthetic_token_boxes() -> No
     result = DocumentParseResult(
         page_id="page-vl",
         provider="paddleocr_vl",
-        source_image_path="/tmp/page.png",
+        source_image_path="test-fixtures/page.png",
         backend="fake",
         block_count=0,
         markdown_text="学校 がっこう 학교",

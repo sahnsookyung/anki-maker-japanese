@@ -58,5 +58,15 @@ def _extract_locative_phrase(text: str, subject: str) -> str:
 
 
 def _extract_subject_phrase(text: str) -> str:
-    match = re.search(r"([ぁ-んァ-ン一-龯]+?が)", text)
-    return match.group(1) if match else ""
+    for index, character in enumerate(text):
+        if character != "が" or index == 0:
+            continue
+        start = index - 1
+        while start > 0 and _is_japanese_phrase_character(text[start - 1]):
+            start -= 1
+        return text[start : index + 1]
+    return ""
+
+
+def _is_japanese_phrase_character(character: str) -> bool:
+    return "\u3040" <= character <= "\u309f" or "\u30a0" <= character <= "\u30ff" or "\u4e00" <= character <= "\u9faf"

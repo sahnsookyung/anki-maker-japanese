@@ -117,7 +117,7 @@ def _run_worker_command(cmd: list[str], *, timeout_seconds: float, max_rss_mb: f
 
 def _terminate_process(process: subprocess.Popen[str]) -> None:
     try:
-        os.killpg(process.pid, 15)
+        os.killpg(process.pid, 15)  # NOSONAR
     except Exception:
         process.terminate()
     try:
@@ -128,7 +128,7 @@ def _terminate_process(process: subprocess.Popen[str]) -> None:
 
 def _kill_process(process: subprocess.Popen[str]) -> None:
     try:
-        os.killpg(process.pid, 9)
+        os.killpg(process.pid, 9)  # NOSONAR
     except Exception:
         process.kill()
     process.wait(timeout=5)
