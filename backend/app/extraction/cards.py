@@ -15,6 +15,10 @@ def review_state(confidence: float, warnings: list[str], blocked: bool = False) 
     return "green"
 
 
+def _unique(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(values))
+
+
 def vocab_cards(page_id: str, item: dict[str, Any]) -> list[CardCandidate]:
     surface = item.get("surface", "")
     reading = item.get("reading", "")
@@ -92,6 +96,7 @@ def mcq_cards(page_id: str, item: dict[str, Any]) -> list[CardCandidate]:
     if item.get("answer_source") in {"unknown", "model_inferred"}:
         blocked = True
         warnings.append("Answer source is not export-safe.")
+    warnings = _unique(warnings)
     state = review_state(confidence, warnings, blocked)
     source_id = item.get("id", new_id("q"))
     source = {**item, "id": source_id}

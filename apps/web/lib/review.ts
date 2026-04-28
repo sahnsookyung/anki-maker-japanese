@@ -34,6 +34,13 @@ export function isHighConfidenceCard(card: CardCandidate): boolean {
   return card.review_state === "green" && card.warnings.length === 0 && card.confidence >= HIGH_CONFIDENCE_THRESHOLD;
 }
 
+export function reviewQualityClass(card: CardCandidate | null): string {
+  if (!card) return "confidence-unknown";
+  if (card.review_state === "red") return "confidence-low";
+  if (card.review_state === "yellow" || card.warnings.length > 0) return "confidence-medium";
+  return confidenceClass(card);
+}
+
 export function cardForToken(cards: CardCandidate[], token: OcrToken): CardCandidate | null {
   return (
     cards.find((card) => focusedTokenIds(card).has(token.id)) ??
@@ -56,8 +63,8 @@ export function tokenDisplayClass(
   linkedCard: CardCandidate | null,
   relevant: boolean,
 ): string {
-  if (relevant) return `candidate-evidence selected-evidence ${confidenceClass(selectedCard)}`;
-  if (linkedCard) return `candidate-evidence ${confidenceClass(linkedCard)}`;
+  if (relevant) return `candidate-evidence selected-evidence ${reviewQualityClass(selectedCard)}`;
+  if (linkedCard) return `candidate-evidence ${reviewQualityClass(linkedCard)}`;
   if (isAnswerSupportToken(token, page)) return "used-context answer-support";
   return `scanned-unused token-confidence-${tokenConfidenceClass(token.confidence)}`;
 }
@@ -162,7 +169,7 @@ export function candidateTitle(card: CardCandidate): string {
 }
 
 export function candidateSubtitle(card: CardCandidate): string {
-  return `${card.note_type} · ${Math.round(card.confidence * 100)}% confidence`;
+  return `${card.note_type} · OCR ${Math.round(card.confidence * 100)}%`;
 }
 
 export function provenanceLabel(value: string): string {
@@ -193,4 +200,15 @@ export function syncQuestionAnswerBack(card: CardCandidate, source: Record<strin
     return { ...card, back: `정답: ${choiceNo}. ${answer}` };
   }
   return { ...card, back: answer };
+}
+
+export function choicesFromText(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((choice) => choice.trim())
+    .filter(Boolean);
+}
+
+export function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
 }

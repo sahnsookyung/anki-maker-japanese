@@ -6,6 +6,7 @@ import {
   candidateTitle,
   cardForToken,
   cardMatchesFilter,
+  choicesFromText,
   clamp,
   confidenceClass,
   evidenceSummary,
@@ -16,6 +17,7 @@ import {
   isHighConfidenceCard,
   numberOrEmpty,
   provenanceLabel,
+  reviewQualityClass,
   sourceBbox,
   summarizeCards,
   syncQuestionAnswerBack,
@@ -25,6 +27,7 @@ import {
   tokenInside,
   tokenTitle,
   unionBoxes,
+  uniqueStrings,
   warningKey,
   workflowClass
 } from "../../lib/review";
@@ -35,6 +38,8 @@ describe("StudyWorkbench evidence helpers", () => {
     expect(confidenceClass(candidate({ confidence: 0.92, review_state: "red" }))).toBe("confidence-high");
     expect(confidenceClass(candidate({ confidence: 0.89 }))).toBe("confidence-medium");
     expect(confidenceClass(candidate({ confidence: 0.74 }))).toBe("confidence-low");
+    expect(reviewQualityClass(candidate({ confidence: 1, review_state: "red" }))).toBe("confidence-low");
+    expect(reviewQualityClass(candidate({ confidence: 0.95, warnings: ["Expected exactly four choices."] }))).toBe("confidence-medium");
   });
 
   it("links OCR tokens to candidates by source bbox when evidence token ids are missing", () => {
@@ -83,7 +88,7 @@ describe("StudyWorkbench evidence helpers", () => {
     const token = ocrToken({ text: "1①", bbox: [10, 900, 20, 920], confidence: 0.72 });
 
     expect(tokenDisplayClass(token, page, selected, selected, true)).toContain("selected-evidence confidence-high");
-    expect(tokenDisplayClass(token, page, null, candidate({ confidence: 0.8 }), false)).toBe("candidate-evidence confidence-medium");
+    expect(tokenDisplayClass(token, page, null, candidate({ confidence: 1, review_state: "red" }), false)).toBe("candidate-evidence confidence-low");
     expect(tokenDisplayClass(token, page, null, null, false)).toBe("used-context answer-support");
     expect(tokenDisplayClass(ocrToken({ text: "abc", confidence: 0.5 }), appPage(), null, null, false)).toBe(
       "scanned-unused token-confidence-low"
@@ -138,7 +143,7 @@ describe("StudyWorkbench evidence helpers", () => {
 
     expect(candidateTitle(vocab)).toBe("学校 · がっこう");
     expect(candidateTitle(question)).toBe("Question 6 · なまえ");
-    expect(candidateSubtitle(question)).toBe("jp_spelling_mcq_exam · 92% confidence");
+    expect(candidateSubtitle(question)).toBe("jp_spelling_mcq_exam · OCR 92%");
     expect(provenanceLabel("answer_strip")).toBe("answer strip");
     expect(provenanceLabel("local_glossary")).toBe("review carefully");
     expect(provenanceLabel("manual")).toBe("manual");
@@ -148,6 +153,8 @@ describe("StudyWorkbench evidence helpers", () => {
     expect(numberOrEmpty("")).toBe("");
     expect(numberOrEmpty("7")).toBe(7);
     expect(numberOrEmpty("oops")).toBe("oops");
+    expect(choicesFromText(" 天気 \n\n夫気\n夫气 ")).toEqual(["天気", "夫気", "夫气"]);
+    expect(uniqueStrings(["a", "a", "b"])).toEqual(["a", "b"]);
     expect(syncQuestionAnswerBack(question, question.source).back).toBe("정답: 2. 名前");
     expect(syncQuestionAnswerBack({ ...question, note_type: "jp_spelling_mcq_recall" }, question.source).back).toBe("名前");
     expect(syncQuestionAnswerBack(question, { correct_answer: "" }).back).toBe(question.back);

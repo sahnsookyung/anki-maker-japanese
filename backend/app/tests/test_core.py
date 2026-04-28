@@ -10,6 +10,7 @@ from app.core.script import classify_script
 from app.api import routes
 from app.db import database
 from app.extraction.answer_strip import parse_answer_strip_text
+from app.extraction.cards import mcq_cards
 from app.extraction.mcq import extract_mcq_items
 from app.export.tsv import clean_tsv_field
 from app.models.schemas import CardCandidate, OcrToken, Page
@@ -82,6 +83,28 @@ def test_mcq_extraction_keeps_number_prefixed_question_sentences() -> None:
     assert items[1]["confidence"] > 0.9
     assert items[2]["choices"] == ["大く", "太く", "広く", "多く"]
     assert items[3]["correct_answer"] == "立って"
+
+
+def test_mcq_cards_deduplicate_structural_warnings() -> None:
+    [card, _] = mcq_cards(
+        "page-1",
+        {
+            "id": "q-1",
+            "question_type": "spelling_mcq",
+            "sentence": "あしたのてんきははれるでしょう。",
+            "target": "てんき",
+            "choices": ["天気", "夫気", "夫气"],
+            "correct_choice_no": 1,
+            "correct_answer": "天気",
+            "bbox": [1, 2, 3, 4],
+            "confidence": 1.0,
+            "warnings": ["Expected exactly four choices."],
+            "answer_source": "answer_strip",
+        },
+    )
+
+    assert card.review_state == "red"
+    assert card.warnings == ["Expected exactly four choices."]
 
 
 def test_tsv_cleaning() -> None:

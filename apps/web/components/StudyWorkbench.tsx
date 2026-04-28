@@ -27,7 +27,7 @@ import {
   cardMatchesFilter,
   candidateSubtitle,
   candidateTitle,
-  confidenceClass,
+  choicesFromText,
   evidenceSummary,
   evidenceViewBox,
   focusBbox,
@@ -35,6 +35,7 @@ import {
   isHighConfidenceCard,
   numberOrEmpty,
   provenanceLabel,
+  reviewQualityClass,
   sourceBbox,
   summarizeCards,
   syncQuestionAnswerBack,
@@ -42,6 +43,7 @@ import {
   tokenDisplayClass,
   tokenInside,
   tokenTitle,
+  uniqueStrings,
   warningKey,
   workflowClass
 } from "../lib/review";
@@ -675,7 +677,7 @@ function TokenOverlay({
   if (!page?.image_width || !page.image_height || mode === "off") return null;
   const relevantIds = focusedTokenIds(card);
   const sourceBox = sourceBbox(card);
-  const selectedConfidenceClass = confidenceClass(card);
+  const selectedConfidenceClass = reviewQualityClass(card);
   const filteredTokens = activeFilters.size
     ? tokens.filter((token) => activeFilters.has(token.script_class) || activeFilters.has(token.source))
     : tokens;
@@ -740,19 +742,14 @@ function CandidateList({
   if (!grouped) {
     return (
       <div className="candidate-list">
-        {cards.map((card) => (
-          <CardEditor
-            key={card.id}
-            card={card}
-            selected={card.id === selectedCard?.id}
-            cardRef={(element) => {
-              cardRefs.current[card.id] = element;
-            }}
-            onSelect={() => onSelect(card)}
-            onChange={onChange}
-            onToggleApproval={onToggleApproval}
-          />
-        ))}
+        <CandidateGroups
+          cards={cards}
+          selectedCard={selectedCard}
+          cardRefs={cardRefs}
+          onSelect={onSelect}
+          onChange={onChange}
+          onToggleApproval={onToggleApproval}
+        />
       </div>
     );
   }
@@ -812,22 +809,57 @@ function CandidateSection({
         <b>{cards.length}</b>
       </summary>
       <div className="candidate-section-body">
-        {cards.map((card) => (
-          <CardEditor
-            key={card.id}
-            card={card}
-            selected={card.id === selectedCard?.id}
-            cardRef={(element) => {
-              cardRefs.current[card.id] = element;
-            }}
-            onSelect={() => onSelect(card)}
-            onChange={onChange}
-            onToggleApproval={onToggleApproval}
-          />
-        ))}
+        <CandidateGroups
+          cards={cards}
+          selectedCard={selectedCard}
+          cardRefs={cardRefs}
+          onSelect={onSelect}
+          onChange={onChange}
+          onToggleApproval={onToggleApproval}
+        />
       </div>
     </details>
   );
+}
+
+function CandidateGroups({
+  cards,
+  selectedCard,
+  cardRefs,
+  onSelect,
+  onChange,
+  onToggleApproval
+}: Readonly<{
+  cards: CardCandidate[];
+  selectedCard: CardCandidate | null;
+  cardRefs: MutableRefObject<Record<string, HTMLElement | null>>;
+  onSelect: (card: CardCandidate, scrollTarget?: CardScrollTarget) => void;
+  onChange: (card: CardCandidate) => Promise<void>;
+  onToggleApproval: (card: CardCandidate) => Promise<void>;
+}>) {
+  return sourceGroups(cards).map((group) => (
+    <div className="candidate-group" key={group.key}>
+      {group.cards.length > 1 ? (
+        <div className="candidate-group-title">
+          <strong>{candidateTitle(group.cards[0])}</strong>
+          <span>{group.cards.length} Anki note variants</span>
+        </div>
+      ) : null}
+      {group.cards.map((card) => (
+        <CardEditor
+          key={card.id}
+          card={card}
+          selected={card.id === selectedCard?.id}
+          cardRef={(element) => {
+            cardRefs.current[card.id] = element;
+          }}
+          onSelect={() => onSelect(card)}
+          onChange={onChange}
+          onToggleApproval={onToggleApproval}
+        />
+      ))}
+    </div>
+  ));
 }
 
 function CardEditor({
@@ -849,10 +881,11 @@ function CardEditor({
   useEffect(() => setDraft(card), [card]);
   const source = card.source;
   const provenance = textValue(source.answer_source);
+  const warnings = uniqueStrings(draft.warnings);
   return (
     <article
       ref={cardRef}
-      className={`candidate ${draft.review_state} ${confidenceClass(draft)} ${selected ? "selected" : "collapsed"}`}
+      className={`candidate ${draft.review_state} ${reviewQualityClass(draft)} ${selected ? "selected" : "collapsed"}`}
       onClick={onSelect}
     >
       <button
@@ -875,6 +908,7 @@ function CardEditor({
           </div>
         </div>
       </button>
+      {warnings.length ? <WarningList warnings={warnings} compact /> : null}
       <SourceSummary card={card} />
 
       {selected ? (
@@ -910,7 +944,6 @@ function CardEditor({
               <option value="red">Red: block from export</option>
             </select>
           </label>
-          {draft.warnings.length ? <WarningList warnings={draft.warnings} compact /> : null}
           <div className="actions candidate-actions">
             <button className="secondary" onClick={() => void onChange(draft)}>Save edits</button>
             <button onClick={() => void onToggleApproval(draft)} disabled={draft.review_state === "red"}>
@@ -936,6 +969,19 @@ function QuestionSourceEditor({
   function updateSource(field: string, value: string) {
     const nextSource = { ...source, [field]: field === "question_no" || field === "correct_choice_no" ? numberOrEmpty(value) : value };
     const nextCard = syncQuestionAnswerBack({ ...card, source: nextSource }, nextSource);
+    onChange(nextCard);
+  }
+
+  function updateChoices(value: string) {
+    const choices = choicesFromText(value);
+    const choiceNo = Number(source.correct_choice_no);
+    const correctAnswer = Number.isInteger(choiceNo) && choices[choiceNo - 1] ? choices[choiceNo - 1] : source.correct_answer;
+    const nextSource = { ...source, choices, correct_answer: correctAnswer };
+    const nextWarnings = choices.length === 4
+      ? card.warnings.filter((warning) => !warning.includes("exactly four choices"))
+      : uniqueStrings([...card.warnings, "Expected exactly four choices."]);
+    const nextState = choices.length === 4 && card.review_state === "red" ? "yellow" : card.review_state;
+    const nextCard = syncQuestionAnswerBack({ ...card, source: nextSource, warnings: nextWarnings, review_state: nextState }, nextSource);
     onChange(nextCard);
   }
 
@@ -965,6 +1011,13 @@ function QuestionSourceEditor({
       <label>
         <span>Correct answer</span>
         <input value={textValue(source.correct_answer)} onChange={(event) => updateSource("correct_answer", event.target.value)} />
+      </label>
+      <label className="choice-editor">
+        <span>Choices (one per line)</span>
+        <textarea
+          value={Array.isArray(source.choices) ? source.choices.map(String).join("\n") : ""}
+          onChange={(event) => updateChoices(event.target.value)}
+        />
       </label>
       <label>
         <span>Answer source</span>
@@ -1004,7 +1057,7 @@ function SourceSummary({ card }: Readonly<{ card: CardCandidate }>) {
 function WarningList({ warnings, compact = false }: Readonly<{ warnings: string[]; compact?: boolean }>) {
   return (
     <div className={compact ? "warnings compact" : "warnings"}>
-      {warnings.map((warning, index) => (
+      {uniqueStrings(warnings).map((warning, index) => (
         <p key={warningKey(warning, index)}>{warning}</p>
       ))}
     </div>
@@ -1045,4 +1098,13 @@ function pageTitle(page: Page): string {
 
 function pageTypeLabel(type: string): string {
   return PAGE_TYPE_LABELS[type] ?? type.replaceAll("_", " ");
+}
+
+function sourceGroups(cards: CardCandidate[]): Array<{ key: string; cards: CardCandidate[] }> {
+  const groups = new Map<string, CardCandidate[]>();
+  for (const card of cards) {
+    const key = `${card.source_type}:${card.source_id}`;
+    groups.set(key, [...(groups.get(key) ?? []), card]);
+  }
+  return [...groups.entries()].map(([key, groupCards]) => ({ key, cards: groupCards }));
 }

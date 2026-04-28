@@ -484,6 +484,28 @@ button:disabled {
   padding-top: 0.45rem;
 }
 
+.candidate-group {
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid rgba(56, 45, 31, 0.1);
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.44);
+  padding: 0.45rem;
+}
+
+.candidate-group-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  color: var(--muted);
+  font-size: 0.86rem;
+  padding: 0.1rem 0.35rem;
+}
+
+.candidate-group-title strong {
+  color: var(--ink);
+}
+
 .candidate {
   border: 1px solid var(--line);
   border-left-width: 0.5rem;
@@ -580,6 +602,10 @@ button:disabled {
 }
 
 .question-source-editor label:nth-of-type(2) {
+  grid-column: 1 / -1;
+}
+
+.question-source-editor .choice-editor {
   grid-column: 1 / -1;
 }
 
