@@ -9,7 +9,9 @@ The repo does not fine-tune OCR models. The benchmarked path uses pretrained Pad
 ```text
 workbook image
   -> image preprocessing
-  -> PaddleOCR Japanese text detection/recognition
+  -> selected OCR engine
+     -> default: PaddleOCR Japanese text detection/recognition
+     -> optional: PaddleOCR-VL document blocks converted to normalized OCR tokens
   -> optional PaddleOCR Korean recognition pass for vocab glosses
   -> page-type classifier
   -> vocab / MCQ extraction heuristics
@@ -44,7 +46,8 @@ Why this matters:
 - PaddleOCR emits text, bounding boxes, confidence, and script classes; app code decides what is a row, question, target, choice, answer, or Korean gloss.
 - The local Korean glossary normalizes known workbook vocabulary when OCR is partial or noisy.
 - Review state, warnings, and evidence overlays remain part of the product because benchmark accuracy is not a guarantee for arbitrary new pages.
-- PaddleOCR-VL is intentionally optional and exposed as a document-parse comparison endpoint, not the default card-generation path.
+- PaddleOCR-VL is optional and can be run as a card-generation engine, but it remains visually separated from the default PaddleOCR path and is scored honestly in benchmarks.
+- OCR-VL diagnostics are still separate from processing: document-block preview does not create, approve, or export cards.
 - The backend caches OCR providers by default for UI responsiveness; benchmark scripts run pages in subprocesses so Paddle memory is released after each page.
 
 ## System Diagram
@@ -56,7 +59,8 @@ Why this matters:
 │                              │
 │ - Upload pages               │
 │ - Rename pages               │
-│ - Process pages              │
+│ - Process with PaddleOCR     │
+│ - Optional OCR-VL processing │
 │ - Review focused evidence    │
 │ - Edit / approve candidates  │
 │ - Export approved TSV        │
@@ -71,6 +75,8 @@ Why this matters:
 │ - /api/pages                 │
 │ - /api/pages/upload          │
 │ - /api/pages/{id}/process    │
+│   ?engine=paddleocr|paddleocr_vl
+│ - /api/pages/dedupe          │
 │ - /api/pages/{id}/ocr        │
 │ - /api/pages/{id}/cards      │
 │ - /api/cards/{id}            │
@@ -105,7 +111,7 @@ Why this matters:
 │ backend/app/extraction       │
 │                              │
 │ 1. preprocess image          │
-│ 2. PaddleOCR JP/KR OCR       │
+│ 2. OCR engine normalization  │
 │ 3. classify page type        │
 │ 4. extract vocab / MCQ items │
 │ 5. normalize via glossary    │
@@ -115,9 +121,9 @@ Why this matters:
         │              │
         ▼              ▼
 ┌──────────────┐   ┌────────────────────┐
-│ Local OCR    │   │ Optional Comparers │
+│ OCR Engines  │   │ Diagnostics        │
 │ PaddleOCR    │   │ Google Vision      │
-│ Japanese OCR │   │ PaddleOCR-VL       │
+│ PaddleOCR-VL │   │ VL block preview   │
 │ Korean OCR   │   │ Ollama / llama.cpp │
 └──────────────┘   └────────────────────┘
 ```
@@ -132,8 +138,9 @@ Why this matters:
 
 2. Process
    Browser calls POST /api/pages/{page_id}/process.
+   The default engine is `paddleocr`; passing `engine=paddleocr_vl` runs the heavier OCR-VL candidate-generation path.
    Backend preprocesses the image into backend/processed.
-   PaddleOCR reads the processed image and emits OCR tokens with text, bbox, confidence, script_class, and source.
+   The selected OCR engine emits normalized OCR tokens with text, bbox, confidence, script_class, and source.
    Vocab-table pages can run a second Korean PaddleOCR pass for gloss columns.
    The classifier decides whether the page is vocab_table, reading_mcq, spelling_mcq, or unknown_review_required.
 
@@ -235,28 +242,68 @@ CardCandidate
       target
       choice
       answer
+
+  source.field_evidence
+    Field-level evidence for editable facts:
+      surface / reading / meaning_ko
+      question_no / sentence / target
+      choice_1..choice_4 / correct_answer / answer_source
 ```
 
 The UI highlight priority is:
 
 ```text
-1. Highlight token ids in source.evidence_tokens.
-2. If token ids are unavailable, highlight source_bbox.
-3. If neither exists, show a no-focused-evidence message and allow All OCR mode for debugging.
+1. Highlight the selected field's source.field_evidence token ids or bbox.
+2. Fall back to source.evidence_tokens for the selected candidate.
+3. Fall back to source_bbox for the selected candidate.
+4. If neither exists, show a no-focused-evidence message and allow All OCR mode for debugging.
 ```
 
-## Optional Comparison Paths
+## Field OCR Correction
 
-The default local processing path is PaddleOCR plus deterministic extraction. Optional tools are intentionally separate:
+Manual correction is field-first. When a user selects a candidate field in the review UI, the app focuses the matching evidence box. The user can drag or resize that box, preview OCR for only that field, then apply the suggestion to the editable source data.
+
+```text
+selected card field
+  -> source.field_evidence bbox
+  -> POST /api/cards/{card_id}/field-ocr/preview
+  -> supervised CropOcrWorker process
+  -> PaddleOCR on the crop
+  -> suggested source patch
+  -> user applies via PATCH /api/cards/{card_id}
+```
+
+The crop OCR worker is deliberately outside the FastAPI process. It starts lazily, stays warm for repeated crop previews, and offloads after an idle timeout or memory-limit breach. Full-page OCR, OCR comparison, PaddleOCR-VL parsing, and crop OCR share a runtime lock so the app does not accidentally run multiple heavy OCR jobs at once.
+
+Default crop field providers:
+
+```text
+meaning_ko -> paddle_korean
+all other fields -> OCR_PROVIDER
+```
+
+## OCR Engines And Diagnostics
+
+The default local processing path is PaddleOCR plus deterministic extraction. OCR-VL is supported in two distinct ways:
+
+```text
+Process with OCR-VL
+  Calls /api/pages/{page_id}/process?engine=paddleocr_vl.
+  Converts PaddleOCR-VL document blocks/markdown into normalized OCR tokens.
+  Generates review candidates through the same extractor/card pipeline.
+
+Preview OCR-VL document blocks
+  Calls /api/pages/{page_id}/document/parse.
+  Shows raw document-parser blocks for diagnostics.
+  Does not create or approve Anki cards.
+```
+
+Other optional tools are intentionally separate:
 
 ```text
 Google Cloud Vision
   Used through /api/pages/{page_id}/ocr/compare.
   Compares cloud OCR tokens against stored local OCR tokens.
-
-PaddleOCR-VL
-  Used through /api/pages/{page_id}/document/parse.
-  Gives a document-parser view for comparison and future experiments.
 
 Ollama / llama.cpp
   Used only when VLM_CLEANUP_ENABLED=true.
@@ -264,6 +311,21 @@ Ollama / llama.cpp
 ```
 
 This separation keeps the normal local workflow lower-memory and easier to debug.
+
+## Benchmark Semantics
+
+MCQ benchmark output now reports two useful scores:
+
+```text
+semantic_accuracy
+  Whether the generated Anki card has the correct target, answer, and correct choice number.
+
+source_field_accuracy
+  Whether the OCR source details also match the human transcript:
+  sentence, target, choices, correct answer, and correct choice number.
+```
+
+This is deliberate. A card can be semantically correct and exportable while still carrying noisy source fields that deserve review in the UI.
 
 ## Verification Loop
 
@@ -273,9 +335,13 @@ Use these checks after meaningful changes:
 cd backend
 uv run pytest -q
 uv run python scripts/evaluate_golden.py
+uv run python scripts/evaluate_golden.py --from-db --json
+uv run python scripts/benchmark_ocr_modes.py --json
+uv run python scripts/benchmark_ocr_modes.py --engine all --vl-limit 1 --worker-max-rss-mb 4096 --json
 uv run python -m compileall app scripts
 
 cd ../apps/web
+npm run test:coverage
 npm run lint
 npm run build
 ```

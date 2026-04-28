@@ -7,6 +7,8 @@ import pytest
 
 from app.vision import paddle_ocr_vl
 from app.vision.paddle_ocr_vl import PaddleOcrVlDocumentParser, _blocks_from_payload, _normalized_vl_backend
+from app.models.schemas import DocumentParseBlock, DocumentParseResult
+from app.ocr.engines import normalize_ocr_engine, tokens_from_document_parse
 
 
 def test_blocks_from_paddle_ocr_vl_payload() -> None:
@@ -28,6 +30,56 @@ def test_blocks_from_paddle_ocr_vl_payload() -> None:
     assert blocks[0].content == "学校 がっこう 학교"
     assert blocks[0].bbox == [10, 20, 200, 60]
     assert blocks[0].order == 1
+
+
+def test_paddle_ocr_vl_blocks_convert_to_normalized_tokens() -> None:
+    result = DocumentParseResult(
+        page_id="page-vl",
+        provider="paddleocr_vl",
+        source_image_path="/tmp/page.png",
+        backend="fake",
+        block_count=1,
+        blocks=[
+            DocumentParseBlock(
+                label="text",
+                content="2 まいにち あたらしい かんじを いつつ おぼえます。\n1 新しい 2 新しい 3 新い 4 新い",
+                bbox=[10, 20, 410, 90],
+                order=1,
+            )
+        ],
+    )
+
+    tokens, warnings = tokens_from_document_parse(result)
+
+    assert warnings == []
+    assert [token.source for token in tokens] == ["paddleocr_vl"] * len(tokens)
+    assert "まいにち" in [token.text for token in tokens]
+    assert tokens[0].bbox[0] == 10
+
+
+def test_paddle_ocr_vl_markdown_without_boxes_uses_synthetic_token_boxes() -> None:
+    result = DocumentParseResult(
+        page_id="page-vl",
+        provider="paddleocr_vl",
+        source_image_path="/tmp/page.png",
+        backend="fake",
+        block_count=0,
+        markdown_text="学校 がっこう 학교",
+    )
+
+    tokens, warnings = tokens_from_document_parse(result)
+
+    assert [token.text for token in tokens] == ["学校", "がっこう", "학교"]
+    assert warnings == [
+        "PaddleOCR-VL output was converted to synthetic OCR boxes; use it for text quality comparison, not precise evidence geometry."
+    ]
+
+
+def test_normalize_ocr_engine_aliases() -> None:
+    assert normalize_ocr_engine("base") == "paddleocr"
+    assert normalize_ocr_engine("vl") == "paddleocr_vl"
+    with pytest.raises(ValueError, match="Unsupported OCR engine"):
+        normalize_ocr_engine("mystery")
 
 
 def test_native_backend_alias_uses_local_paddlepaddle_default(monkeypatch) -> None:

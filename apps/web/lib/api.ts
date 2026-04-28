@@ -22,6 +22,7 @@ export function resolveApiBase(configuredBase?: string): string {
 export type Page = {
   id: string;
   original_image_path: string;
+  upload_name?: string | null;
   display_name?: string | null;
   processed_image_path?: string | null;
   page_type: string;
@@ -62,6 +63,31 @@ export type CardCandidate = {
   warnings: string[];
 };
 
+export type FieldOcrPreview = {
+  card_id: string;
+  page_id: string;
+  field: string;
+  bbox: number[];
+  provider: string;
+  text: string;
+  confidence: number;
+  tokens: OcrToken[];
+  suggested_source: Record<string, unknown>;
+  field_evidence: Record<string, unknown>;
+  worker: Record<string, unknown>;
+  warnings: string[];
+};
+
+export type OcrRuntimeStatus = {
+  state: string;
+  pid?: number | null;
+  loaded_provider?: string | null;
+  idle_deadline?: string | null;
+  current_rss_mb?: number | null;
+  jobs_handled: number;
+  last_error?: string | null;
+};
+
 export type ProcessResult = {
   page: Page;
   tokens: OcrToken[];
@@ -69,6 +95,8 @@ export type ProcessResult = {
   script_summary: Record<string, number>;
   answer_map: Record<string, number>;
 };
+
+export type OcrEngine = "paddleocr" | "paddleocr_vl";
 
 export type OcrComparison = {
   primary_provider: string;
@@ -147,8 +175,9 @@ export async function uploadImages(files: File[]): Promise<BatchUploadResult> {
   return { uploaded, failed };
 }
 
-export async function processPage(pageId: string): Promise<ProcessResult> {
-  return requestJson<ProcessResult>(`/api/pages/${pageId}/process`, { method: "POST" });
+export async function processPage(pageId: string, engine: OcrEngine = "paddleocr"): Promise<ProcessResult> {
+  const engineQuery = engine === "paddleocr" ? "" : `?engine=${encodeURIComponent(engine)}`;
+  return requestJson<ProcessResult>(`/api/pages/${pageId}/process${engineQuery}`, { method: "POST" });
 }
 
 export async function updatePage(pageId: string, displayName: string): Promise<Page> {
@@ -163,6 +192,12 @@ export async function deletePage(pageId: string): Promise<{ page_id: string; sta
   return requestJson<{ page_id: string; status: string }>(`/api/pages/${pageId}`, { method: "DELETE" });
 }
 
+export async function dedupePages(): Promise<{ removed_count: number; removed: Array<{ page_id: string; kept_page_id: string }> }> {
+  return requestJson<{ removed_count: number; removed: Array<{ page_id: string; kept_page_id: string }> }>("/api/pages/dedupe", {
+    method: "POST"
+  });
+}
+
 export async function approveCard(cardId: string): Promise<CardCandidate> {
   return requestJson<CardCandidate>(`/api/cards/${cardId}/approve`, { method: "POST" });
 }
@@ -175,10 +210,21 @@ export async function updateCard(card: CardCandidate): Promise<CardCandidate> {
       front: card.front,
       back: card.back,
       tags: card.tags,
+      confidence: card.confidence,
       status: card.status,
       review_state: card.review_state,
-      source: card.source
+      source: card.source,
+      source_bbox: card.source_bbox,
+      warnings: card.warnings
     })
+  });
+}
+
+export async function previewFieldOcr(cardId: string, field: string, bbox: number[]): Promise<FieldOcrPreview> {
+  return requestJson<FieldOcrPreview>(`/api/cards/${cardId}/field-ocr/preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ field, bbox })
   });
 }
 
@@ -210,6 +256,10 @@ export async function compareOcr(pageId: string, provider = "google_vision"): Pr
 
 export async function parseDocument(pageId: string): Promise<DocumentParseResult> {
   return requestJson<DocumentParseResult>(`/api/pages/${pageId}/document/parse`, { method: "POST" });
+}
+
+export async function getOcrRuntime(): Promise<OcrRuntimeStatus> {
+  return apiGet<OcrRuntimeStatus>("/api/ocr/runtime");
 }
 
 export function imageUrl(path?: string | null): string | null {

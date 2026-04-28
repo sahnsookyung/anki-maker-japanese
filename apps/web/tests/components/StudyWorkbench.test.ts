@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   bboxFromSource,
+  applyFieldOcrPreview,
   candidateSubtitle,
   candidateTitle,
   cardForToken,
@@ -9,14 +10,21 @@ import {
   choicesFromText,
   clamp,
   confidenceClass,
+  editableFieldBbox,
   evidenceSummary,
   evidenceViewBox,
+  fieldBbox,
+  fieldLabel,
+  fieldNamesForCard,
   focusBbox,
   focusedTokenIds,
+  focusedTokenIdsForField,
+  initialReviewCardId,
   isAnswerSupportToken,
   isHighConfidenceCard,
   numberOrEmpty,
   provenanceLabel,
+  reviewReasonBadges,
   reviewQualityClass,
   sourceBbox,
   summarizeCards,
@@ -49,6 +57,34 @@ describe("StudyWorkbench evidence helpers", () => {
     expect(cardForToken([card], token)?.id).toBe(card.id);
   });
 
+  it("links and focuses field-level evidence before falling back to source evidence", () => {
+    const card = candidate({
+      source: {
+        evidence_tokens: ["source-token"],
+        field_evidence: {
+          target: { bbox: [30, 40, 80, 90], token_ids: ["target-token"], text: "上" }
+        }
+      },
+      source_bbox: [0, 0, 200, 200]
+    });
+    const target = ocrToken({ id: "target-token", bbox: [32, 42, 78, 88] });
+    const source = ocrToken({ id: "source-token", bbox: [5, 5, 15, 15] });
+
+    expect(fieldNamesForCard(card)).toContain("target");
+    expect(fieldLabel("choice_3")).toBe("Choice 3");
+    expect(fieldBbox(card, "target")).toEqual([30, 40, 80, 90]);
+    expect(editableFieldBbox(card, "target")).toEqual([30, 40, 80, 90]);
+    expect(editableFieldBbox(card, "target", { cardId: card.id, field: "target", bbox: [1, 2, 3, 4] })).toEqual([
+      1, 2, 3, 4
+    ]);
+    expect(editableFieldBbox(candidate({ source: {}, source_bbox: [9, 10, 11, 12] }), "target")).toEqual([
+      9, 10, 11, 12
+    ]);
+    expect([...focusedTokenIdsForField(card, "target")]).toEqual(["target-token"]);
+    expect(focusBbox(card, [target, source], "target")).toEqual([32, 42, 78, 88]);
+    expect(cardForToken([card], target)?.id).toBe(card.id);
+  });
+
   it("keeps duplicate warning React keys unique", () => {
     const warning = "Page contour confidence was low; using full image.";
 
@@ -67,6 +103,9 @@ describe("StudyWorkbench evidence helpers", () => {
     expect(cardMatchesFilter(green, "all")).toBe(true);
     expect(isHighConfidenceCard(green)).toBe(true);
     expect(isHighConfidenceCard({ ...green, warnings: ["manual review"] })).toBe(false);
+    expect(initialReviewCardId([green, yellow])).toBe("yellow");
+    expect(initialReviewCardId([green])).toBe("green");
+    expect(initialReviewCardId([])).toBeNull();
   });
 
   it("marks workflow steps complete only when their prerequisites exist", () => {
@@ -137,16 +176,16 @@ describe("StudyWorkbench evidence helpers", () => {
       note_type: "jp_vocab_reading"
     });
     const question = candidate({
-      note_type: "jp_spelling_mcq_exam",
+      note_type: "jp_spelling_mcq_recall",
       source: { question_no: 6, target: "なまえ", correct_answer: "名前", correct_choice_no: 2 }
     });
 
     expect(candidateTitle(vocab)).toBe("学校 · がっこう");
     expect(candidateTitle(question)).toBe("Question 6 · なまえ");
-    expect(candidateSubtitle(question)).toBe("jp_spelling_mcq_exam · OCR 92%");
-    expect(provenanceLabel("answer_strip")).toBe("answer strip");
-    expect(provenanceLabel("local_glossary")).toBe("review carefully");
-    expect(provenanceLabel("manual")).toBe("manual");
+    expect(candidateSubtitle(question)).toBe("jp_spelling_mcq_recall · OCR 92%");
+    expect(provenanceLabel("answer_strip")).toBe("Answer key");
+    expect(provenanceLabel("local_glossary")).toBe("Glossary inferred");
+    expect(provenanceLabel("manual")).toBe("Manual edit");
     expect(provenanceLabel("model_inferred")).toBe("model inferred");
     expect(textValue(true)).toBe("true");
     expect(textValue(null, "fallback")).toBe("fallback");
@@ -155,9 +194,44 @@ describe("StudyWorkbench evidence helpers", () => {
     expect(numberOrEmpty("oops")).toBe("oops");
     expect(choicesFromText(" 天気 \n\n夫気\n夫气 ")).toEqual(["天気", "夫気", "夫气"]);
     expect(uniqueStrings(["a", "a", "b"])).toEqual(["a", "b"]);
-    expect(syncQuestionAnswerBack(question, question.source).back).toBe("정답: 2. 名前");
-    expect(syncQuestionAnswerBack({ ...question, note_type: "jp_spelling_mcq_recall" }, question.source).back).toBe("名前");
+    expect(syncQuestionAnswerBack({ ...question, note_type: "jp_spelling_mcq_exam" }, question.source).back).toBe("정답: 2. 名前");
+    expect(syncQuestionAnswerBack(question, question.source).back).toBe("名前");
     expect(syncQuestionAnswerBack(question, { correct_answer: "" }).back).toBe(question.back);
+  });
+
+  it("separates provenance labels from review reason badges", () => {
+    expect(reviewReasonBadges(candidate({ warnings: ["Expected exactly four choices."] }))).toEqual(["Missing choice"]);
+    expect(reviewReasonBadges(candidate({ confidence: 0.72 }))).toEqual(["Low OCR confidence"]);
+    expect(reviewReasonBadges(candidate({ source: { answer_source: "local_glossary" }, warnings: [] }))).toEqual([]);
+  });
+
+  it("applies field OCR previews to source, evidence, and derived answer text", () => {
+    const card = candidate({
+      source: { choices: ["天気", "夫気"], correct_choice_no: 2, correct_answer: "夫気" },
+      warnings: ["Could not extract exactly four choices."],
+      review_state: "red"
+    });
+
+    const updated = applyFieldOcrPreview(card, {
+      card_id: card.id,
+      page_id: card.page_id,
+      field: "choice_2",
+      bbox: [10, 20, 30, 40],
+      provider: "paddle",
+      text: "天気",
+      confidence: 0.97,
+      tokens: [],
+      suggested_source: { choices: ["天気", "天気", "", ""], correct_answer: "天気" },
+      field_evidence: { bbox: [10, 20, 30, 40], text: "天気" },
+      worker: { state: "running" },
+      warnings: []
+    });
+
+    expect(updated.source.choices).toEqual(["天気", "天気", "", ""]);
+    expect(updated.source.correct_answer).toBe("天気");
+    expect(updated.source.field_evidence).toMatchObject({ choice_2: { text: "天気" } });
+    expect(updated.back).toBe("天気");
+    expect(updated.warnings).toEqual([]);
   });
 
   it("summarizes evidence availability", () => {

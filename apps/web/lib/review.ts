@@ -1,4 +1,4 @@
-import type { CardCandidate, OcrToken, Page } from "./api";
+import type { CardCandidate, FieldOcrPreview, OcrToken, Page } from "./api";
 
 export type ReviewFilter = "all" | "needs_review" | "approved" | "green" | "yellow" | "red";
 
@@ -34,6 +34,10 @@ export function isHighConfidenceCard(card: CardCandidate): boolean {
   return card.review_state === "green" && card.warnings.length === 0 && card.confidence >= HIGH_CONFIDENCE_THRESHOLD;
 }
 
+export function initialReviewCardId(cards: CardCandidate[]): string | null {
+  return cards.find((card) => !isHighConfidenceCard(card))?.id ?? cards[0]?.id ?? null;
+}
+
 export function reviewQualityClass(card: CardCandidate | null): string {
   if (!card) return "confidence-unknown";
   if (card.review_state === "red") return "confidence-low";
@@ -44,6 +48,7 @@ export function reviewQualityClass(card: CardCandidate | null): string {
 export function cardForToken(cards: CardCandidate[], token: OcrToken): CardCandidate | null {
   return (
     cards.find((card) => focusedTokenIds(card).has(token.id)) ??
+    cards.find((card) => allFieldTokenIds(card).has(token.id)) ??
     cards.find((card) => {
       const bbox = sourceBbox(card);
       return bbox ? tokenInside(token, bbox) : false;
@@ -94,15 +99,23 @@ export function isAnswerSupportToken(token: OcrToken, page: Page): boolean {
 }
 
 export function focusedTokenIds(card: CardCandidate | null): Set<string> {
+  return focusedTokenIdsForField(card, null);
+}
+
+export function focusedTokenIdsForField(card: CardCandidate | null, field: string | null): Set<string> {
+  if (field) {
+    const tokens = fieldEvidence(card, field)?.token_ids;
+    if (Array.isArray(tokens)) return new Set(tokens.filter((token): token is string => typeof token === "string"));
+  }
   const tokens = card?.source.evidence_tokens;
   if (!Array.isArray(tokens)) return new Set();
   return new Set(tokens.filter((token): token is string => typeof token === "string"));
 }
 
-export function focusBbox(card: CardCandidate | null, tokens: OcrToken[]): number[] | null {
-  const relevantIds = focusedTokenIds(card);
+export function focusBbox(card: CardCandidate | null, tokens: OcrToken[], field: string | null = null): number[] | null {
+  const relevantIds = focusedTokenIdsForField(card, field);
   const relevantBoxes = tokens.filter((token) => relevantIds.has(token.id)).map((token) => token.bbox);
-  return unionBoxes(relevantBoxes) ?? sourceBbox(card);
+  return unionBoxes(relevantBoxes) ?? fieldBbox(card, field) ?? sourceBbox(card);
 }
 
 export function sourceBbox(card: CardCandidate | null): number[] | null {
@@ -147,6 +160,46 @@ export function bboxFromSource(source: Record<string, unknown> | undefined): num
   return bbox.every((value) => typeof value === "number") ? bbox : null;
 }
 
+export function fieldEvidence(card: CardCandidate | null, field: string | null): Record<string, unknown> | null {
+  if (!card || !field) return null;
+  const evidence = card.source.field_evidence;
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) return null;
+  const value = (evidence as Record<string, unknown>)[field];
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+export function fieldBbox(card: CardCandidate | null, field: string | null): number[] | null {
+  const bbox = fieldEvidence(card, field)?.bbox;
+  return Array.isArray(bbox) && bbox.length === 4 && bbox.every((value) => typeof value === "number") ? bbox : null;
+}
+
+export function editableFieldBbox(
+  card: CardCandidate | null,
+  field: string | null,
+  draft?: { cardId?: string; field?: string; bbox?: unknown } | null
+): number[] | null {
+  if (card && field && draft?.cardId === card.id && draft.field === field) {
+    const bbox = draft.bbox;
+    if (Array.isArray(bbox) && bbox.length === 4 && bbox.every((value) => typeof value === "number")) return bbox;
+  }
+  return fieldBbox(card, field) ?? sourceBbox(card);
+}
+
+export function allFieldTokenIds(card: CardCandidate | null): Set<string> {
+  const ids = new Set<string>();
+  const evidence = card?.source.field_evidence;
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) return ids;
+  Object.values(evidence).forEach((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return;
+    const tokenIds = (item as Record<string, unknown>).token_ids;
+    if (!Array.isArray(tokenIds)) return;
+    tokenIds.forEach((token) => {
+      if (typeof token === "string") ids.add(token);
+    });
+  });
+  return ids;
+}
+
 export function tokenInside(token: OcrToken, bbox: number[]): boolean {
   const [x1, y1, x2, y2] = bbox;
   const cx = (token.bbox[0] + token.bbox[2]) / 2;
@@ -161,6 +214,51 @@ export function evidenceSummary(card: CardCandidate): string {
   return "Select another candidate or switch to All OCR for debugging.";
 }
 
+export function fieldNamesForCard(card: CardCandidate): string[] {
+  if (card.source_type === "vocab_item") return ["surface", "reading", "meaning_ko"];
+  return [
+    "sentence",
+    "target",
+    "choice_1",
+    "choice_2",
+    "choice_3",
+    "choice_4",
+    "correct_answer",
+    "question_no",
+    "answer_source"
+  ];
+}
+
+export function fieldLabel(field: string): string {
+  if (field.startsWith("choice_")) return `Choice ${field.replace("choice_", "")}`;
+  return field.replaceAll("_", " ");
+}
+
+export function applyFieldOcrPreview(card: CardCandidate, preview: FieldOcrPreview): CardCandidate {
+  const source = { ...card.source, ...preview.suggested_source };
+  const currentEvidence = source.field_evidence;
+  const fieldEvidenceMap =
+    currentEvidence && typeof currentEvidence === "object" && !Array.isArray(currentEvidence)
+      ? { ...(currentEvidence as Record<string, unknown>) }
+      : {};
+  fieldEvidenceMap[preview.field] = preview.field_evidence;
+  source.field_evidence = fieldEvidenceMap;
+  const nextWarnings = uniqueStrings([
+    ...card.warnings.filter((warning) => !(preview.field.startsWith("choice_") && warning.includes("four choices"))),
+    ...preview.warnings
+  ]);
+  const next = syncQuestionAnswerBack({ ...card, source, warnings: nextWarnings, confidence: preview.confidence || card.confidence }, source);
+  if (preview.field === "sentence" || preview.field === "target") {
+    return { ...next, front: questionFront(next) };
+  }
+  return next;
+}
+
+export function questionFront(card: CardCandidate): string {
+  const prompt = card.note_type.includes("reading_mcq") ? "읽는 법?" : "올바른 표기는?";
+  return `${textValue(card.source.sentence)}<br><br>밑줄: ${textValue(card.source.target)}<br>${prompt}`;
+}
+
 export function candidateTitle(card: CardCandidate): string {
   if (card.source_type === "vocab_item") {
     return `${textValue(card.source.surface, "Vocab")} · ${textValue(card.source.reading)}`;
@@ -173,10 +271,22 @@ export function candidateSubtitle(card: CardCandidate): string {
 }
 
 export function provenanceLabel(value: string): string {
-  if (value === "answer_strip") return "answer strip";
-  if (value === "local_glossary") return "review carefully";
-  if (value === "manual") return "manual";
+  if (value === "answer_strip") return "Answer key";
+  if (value === "local_glossary") return "Glossary inferred";
+  if (value === "manual") return "Manual edit";
   return value.replaceAll("_", " ");
+}
+
+export function reviewReasonBadges(card: CardCandidate): string[] {
+  const badges: string[] = [];
+  const warningText = card.warnings.join(" ");
+  if (/four choices|exactly four choices|Missing choice/i.test(warningText)) badges.push("Missing choice");
+  if (/target/i.test(warningText)) badges.push("Target unclear");
+  if (/Answer source|Correct choice is missing|not export-safe/i.test(warningText)) badges.push("Needs answer");
+  if (card.confidence < REVIEW_CONFIDENCE_THRESHOLD) badges.push("Low OCR confidence");
+  if (card.review_state === "red" && !badges.length) badges.push("Blocked");
+  if (card.review_state === "yellow" && !badges.length) badges.push("Needs review");
+  return uniqueStrings(badges);
 }
 
 export function textValue(value: unknown, fallback = ""): string {

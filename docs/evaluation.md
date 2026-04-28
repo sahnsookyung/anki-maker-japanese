@@ -8,19 +8,21 @@ Start with 10-20 rows per page, not the whole page. Pick rows that are visually 
 
 The current 100% benchmark match was achieved with pretrained PaddleOCR plus deterministic extraction code. There was no OCR model fine-tuning.
 
-The evaluated path is:
+The default evaluated path is:
 
 ```text
 image preprocessing
-  -> PaddleOCR Japanese OCR
-  -> optional PaddleOCR Korean OCR for vocab glosses
+  -> selected OCR engine
+     -> default: PaddleOCR Japanese OCR
+     -> optional: PaddleOCR-VL normalized document blocks
+  -> optional PaddleOCR Korean OCR for vocab glosses when using base OCR
   -> page classification
   -> vocab / MCQ extraction
   -> local Korean glossary normalization
   -> golden JSON comparison
 ```
 
-PaddleOCR-VL, Google Cloud Vision, Ollama, and llama.cpp are comparison or optional cleanup paths. They are not part of the default benchmarked card-generation path unless explicitly enabled.
+PaddleOCR is still the production default because it is faster and currently scores better locally. PaddleOCR-VL is now supported as a real processing engine through the same normalized OCR interface, but it is benchmarked honestly and may fail locally if the model exceeds the configured memory cap. Google Cloud Vision, Ollama, and llama.cpp remain diagnostics or optional comparison paths; they do not create or approve cards.
 
 Interpret the benchmark as regression coverage for the four canonical workbook pages, not as a claim that arbitrary new pages will be perfect. New uploads still need focused evidence review, warnings, and approval before export.
 
@@ -79,6 +81,7 @@ For MCQ pages, annotate:
 - `sentence`
 - `target`
 - `choices`
+- `correct_answer`
 - `correct_choice_no`
 - `answer_source`
 
@@ -105,12 +108,16 @@ Track these separately:
 - Korean meaning match: exact or contains normalized Korean text.
 - Script confusion: Japanese fields containing Hangul, Korean fields missing Hangul, or Korean fields dominated by kanji/kana.
 - Card generation count: how many usable card candidates were emitted.
+- MCQ semantic accuracy: did the generated card capture the expected `target`, `correct_answer`, and `correct_choice_no`.
+- MCQ source-field accuracy: did extraction preserve the visible `sentence`, `target`, all four `choices`, answer, and answer number.
 
 The most useful first score is row-level accuracy:
 
 ```text
 row is correct if surface exact + reading exact + Korean meaning contains expected gloss
 ```
+
+For MCQ pages, the most useful product score is semantic accuracy, while source-field accuracy is the stricter OCR/layout quality score. A page can produce correct Anki cards while still showing source-field misses that deserve UI review.
 
 Run the current evaluator with:
 
@@ -125,6 +132,24 @@ For machine-readable output:
 cd backend
 uv run python scripts/evaluate_golden.py --json
 ```
+
+Run a specific OCR engine:
+
+```bash
+cd backend
+uv run python scripts/evaluate_golden.py --engine paddleocr --json
+uv run python scripts/evaluate_golden.py --engine paddleocr_vl --json
+uv run python scripts/evaluate_golden.py --engine all --json
+```
+
+Score candidates that were created through the browser and persisted in SQLite:
+
+```bash
+cd backend
+uv run python scripts/evaluate_golden.py --from-db --json
+```
+
+This uses the same golden evaluator as the CLI path, so UI-created cards and benchmark-created cards are compared with the same scoring rules.
 
 ## Why This Helps
 

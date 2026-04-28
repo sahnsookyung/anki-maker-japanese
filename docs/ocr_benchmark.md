@@ -1,11 +1,12 @@
 # OCR Benchmark Plan
 
-This repo has two different OCR questions:
+This repo has three different OCR questions:
 
 1. Can the default local OCR extraction pipeline produce correct Anki candidates?
-2. Can PaddleOCR-VL recover more useful page text/layout than the base OCR pipeline?
+2. Can PaddleOCR-VL feed the same extraction/card-generation pipeline safely and accurately?
+3. Can diagnostics explain OCR behavior without mutating review state?
 
-The first question is measured by `backend/scripts/evaluate_golden.py`. The second is measured by `backend/scripts/benchmark_ocr_modes.py`.
+The first two questions are measured by `backend/scripts/evaluate_golden.py` and `backend/scripts/benchmark_ocr_modes.py`. Diagnostics such as Google Vision comparison and OCR-VL block preview remain UI/API tools and do not create or approve Anki cards.
 
 ## Model Choice
 
@@ -37,20 +38,22 @@ Rationale:
 
 ## PaddleOCR-VL Comparison
 
-PaddleOCR-VL is not a drop-in replacement for the current card extractor. It returns document blocks/markdown-style text, while the app needs structured `surface`, `reading`, `meaning_ko`, `question_no`, `target`, choices, and answer provenance.
+PaddleOCR-VL is supported as an optional processing engine, but it is not treated as automatically equivalent to the base OCR path. It returns document blocks/markdown-style text, so the backend normalizes those blocks into the same OCR token shape used by PaddleOCR: text, bbox, confidence, provider, reading order, and optional role.
 
-The comparison benchmark therefore measures:
+The benchmark therefore measures:
 
 - Base OCR extraction accuracy against golden rows/questions.
-- PaddleOCR-VL text coverage against the same golden expected fields.
-- Wall time, user/system CPU time, CPU percent relative to one core, peak RSS, and RSS samples.
+- PaddleOCR-VL extraction accuracy against the same golden rows/questions when the model can run within local resource limits.
+- MCQ semantic accuracy for generated Anki cards.
+- MCQ source-field accuracy for sentence, target, all four choices, answer, and answer number.
+- Wall time, user/system CPU time, CPU percent relative to one core, peak RSS, RSS samples, and worker failures.
 - NPU/GPU fields are included in the JSON output; they are marked unavailable unless a local collector is configured.
 
 Run base-only comparison:
 
 ```bash
 cd backend
-uv run python scripts/benchmark_ocr_modes.py
+uv run python scripts/benchmark_ocr_modes.py --engine paddleocr
 ```
 
 By default, each page runs in a separate subprocess and the script reports memory samples for each page. This is intentional: PaddleOCR providers keep runtime state in memory, and process isolation gives the operating system a clean opportunity to reclaim it after every page.
@@ -66,10 +69,21 @@ Run a cautious one-page PaddleOCR-VL comparison:
 
 ```bash
 cd backend
-uv run python scripts/benchmark_ocr_modes.py --include-vl --vl-limit 1
+uv run python scripts/benchmark_ocr_modes.py --engine all --vl-limit 1 --worker-timeout-seconds 120 --worker-max-rss-mb 4096
 ```
 
-Keep `--vl-limit` low at first. PaddleOCR-VL is intentionally opt-in because it is heavier than the base OCR path, and this project has already seen local memory pressure from vision-model experiments.
+Keep `--vl-limit` low at first. PaddleOCR-VL is intentionally opt-in because it is heavier than the base OCR path, and this project has already seen local memory pressure from vision-model experiments. The worker memory cap is deliberate: a failed VL run should become a benchmark record, not a laptop crash.
+
+Run golden scoring directly:
+
+```bash
+cd backend
+uv run python scripts/evaluate_golden.py --engine paddleocr --json
+uv run python scripts/evaluate_golden.py --engine paddleocr_vl --json
+uv run python scripts/evaluate_golden.py --from-db --json
+```
+
+Use `--from-db` after processing pages from the browser to verify that UI-generated candidates score the same way as CLI-generated candidates.
 
 For memory debugging in the app server, temporarily set:
 
@@ -81,8 +95,11 @@ Leave caching enabled during normal UI use; disabling it trades memory observabi
 
 ## Latest Local Benchmark Notes
 
-On April 28, 2026, subprocess-isolated local runs showed:
+On April 28, 2026, guarded subprocess-isolated local runs showed:
 
-- PP-OCRv5 mobile Japanese/general + Korean PP-OCRv5 peaked around 2.7 GB RSS per page and produced golden accuracies of 86.1%, 60.0%, 100.0%, and 0.0%.
-- Japanese PP-OCRv3 mobile + Korean PP-OCRv5 peaked around 2.8 GB RSS per page and produced golden accuracies of 100.0%, 50.0%, 100.0%, and 60.0%.
-- PaddleOCR-VL dependencies now resolve with `paddlex[ocr]`, but first-run model download for `PaddleOCR-VL-1.5` did not complete during the local attempt, so VL inference metrics are still pending.
+- The measured default, Japanese PP-OCRv3 mobile + Korean PP-OCRv5, reached 100% vocab row accuracy and 100% MCQ semantic accuracy on all four golden pages.
+- MCQ source-field accuracy is stricter than card accuracy and currently exposes remaining OCR/layout roughness on the MCQ pages.
+- Base PaddleOCR page workers peaked around 2.8 GB RSS per page on the current machine.
+- PaddleOCR-VL model loading exceeded a cautious 4096 MB worker cap during the local one-page comparison, so the benchmark reported a safe `worker_failed` result instead of continuing until the machine became unstable.
+
+Interpret those notes as a local hardware/resource snapshot, not a universal model limit. If you raise `--worker-max-rss-mb`, run one page at a time and keep the JSON metrics so the result is comparable.

@@ -8,7 +8,9 @@ from statistics import median
 
 from app.core.config import KOREAN_GLOSSARY_PATH
 from app.core.ids import new_id
+from app.extraction.field_evidence import static_evidence, token_evidence
 from app.extraction.geometry import group_tokens_by_line, text_of, union_bbox
+from app.extraction.sentence_order import repair_predicate_first_sentence
 from app.models.schemas import OcrToken
 
 
@@ -37,24 +39,24 @@ def extract_mcq_items(tokens: list[OcrToken], answer_map: dict[int, int], page_t
     items: list[dict] = []
     filtered_blocks: list[list[OcrToken]] = []
     for block in blocks:
-        sentence_like = [token for token in block if not _is_choice_token(token.text)]
+        sentence_like = _sentence_tokens_from_block(block, _question_no(block))
         sentence_text = text_of(sentence_like, "")
         if _has_hiragana(sentence_text) and not _is_header_text(sentence_text):
             filtered_blocks.append(block)
 
     for sequence_no, block in enumerate(filtered_blocks, start=1):
-        choices = _extract_choices(block)
+        block = _augment_block_with_nearby_choices(block, lines)
+        choice_records = _extract_choice_records(block)
+        choices = [record["text"] for number in range(1, 5) if (record := choice_records.get(number))]
         question_no = _question_no(block) or sequence_no
-        sentence_tokens = [
-            token
-            for token in block
-            if not _is_choice_token(token.text) and not QUESTION_NO_RE.match(_normalize_digits(token.text))
-        ]
-        sentence = _clean_sentence(text_of(sentence_tokens, " "))
+        sentence_tokens = _sentence_tokens_from_block(block, question_no)
+        sentence = _clean_sentence(text_of(sentence_tokens, ""))
         target = _guess_target(sentence_tokens, page_type)
         resolved_target, resolved_answer, resolved_choice_no = _resolve_from_glossary(sentence, choices, page_type)
         if resolved_target:
             target = resolved_target
+        if resolved_answer:
+            resolved_choice_no = _choice_no_for_answer_from_records(resolved_answer, choice_records) or resolved_choice_no
         correct_choice_no = answer_map.get(question_no) or resolved_choice_no
         correct_answer = ""
         if correct_choice_no and 1 <= correct_choice_no <= len(choices):
@@ -72,6 +74,18 @@ def extract_mcq_items(tokens: list[OcrToken], answer_map: dict[int, int], page_t
         token_roles = _token_roles(block, target, correct_answer)
         target_tokens = [token for token in block if _token_role(token, target, correct_answer) == "target"]
         target_bbox = union_bbox([token.bbox for token in target_tokens]) if target_tokens else None
+        field_evidence = _mcq_field_evidence(
+            block=block,
+            sentence_tokens=sentence_tokens,
+            target_tokens=target_tokens,
+            choice_records=choice_records,
+            question_no=question_no,
+            sentence=sentence,
+            target=target,
+            correct_choice_no=correct_choice_no,
+            correct_answer=correct_answer,
+            answer_source=_answer_source(question_no, answer_map, resolved_choice_no),
+        )
         confidence = _block_confidence(block)
         items.append(
             {
@@ -86,6 +100,7 @@ def extract_mcq_items(tokens: list[OcrToken], answer_map: dict[int, int], page_t
                 "correct_choice_no": correct_choice_no,
                 "correct_answer": correct_answer,
                 "answer_source": _answer_source(question_no, answer_map, resolved_choice_no),
+                "field_evidence": field_evidence,
                 "bbox": bbox,
                 "evidence_tokens": [token.id for token in block],
                 "token_roles": token_roles,
@@ -122,6 +137,30 @@ def _question_blocks(lines: list[list[OcrToken]]) -> list[list[OcrToken]]:
     return blocks
 
 
+def _augment_block_with_nearby_choices(block: list[OcrToken], lines: list[list[OcrToken]]) -> list[OcrToken]:
+    if not block:
+        return block
+    block_ids = {token.id for token in block}
+    min_y = min(token.bbox[1] for token in block)
+    max_y = max(token.bbox[3] for token in block)
+    initial_max_y = max_y
+    augmented = list(block)
+    for line in lines:
+        if all(token.id in block_ids for token in line):
+            continue
+        choices = _extract_choices(line)
+        if not choices:
+            continue
+        if _looks_like_question_line(line) and not all(_is_choice_token(token.text) for token in line):
+            continue
+        center_y = sum((token.bbox[1] + token.bbox[3]) / 2 for token in line) / len(line)
+        if min_y - 12 <= center_y <= min(max_y + 38, initial_max_y + 70):
+            augmented.extend(token for token in line if token.id not in block_ids)
+            block_ids.update(token.id for token in line)
+            max_y = max(max_y, *(token.bbox[3] for token in line))
+    return augmented
+
+
 def _question_no(tokens: list[OcrToken]) -> int | None:
     for token in tokens[:5]:
         text = _normalize_digits(token.text)
@@ -135,6 +174,77 @@ def _question_no(tokens: list[OcrToken]) -> int | None:
         if match:
             return int(match.group(1))
     return None
+
+
+def _sentence_tokens_from_block(block: list[OcrToken], question_no: int | None) -> list[OcrToken]:
+    lines = group_tokens_by_line(block, tolerance=22)
+    selected: list[OcrToken] = []
+    for line in lines:
+        if _is_choice_line(line):
+            continue
+        sentence_tokens = [_clean_sentence_token(token, question_no) for token in line]
+        sentence_tokens = [token for token in sentence_tokens if token is not None]
+        if not sentence_tokens:
+            continue
+        selected.extend(sentence_tokens)
+        if any("。" in token.text for token in sentence_tokens):
+            break
+    if not selected:
+        selected = [
+            token
+            for token in block
+            if _clean_sentence_token(token, question_no) is not None
+        ]
+    return _trim_sentence_tokens(selected)
+
+
+def _is_choice_line(line: list[OcrToken]) -> bool:
+    choices = _extract_choices(line)
+    if not choices:
+        return False
+    if _looks_like_question_with_inline_choices(line):
+        return False
+    non_choice_text = "".join(
+        token.text
+        for token in line
+        if not _is_choice_token(token.text) and not QUESTION_NO_RE.match(_normalize_digits(token.text))
+    )
+    return len(choices) >= 2 or not _has_hiragana(non_choice_text)
+
+
+def _clean_sentence_token(token: OcrToken, question_no: int | None) -> OcrToken | None:
+    text = _normalize_digits(token.text).strip()
+    if not text or _is_separator_noise(text):
+        return None
+    if _is_choice_token(text):
+        return None
+    if _is_question_marker(text, question_no):
+        return None
+    if not _has_japanese(text):
+        return None
+    return token
+
+
+def _is_question_marker(text: str, question_no: int | None) -> bool:
+    normalized = _normalize_digits(text).strip()
+    if not QUESTION_NO_RE.match(normalized):
+        return False
+    if question_no is None:
+        return True
+    return normalized == str(question_no) or CIRCLED.get(normalized) == question_no
+
+
+def _is_separator_noise(text: str) -> bool:
+    return bool(re.fullmatch(r"[-‐‑‒–—―ー・、。,.．\s]+", text))
+
+
+def _trim_sentence_tokens(tokens: list[OcrToken]) -> list[OcrToken]:
+    trimmed: list[OcrToken] = []
+    for token in tokens:
+        trimmed.append(token)
+        if "。" in token.text:
+            break
+    return trimmed
 
 
 def _token_roles(tokens: list[OcrToken], target: str, correct_answer: str) -> list[dict[str, str]]:
@@ -152,9 +262,53 @@ def _token_role(token: OcrToken, target: str, correct_answer: str) -> str:
     return "sentence"
 
 
+def _mcq_field_evidence(
+    *,
+    block: list[OcrToken],
+    sentence_tokens: list[OcrToken],
+    target_tokens: list[OcrToken],
+    choice_records: dict[int, dict[str, object]],
+    question_no: int,
+    sentence: str,
+    target: str,
+    correct_choice_no: int | None,
+    correct_answer: str,
+    answer_source: str,
+) -> dict[str, dict[str, object]]:
+    question_tokens = [
+        token
+        for token in block[:5]
+        if _normalize_digits(token.text) == str(question_no) or _normalize_digits(token.text).startswith(str(question_no))
+    ]
+    field_evidence: dict[str, dict[str, object]] = {
+        "question_no": token_evidence(question_tokens, str(question_no)) if question_tokens else static_evidence(str(question_no)),
+        "sentence": token_evidence(sentence_tokens, sentence),
+        "target": token_evidence(target_tokens, target) if target_tokens else static_evidence(target),
+        "answer_source": static_evidence(answer_source, "metadata"),
+    }
+    for number in range(1, 5):
+        record = choice_records.get(number)
+        if not record:
+            continue
+        choice_tokens = [token for token in record.get("tokens", []) if isinstance(token, OcrToken)]
+        field_evidence[f"choice_{number}"] = token_evidence(choice_tokens, str(record.get("text", "")))
+    if correct_choice_no and correct_choice_no in choice_records:
+        record = choice_records[correct_choice_no]
+        choice_tokens = [token for token in record.get("tokens", []) if isinstance(token, OcrToken)]
+        field_evidence["correct_answer"] = token_evidence(choice_tokens, correct_answer)
+    else:
+        field_evidence["correct_answer"] = static_evidence(correct_answer, answer_source or "unknown")
+    return field_evidence
+
+
 def _extract_choices(tokens: list[OcrToken]) -> list[str]:
+    records = _extract_choice_records(tokens)
+    return [record["text"] for number in range(1, 5) if (record := records.get(number))]
+
+
+def _extract_choice_records(tokens: list[OcrToken]) -> dict[int, dict[str, object]]:
     ordered = sorted(tokens, key=lambda t: (t.bbox[1], t.bbox[0]))
-    found: dict[int, tuple[int, float, str]] = {}
+    found: dict[int, dict[str, object]] = {}
     idx = 0
     while idx < len(ordered):
         token = ordered[idx]
@@ -163,14 +317,125 @@ def _extract_choices(tokens: list[OcrToken]) -> list[str]:
         chunks = _choice_chunks(text)
         if chunks:
             for number, choice in chunks:
-                _set_choice(found, number, _clean_choice(choice), priority=0, y=token.bbox[1])
+                _set_choice(
+                    found,
+                    number,
+                    _clean_choice(choice),
+                    priority=0,
+                    y=token.bbox[1],
+                    confidence=token.confidence,
+                    tokens=[token],
+                )
         elif marker_num and _choice_text_after_marker(text):
-            _set_choice(found, marker_num, _clean_choice(_choice_text_after_marker(text)), priority=0, y=token.bbox[1])
+            _set_choice(
+                found,
+                marker_num,
+                _clean_choice(_choice_text_after_marker(text)),
+                priority=0,
+                y=token.bbox[1],
+                confidence=token.confidence,
+                tokens=[token],
+            )
         elif marker_num and idx + 1 < len(ordered) and not _is_choice_token(ordered[idx + 1].text):
-            _set_choice(found, marker_num, _clean_choice(ordered[idx + 1].text), priority=1, y=token.bbox[1])
+            confidence = min(token.confidence, ordered[idx + 1].confidence)
+            _set_choice(
+                found,
+                marker_num,
+                _clean_choice(ordered[idx + 1].text),
+                priority=1,
+                y=token.bbox[1],
+                confidence=confidence,
+                tokens=[token, ordered[idx + 1]],
+            )
             idx += 1
         idx += 1
-    return [found[number][2] for number in range(1, 5) if found.get(number)]
+    _fill_missing_leading_choice(found, ordered)
+    _fill_missing_choices_by_position(found, ordered)
+    return found
+
+
+def _fill_missing_leading_choice(found: dict[int, dict[str, object]], ordered: list[OcrToken]) -> None:
+    if 1 in found or 2 not in found:
+        return
+    choice_two_tokens = [token for token in found[2].get("tokens", []) if isinstance(token, OcrToken)]
+    if not choice_two_tokens:
+        return
+    choice_two_left = min(token.bbox[0] for token in choice_two_tokens)
+    choice_two_y = float(found[2]["y"])
+    candidates = [
+        token
+        for token in ordered
+        if not _is_choice_token(token.text)
+        and _has_japanese(token.text)
+        and abs(token.bbox[1] - choice_two_y) <= 14
+        and token.bbox[2] <= choice_two_left
+    ]
+    if not candidates:
+        return
+    candidates.sort(key=lambda token: (abs(token.bbox[2] - choice_two_left), -token.confidence))
+    token = candidates[0]
+    _set_choice(
+        found,
+        1,
+        _clean_choice(token.text),
+        priority=2,
+        y=token.bbox[1],
+        confidence=token.confidence,
+        tokens=[token],
+        inferred=True,
+    )
+
+
+def _fill_missing_choices_by_position(found: dict[int, dict[str, object]], ordered: list[OcrToken]) -> None:
+    used_ids = {
+        token.id
+        for record in found.values()
+        for token in record.get("tokens", [])
+        if isinstance(token, OcrToken)
+    }
+    for number in range(1, 5):
+        if number in found:
+            continue
+        left_numbers = [candidate for candidate in range(1, number) if candidate in found]
+        right_numbers = [candidate for candidate in range(number + 1, 5) if candidate in found]
+        if not left_numbers or not right_numbers:
+            continue
+        left = found[max(left_numbers)]
+        right = found[min(right_numbers)]
+        left_tokens = [token for token in left.get("tokens", []) if isinstance(token, OcrToken)]
+        right_tokens = [token for token in right.get("tokens", []) if isinstance(token, OcrToken)]
+        if not left_tokens or not right_tokens:
+            continue
+        left_x = max(token.bbox[2] for token in left_tokens)
+        right_x = min(token.bbox[0] for token in right_tokens)
+        if right_x <= left_x:
+            continue
+        expected_y = (float(left["y"]) + float(right["y"])) / 2
+        expected_x = (left_x + right_x) / 2
+        candidates = [
+            token
+            for token in ordered
+            if token.id not in used_ids
+            and not _is_choice_token(token.text)
+            and _has_japanese(token.text)
+            and abs(token.bbox[1] - expected_y) <= 22
+            and left_x <= (token.bbox[0] + token.bbox[2]) / 2 <= right_x
+        ]
+        if not candidates:
+            continue
+        candidates.sort(key=lambda token: (abs(((token.bbox[0] + token.bbox[2]) / 2) - expected_x), -token.confidence))
+        token = candidates[0]
+        _set_choice(
+            found,
+            number,
+            _clean_choice(token.text),
+            priority=3,
+            y=token.bbox[1],
+            confidence=token.confidence,
+            tokens=[token],
+            inferred=True,
+        )
+        used_ids.add(token.id)
 
 
 def _answer_source(question_no: int, answer_map: dict[int, int], resolved_choice_no: int | None) -> str:
@@ -249,6 +514,8 @@ def _looks_like_prefixed_question_text(text: str) -> bool:
     if not match:
         return False
     body = match.group(2).strip()
+    if re.search(r"[1-4①-④]", _normalize_digits(body)):
+        return False
     if not _has_hiragana(body):
         return False
     if not body or not (0x3040 <= ord(body[0]) <= 0x309F):
@@ -289,21 +556,42 @@ def _looks_like_question_with_inline_choices(line: list[OcrToken]) -> bool:
     return bool(re.match(r"^(10|[1-9])", _normalize_digits(text))) and _has_japanese(text)
 
 
-def _set_choice(found: dict[int, tuple[int, float, str]], number: int, text: str, priority: int, y: float) -> None:
+def _set_choice(
+    found: dict[int, dict[str, object]],
+    number: int,
+    text: str,
+    priority: int,
+    y: float,
+    confidence: float,
+    tokens: list[OcrToken],
+    inferred: bool = False,
+) -> None:
     if not text:
         return
     previous = found.get(number)
     if (
         previous is None
-        or priority < previous[0]
-        or (priority == previous[0] and y > previous[1] + 8)
-        or (priority == previous[0] and abs(y - previous[1]) <= 8 and len(text) < len(previous[2]))
+        or priority < int(previous["priority"])
+        or (
+            priority == int(previous["priority"])
+            and y > float(previous["y"]) + 8
+            and confidence >= float(previous.get("confidence", 0.0)) - 0.1
+        )
+        or (priority == int(previous["priority"]) and abs(y - float(previous["y"])) <= 8 and len(text) < len(str(previous["text"])))
     ):
-        found[number] = (priority, y, text)
+        found[number] = {
+            "priority": priority,
+            "y": y,
+            "text": text,
+            "confidence": confidence,
+            "tokens": tokens,
+            "inferred": inferred,
+        }
 
 
 def _clean_choice(text: str) -> str:
     text = _normalize_digits(text)
+    text = text.replace("叩", "り").replace("おほえ", "おぼえ").replace("ほu", "ほん")
     text = text.strip("「『【[(（ \t\r\n:：・-？?")
     text = text.strip("」』】])） \t\r\n:：・-？?")
     return text.strip()
@@ -311,8 +599,14 @@ def _clean_choice(text: str) -> str:
 
 def _clean_sentence(text: str) -> str:
     text = _normalize_digits(text)
-    text = re.sub(r"\\s+", "", text)
-    return _strip_question_prefix(text)
+    text = re.sub(r"\s+", "", text)
+    text = re.sub(r"[-‐‑‒–—―]+", "", text)
+    text = _strip_question_prefix(text)
+    text, _repaired = repair_predicate_first_sentence(text)
+    stop_index = text.find("。")
+    if stop_index >= 0:
+        text = text[: stop_index + 1]
+    return text
 
 
 def _strip_question_prefix(text: str) -> str:
@@ -348,11 +642,37 @@ def _choice_no_for_answer(answer: str, normalized_choices: list[str]) -> int | N
     normalized_answer = _normalize_for_match(answer)
     exact_matches = [idx for idx, choice in enumerate(normalized_choices, start=1) if choice == normalized_answer]
     if exact_matches:
-        return exact_matches[-1]
+        return exact_matches[0]
     for idx, choice in enumerate(normalized_choices, start=1):
         if normalized_answer and normalized_answer in choice:
             return idx
     return None
+
+
+def _choice_no_for_answer_from_records(answer: str, choice_records: dict[int, dict[str, object]]) -> int | None:
+    normalized_answer = _normalize_for_match(answer)
+    exact_matches = [
+        number
+        for number, record in choice_records.items()
+        if _normalize_for_match(str(record.get("text", ""))) == normalized_answer
+    ]
+    if not exact_matches:
+        return None
+    clean_matches = [number for number in exact_matches if not _choice_record_has_conflicting_marker(number, choice_records[number])]
+    inferred_matches = [number for number in clean_matches if choice_records[number].get("inferred")]
+    if inferred_matches:
+        return min(inferred_matches)
+    return max(clean_matches or exact_matches)
+
+
+def _choice_record_has_conflicting_marker(number: int, record: dict[str, object]) -> bool:
+    tokens = [token for token in record.get("tokens", []) if isinstance(token, OcrToken)]
+    text = _normalize_digits("".join(token.text for token in tokens))
+    markers = re.findall(r"[1-4①-④]", text)
+    if len(markers) <= 1:
+        return False
+    expected = str(number)
+    return not text.strip().startswith(expected)
 
 
 @lru_cache(maxsize=1)
@@ -377,7 +697,7 @@ def _normalize_digits(text: str) -> str:
 
 
 def _normalize_for_match(text: str) -> str:
-    normalized = re.sub(r"\\s+", "", _normalize_digits(text))
+    normalized = re.sub(r"\s+", "", _normalize_digits(text))
     return normalized.replace("目", "日").replace("囲", "国")
 
 

@@ -34,6 +34,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS pages (
                 id TEXT PRIMARY KEY,
                 original_image_path TEXT NOT NULL,
+                upload_name TEXT,
                 display_name TEXT,
                 processed_image_path TEXT,
                 page_type TEXT NOT NULL,
@@ -85,11 +86,13 @@ def upsert_page(page: Page) -> None:
         conn.execute(
             """
             INSERT INTO pages (
-                id, original_image_path, display_name, processed_image_path, page_type,
+                id, original_image_path, upload_name, display_name, processed_image_path, page_type,
                 page_type_confidence, image_width, image_height, warnings_json, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
+                original_image_path=excluded.original_image_path,
+                upload_name=COALESCE(excluded.upload_name, pages.upload_name),
                 display_name=COALESCE(excluded.display_name, pages.display_name),
                 processed_image_path=excluded.processed_image_path,
                 page_type=excluded.page_type,
@@ -101,6 +104,7 @@ def upsert_page(page: Page) -> None:
             (
                 page.id,
                 page.original_image_path,
+                page.upload_name,
                 page.display_name,
                 page.processed_image_path,
                 page.page_type,
@@ -148,6 +152,24 @@ def list_pages() -> list[Page]:
 def get_page(page_id: str) -> Page | None:
     with connect() as conn:
         row = conn.execute("SELECT * FROM pages WHERE id = ?", (page_id,)).fetchone()
+    return _page_from_row(row) if row else None
+
+
+def get_page_by_display_name(display_name: str) -> Page | None:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM pages WHERE display_name = ? ORDER BY created_at DESC LIMIT 1",
+            (display_name,),
+        ).fetchone()
+    return _page_from_row(row) if row else None
+
+
+def get_page_by_upload_name(upload_name: str) -> Page | None:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM pages WHERE upload_name = ? ORDER BY created_at DESC LIMIT 1",
+            (upload_name,),
+        ).fetchone()
     return _page_from_row(row) if row else None
 
 
@@ -256,6 +278,7 @@ def _page_from_row(row: sqlite3.Row) -> Page:
     return Page(
         id=row["id"],
         original_image_path=row["original_image_path"],
+        upload_name=row["upload_name"] if "upload_name" in keys else None,
         display_name=display_name or _default_display_name(row["original_image_path"], row["id"]),
         processed_image_path=row["processed_image_path"],
         page_type=row["page_type"],
@@ -272,6 +295,8 @@ def _page_from_row(row: sqlite3.Row) -> Page:
 
 def _ensure_page_columns(conn: sqlite3.Connection) -> None:
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(pages)").fetchall()}
+    if "upload_name" not in columns:
+        conn.execute("ALTER TABLE pages ADD COLUMN upload_name TEXT")
     if "display_name" not in columns:
         conn.execute("ALTER TABLE pages ADD COLUMN display_name TEXT")
 

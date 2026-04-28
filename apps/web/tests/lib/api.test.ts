@@ -5,10 +5,13 @@ import {
   apiGet,
   approveCard,
   compareOcr,
+  dedupePages,
   deletePage,
   exportTsv,
+  getOcrRuntime,
   imageUrl,
   parseDocument,
+  previewFieldOcr,
   processPage,
   resolveApiBase,
   updateCard,
@@ -140,19 +143,25 @@ describe("API helpers", () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ page_type: "uploaded" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ page_type: "reading_mcq" })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: "page-1", display_name: "Renamed" })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ page_id: "page-1", status: "deleted" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ removed_count: 2, removed: [] })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ ...card, status: "approved" })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ ...card, front: "updated" })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ card_count: 1, download_url: "/api/exports/export.tsv" })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ card_count: 1, download_url: "/api/exports/default.tsv" })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ agreement: 0.75 })))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ block_count: 2 })));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ block_count: 2 })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ text: "うえ", field: "target" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ state: "running", jobs_handled: 1 })));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(processPage("page-1")).resolves.toEqual({ page_type: "uploaded" });
+    await expect(processPage("page-1", "paddleocr_vl")).resolves.toEqual({ page_type: "reading_mcq" });
     await expect(updatePage("page-1", "Renamed")).resolves.toEqual({ id: "page-1", display_name: "Renamed" });
     await expect(deletePage("page-1")).resolves.toEqual({ page_id: "page-1", status: "deleted" });
+    await expect(dedupePages()).resolves.toEqual({ removed_count: 2, removed: [] });
     await expect(approveCard("card-1")).resolves.toMatchObject({ status: "approved" });
     await expect(updateCard(card)).resolves.toMatchObject({ front: "updated" });
     await expect(exportTsv(["page-1"], { approved_only: false, include_yellow: false, include_red: true })).resolves.toEqual({
@@ -162,19 +171,31 @@ describe("API helpers", () => {
     await expect(exportTsv(["page-1"])).resolves.toEqual({ card_count: 1, download_url: "/api/exports/default.tsv" });
     await expect(compareOcr("page-1", "google vision")).resolves.toEqual({ agreement: 0.75 });
     await expect(parseDocument("page-1")).resolves.toEqual({ block_count: 2 });
+    await expect(previewFieldOcr("card-1", "target", [1, 2, 3, 4])).resolves.toEqual({ text: "うえ", field: "target" });
+    await expect(getOcrRuntime()).resolves.toEqual({ state: "running", jobs_handled: 1 });
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "http://127.0.0.1:8000/api/pages/page-1/process",
+      "http://127.0.0.1:8000/api/pages/page-1/process?engine=paddleocr_vl",
       "http://127.0.0.1:8000/api/pages/page-1",
       "http://127.0.0.1:8000/api/pages/page-1",
+      "http://127.0.0.1:8000/api/pages/dedupe",
       "http://127.0.0.1:8000/api/cards/card-1/approve",
       "http://127.0.0.1:8000/api/cards/card-1",
       "http://127.0.0.1:8000/api/exports/tsv",
       "http://127.0.0.1:8000/api/exports/tsv",
       "http://127.0.0.1:8000/api/pages/page-1/ocr/compare?provider=google%20vision",
-      "http://127.0.0.1:8000/api/pages/page-1/document/parse"
+      "http://127.0.0.1:8000/api/pages/page-1/document/parse",
+      "http://127.0.0.1:8000/api/cards/card-1/field-ocr/preview",
+      "http://127.0.0.1:8000/api/ocr/runtime"
     ]);
-    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({ method: "DELETE" });
+    expect(fetchMock.mock.calls[3]?.[1]).toMatchObject({ method: "DELETE" });
+    expect(JSON.parse(String(fetchMock.mock.calls[6]?.[1]?.body))).toMatchObject({
+      confidence: 0.9,
+      source_bbox: [0, 0, 10, 10],
+      warnings: []
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[11]?.[1]?.body))).toEqual({ field: "target", bbox: [1, 2, 3, 4] });
   });
 
   it("builds image URLs only for known backend image directories", () => {
@@ -200,6 +221,7 @@ function candidate(): CardCandidate {
     confidence: 0.9,
     status: "pending_review",
     review_state: "yellow",
+    source_bbox: [0, 0, 10, 10],
     warnings: []
   };
 }

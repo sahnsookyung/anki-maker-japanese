@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import gc
 from pathlib import Path
 
 from app.core.config import OCR_PROVIDER, OCR_PROVIDER_CACHE_ENABLED
@@ -63,6 +64,11 @@ def _build_ocr_provider_uncached(provider_name: str) -> OcrProvider:
                 raise RuntimeError("; ".join(errors))
 
     raise RuntimeError("; ".join(errors) or "No OCR provider configured")
+
+
+def release_ocr_provider_cache() -> None:
+    _build_ocr_provider_cached.cache_clear()
+    gc.collect()
 
 
 def recognize_with_warnings(image_path: Path, page_id: str) -> tuple[list[OcrToken], list[str]]:

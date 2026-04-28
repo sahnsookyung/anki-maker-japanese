@@ -24,6 +24,7 @@ from app.evaluation.golden import GoldenPage, load_golden_pages, meaning_matches
 from app.evaluation.mcq_eval import McqEvalResult, evaluate_mcq_page
 from app.evaluation.vocab_eval import VocabEvalResult, evaluate_vocab_page
 from app.extraction import pipeline
+from app.ocr.engines import PADDLEOCR_ENGINE, PADDLEOCR_VL_ENGINE, normalize_ocr_engine
 from app.models.schemas import Page, ProcessResult
 from app.vision.paddle_ocr_vl import get_paddle_ocr_vl_parser
 
@@ -59,13 +60,16 @@ class PageBenchmark:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Compare base PaddleOCR extraction with optional PaddleOCR-VL text coverage.")
+    parser = argparse.ArgumentParser(description="Compare PaddleOCR and PaddleOCR-VL extraction accuracy and resource usage.")
     parser.add_argument("--golden", default="../data/evaluation/golden_pages.example.json")
-    parser.add_argument("--include-vl", action="store_true", help="Run PaddleOCR-VL sequentially after base OCR.")
+    parser.add_argument("--engine", default=PADDLEOCR_ENGINE, help="Primary extraction engine: paddleocr, paddleocr_vl, or all.")
+    parser.add_argument("--include-vl", action="store_true", help="Run PaddleOCR-VL extraction sequentially after base OCR.")
     parser.add_argument("--vl-limit", type=int, default=1, help="Maximum pages to send through PaddleOCR-VL in one run.")
     parser.add_argument("--work-dir", default="", help="Optional benchmark runtime directory. Defaults to a temp dir.")
     parser.add_argument("--keep-work-dir", action="store_true", help="Keep benchmark DB and processed images for debugging.")
     parser.add_argument("--in-process", action="store_true", help="Run all pages in this process instead of per-page subprocesses.")
+    parser.add_argument("--worker-timeout-seconds", type=float, default=300, help="Kill a page worker after this many seconds.")
+    parser.add_argument("--worker-max-rss-mb", type=float, default=8192, help="Kill a page worker if its RSS exceeds this limit.")
     parser.add_argument("--worker-page-id", default="", help=argparse.SUPPRESS)
     parser.add_argument("--output-json", default="", help=argparse.SUPPRESS)
     parser.add_argument("--json", action="store_true", help="Emit JSON.")
@@ -91,24 +95,25 @@ def main() -> int:
         database.init_db()
         results: list[PageBenchmark] = []
         vl_pages_run = 0
+        primary_engine = _primary_engine(args)
         for golden in pages:
             run_start = _resource_snapshot()
             memory_samples = [_memory_sample("worker_start")]
-            process_result = _run_base_pipeline(golden, memory_samples)
+            process_result = _run_base_pipeline(golden, memory_samples, primary_engine)
             base_eval = _evaluate_base(golden, process_result)
             memory_samples.append(_memory_sample("base_evaluated"))
-            vl_eval: TextCoverageResult | None = None
-            if args.include_vl and vl_pages_run < args.vl_limit:
+            vl_eval: dict[str, Any] | None = None
+            if _should_run_vl(args) and vl_pages_run < args.vl_limit and primary_engine != PADDLEOCR_VL_ENGINE:
                 memory_samples.append(_memory_sample("before_vl"))
-                vl_eval = _run_vl_text_coverage(golden, process_result)
+                vl_eval = _run_engine_evaluation(golden, memory_samples, PADDLEOCR_VL_ENGINE)
                 memory_samples.append(_memory_sample("after_vl"))
                 vl_pages_run += 1
             results.append(
                 PageBenchmark(
                     page_id=golden.page_id,
                     image_path=str(golden.image_path),
-                    base=_result_dict(base_eval),
-                    vl=_coverage_dict(vl_eval) if vl_eval else None,
+                    base=_result_dict(base_eval, primary_engine),
+                    vl=vl_eval,
                     memory_samples=memory_samples,
                     resource_metrics=_resource_metrics(run_start, _resource_snapshot(), memory_samples),
                     errors=[],
@@ -129,6 +134,7 @@ def _run_pages_in_subprocesses(args: argparse.Namespace, golden_path: Path, page
         for golden in pages:
             page_work_dir = root_work_dir / golden.page_id
             output_json = root_work_dir / f"{golden.page_id}.json"
+            primary_engine = _primary_engine(args)
             cmd = [
                 sys.executable,
                 str(Path(__file__).resolve()),
@@ -142,20 +148,155 @@ def _run_pages_in_subprocesses(args: argparse.Namespace, golden_path: Path, page
                 str(output_json),
                 "--json",
                 "--in-process",
+                "--engine",
+                primary_engine,
             ]
-            if args.include_vl and vl_pages_run < args.vl_limit:
-                cmd.append("--include-vl")
-                vl_pages_run += 1
-            completed = subprocess.run(cmd, check=False, capture_output=True, text=True)
+            completed = _run_worker_command(cmd, args)
             if completed.returncode != 0 or not output_json.exists():
                 results.append(_failed_page_result(golden, completed))
                 continue
             data = json.loads(output_json.read_text(encoding="utf-8"))
-            results.append(PageBenchmark(**data[0]))
+            page_result = PageBenchmark(**data[0])
+            if _should_run_vl(args) and vl_pages_run < args.vl_limit and primary_engine != PADDLEOCR_VL_ENGINE:
+                vl_pages_run += 1
+                page_result = _with_vl_worker_result(args, golden_path, golden, root_work_dir, page_result)
+            results.append(page_result)
     finally:
         if not keep_work_dir:
             shutil.rmtree(root_work_dir, ignore_errors=True)
     return results
+
+
+def _with_vl_worker_result(
+    args: argparse.Namespace,
+    golden_path: Path,
+    golden: GoldenPage,
+    root_work_dir: Path,
+    base_result: PageBenchmark,
+) -> PageBenchmark:
+    vl_work_dir = root_work_dir / f"{golden.page_id}-vl"
+    vl_output_json = root_work_dir / f"{golden.page_id}.vl.json"
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--golden",
+        str(golden_path),
+        "--worker-page-id",
+        golden.page_id,
+        "--work-dir",
+        str(vl_work_dir),
+        "--output-json",
+        str(vl_output_json),
+        "--json",
+        "--in-process",
+        "--engine",
+        PADDLEOCR_VL_ENGINE,
+    ]
+    completed = _run_worker_command(cmd, args)
+    if completed.returncode != 0 or not vl_output_json.exists():
+        error = _failed_page_result(golden, completed).errors[0]
+        vl_payload = {
+            "mode": "paddleocr_vl_extraction",
+            "actual_page_type": "worker_failed",
+            "matched": 0,
+            "expected": _expected_item_count(golden),
+            "accuracy": 0.0,
+            "generated_cards": 0,
+            "missing_ids": [],
+            "warnings": [error],
+        }
+        return PageBenchmark(
+            page_id=base_result.page_id,
+            image_path=base_result.image_path,
+            base=base_result.base,
+            vl=vl_payload,
+            memory_samples=base_result.memory_samples,
+            resource_metrics=base_result.resource_metrics,
+            errors=base_result.errors,
+        )
+    data = json.loads(vl_output_json.read_text(encoding="utf-8"))
+    vl_result = PageBenchmark(**data[0])
+    vl_payload = {
+        **vl_result.base,
+        "resource_metrics": vl_result.resource_metrics,
+        "memory_samples": vl_result.memory_samples,
+    }
+    return PageBenchmark(
+        page_id=base_result.page_id,
+        image_path=base_result.image_path,
+        base=base_result.base,
+        vl=vl_payload,
+        memory_samples=base_result.memory_samples,
+        resource_metrics=base_result.resource_metrics,
+        errors=base_result.errors,
+    )
+
+
+def _run_worker_command(cmd: list[str], args: argparse.Namespace) -> subprocess.CompletedProcess[str]:
+    timeout_seconds = float(getattr(args, "worker_timeout_seconds", 300))
+    max_rss_mb = float(getattr(args, "worker_max_rss_mb", 8192))
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    start = time.monotonic()
+    failure_reason = ""
+    while process.poll() is None:
+        elapsed = time.monotonic() - start
+        rss_mb = _process_tree_rss_mb(process.pid)
+        if timeout_seconds > 0 and elapsed > timeout_seconds:
+            failure_reason = f"Worker exceeded timeout of {timeout_seconds:.0f}s."
+            _terminate_process(process)
+            break
+        if max_rss_mb > 0 and rss_mb is not None and rss_mb > max_rss_mb:
+            failure_reason = f"Worker exceeded RSS limit of {max_rss_mb:.0f} MB (observed {rss_mb:.0f} MB)."
+            _terminate_process(process)
+            break
+        time.sleep(1)
+    try:
+        stdout, stderr = process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        stdout, stderr = process.communicate(timeout=5)
+    if failure_reason:
+        stderr = "\n".join(part for part in (stderr, failure_reason) if part)
+        return subprocess.CompletedProcess(cmd, process.returncode or 137, stdout, stderr)
+    return subprocess.CompletedProcess(cmd, process.returncode or 0, stdout, stderr)
+
+
+def _terminate_process(process: subprocess.Popen[str]) -> None:
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def _process_tree_rss_mb(pid: int) -> float | None:
+    pids = [pid, *_child_pids(pid)]
+    total = 0
+    found = False
+    for item in pids:
+        try:
+            output = subprocess.check_output(["ps", "-o", "rss=", "-p", str(item)], text=True).strip()
+        except Exception:
+            continue
+        if not output:
+            continue
+        found = True
+        total += int(output)
+    return round(total / 1024.0, 2) if found else None
+
+
+def _child_pids(pid: int) -> list[int]:
+    try:
+        output = subprocess.check_output(["pgrep", "-P", str(pid)], text=True).strip()
+    except Exception:
+        return []
+    children = [int(value) for value in output.splitlines() if value.strip().isdigit()]
+    descendants: list[int] = []
+    for child in children:
+        descendants.append(child)
+        descendants.extend(_child_pids(child))
+    return descendants
 
 
 def _run_worker_page(args: argparse.Namespace, pages: list[GoldenPage]) -> PageBenchmark:
@@ -166,19 +307,20 @@ def _run_worker_page(args: argparse.Namespace, pages: list[GoldenPage]) -> PageB
         database.init_db()
         run_start = _resource_snapshot()
         memory_samples = [_memory_sample("worker_start")]
-        process_result = _run_base_pipeline(selected, memory_samples)
+        primary_engine = _primary_engine(args)
+        process_result = _run_base_pipeline(selected, memory_samples, primary_engine)
         base_eval = _evaluate_base(selected, process_result)
         memory_samples.append(_memory_sample("base_evaluated"))
         vl_eval = None
-        if args.include_vl:
+        if _should_run_vl(args) and primary_engine != PADDLEOCR_VL_ENGINE:
             memory_samples.append(_memory_sample("before_vl"))
-            vl_eval = _run_vl_text_coverage(selected, process_result)
+            vl_eval = _run_engine_evaluation(selected, memory_samples, PADDLEOCR_VL_ENGINE)
             memory_samples.append(_memory_sample("after_vl"))
         return PageBenchmark(
             page_id=selected.page_id,
             image_path=str(selected.image_path),
-            base=_result_dict(base_eval),
-            vl=_coverage_dict(vl_eval) if vl_eval else None,
+            base=_result_dict(base_eval, primary_engine),
+            vl=vl_eval,
             memory_samples=memory_samples,
             resource_metrics=_resource_metrics(run_start, _resource_snapshot(), memory_samples),
             errors=[],
@@ -220,7 +362,16 @@ def _benchmark_runtime(work_dir_arg: str, keep_work_dir: bool):
             shutil.rmtree(work_dir, ignore_errors=True)
 
 
-def _run_base_pipeline(golden: GoldenPage, memory_samples: list[dict[str, Any]]) -> ProcessResult:
+def _primary_engine(args: argparse.Namespace) -> str:
+    engine = getattr(args, "engine", PADDLEOCR_ENGINE)
+    return PADDLEOCR_ENGINE if engine == "all" else normalize_ocr_engine(engine)
+
+
+def _should_run_vl(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "include_vl", False) or getattr(args, "engine", PADDLEOCR_ENGINE) == "all")
+
+
+def _run_base_pipeline(golden: GoldenPage, memory_samples: list[dict[str, Any]], engine: str = PADDLEOCR_ENGINE) -> ProcessResult:
     page = Page(
         id=new_id("bench"),
         original_image_path=str(golden.image_path),
@@ -230,9 +381,9 @@ def _run_base_pipeline(golden: GoldenPage, memory_samples: list[dict[str, Any]])
         created_at=datetime.now(timezone.utc).isoformat(),
     )
     database.upsert_page(page)
-    memory_samples.append(_memory_sample("before_base_pipeline"))
-    result = pipeline.process_page(page)
-    memory_samples.append(_memory_sample("after_base_pipeline"))
+    memory_samples.append(_memory_sample(f"before_{engine}_pipeline"))
+    result = pipeline.process_page(page, engine=engine)
+    memory_samples.append(_memory_sample(f"after_{engine}_pipeline"))
     return result
 
 
@@ -240,6 +391,23 @@ def _evaluate_base(golden: GoldenPage, process_result: ProcessResult) -> VocabEv
     if golden.expected_rows:
         return evaluate_vocab_page(golden, process_result)
     return evaluate_mcq_page(golden, process_result)
+
+
+def _run_engine_evaluation(golden: GoldenPage, memory_samples: list[dict[str, Any]], engine: str) -> dict[str, Any]:
+    try:
+        result = _run_base_pipeline(golden, memory_samples, engine)
+        return _result_dict(_evaluate_base(golden, result), engine)
+    except Exception as exc:
+        return {
+            "mode": f"{engine}_extraction",
+            "actual_page_type": "engine_failed",
+            "matched": 0,
+            "expected": _expected_item_count(golden),
+            "accuracy": 0.0,
+            "generated_cards": 0,
+            "missing_ids": [],
+            "warnings": [str(exc)],
+        }
 
 
 def _run_vl_text_coverage(golden: GoldenPage, process_result: ProcessResult) -> TextCoverageResult:
@@ -280,6 +448,7 @@ def _text_coverage(golden: GoldenPage, text: str, warnings: list[str]) -> TextCo
             items_fully_matched += int(all(checks))
     for question in golden.expected_questions:
         checks = [
+            _contains(text, question.sentence),
             _contains(text, question.target),
             _contains(text, question.correct_answer),
             *[_contains(text, choice) for choice in question.choices],
@@ -305,29 +474,36 @@ def _contains(text: str, expected: str) -> bool:
 
 
 def _expected_field_count(golden: GoldenPage) -> int:
-    return len(golden.expected_rows) * 3 + sum(2 + len(question.choices) for question in golden.expected_questions)
+    return len(golden.expected_rows) * 3 + sum(3 + len(question.choices) for question in golden.expected_questions)
 
 
 def _expected_item_count(golden: GoldenPage) -> int:
     return len(golden.expected_rows) + len(golden.expected_questions)
 
 
-def _result_dict(result: VocabEvalResult | McqEvalResult) -> dict[str, Any]:
+def _result_dict(result: VocabEvalResult | McqEvalResult, engine: str = PADDLEOCR_ENGINE) -> dict[str, Any]:
     if isinstance(result, McqEvalResult):
         return {
-            "mode": "base_paddleocr_extraction",
+            "mode": f"{engine}_extraction",
             "actual_page_type": result.actual_page_type,
             "matched": result.matched_questions,
             "expected": result.expected_questions,
             "accuracy": result.question_accuracy,
+            "source_matched": result.source_matched_questions,
+            "source_field_accuracy": result.source_field_accuracy,
+            "sentence_matches": result.sentence_matches,
             "target_matches": result.target_matches,
+            "choices_matches": result.choices_matches,
             "correct_answer_matches": result.correct_answer_matches,
             "correct_choice_matches": result.correct_choice_matches,
+            "source_field_matches": result.source_field_matches,
+            "source_field_expected": result.source_field_expected,
             "generated_cards": result.generated_cards,
             "missing_ids": result.missing_question_ids,
+            "source_mismatch_ids": result.source_mismatch_question_ids,
         }
     return {
-        "mode": "base_paddleocr_extraction",
+        "mode": f"{engine}_extraction",
         "actual_page_type": result.actual_page_type,
         "matched": result.matched_rows,
         "expected": result.expected_rows,
@@ -471,8 +647,14 @@ def _format_page(result: PageBenchmark) -> str:
     base = result.base
     lines = [
         f"Page: {result.page_id}",
-        f"  base: {base['matched']}/{base['expected']} accuracy={base['accuracy']:.1%} cards={base['generated_cards']}",
+        f"  {base.get('mode', 'base')}: {base['matched']}/{base['expected']} accuracy={base['accuracy']:.1%} cards={base['generated_cards']}",
     ]
+    if "source_field_accuracy" in base:
+        lines.append(
+            "  source fields: "
+            f"{base.get('source_field_matches', 0)}/{base.get('source_field_expected', 0)} "
+            f"accuracy={base.get('source_field_accuracy', 0):.1%}"
+        )
     if result.memory_samples:
         metrics = result.resource_metrics
         lines.append(
@@ -485,11 +667,11 @@ def _format_page(result: PageBenchmark) -> str:
         )
     if result.vl:
         lines.append(
-            "  vl text coverage: "
-            f"fields={result.vl['fields_matched']}/{result.vl['fields_expected']} "
-            f"items={result.vl['items_fully_matched']}/{result.vl['items_expected']}"
+            "  paddleocr_vl_extraction: "
+            f"{result.vl.get('matched', 0)}/{result.vl.get('expected', 0)} "
+            f"accuracy={result.vl.get('accuracy', 0):.1%} cards={result.vl.get('generated_cards', 0)}"
         )
-        if result.vl["warnings"]:
+        if result.vl.get("warnings"):
             lines.append(f"  vl warnings: {'; '.join(result.vl['warnings'])}")
     if result.errors:
         lines.append(f"  errors: {'; '.join(result.errors)}")

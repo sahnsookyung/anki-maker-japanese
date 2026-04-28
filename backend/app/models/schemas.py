@@ -20,6 +20,7 @@ class OcrToken(BaseModel):
 class Page(BaseModel):
     id: str
     original_image_path: str
+    upload_name: str | None = None
     display_name: str | None = None
     processed_image_path: str | None = None
     page_type: str = "unprocessed"
@@ -88,13 +89,46 @@ class DocumentParseResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class FieldOcrPreviewRequest(BaseModel):
+    field: str
+    bbox: BBox
+
+
+class FieldOcrPreviewResponse(BaseModel):
+    card_id: str
+    page_id: str
+    field: str
+    bbox: BBox
+    provider: str
+    text: str
+    confidence: float = 0.0
+    tokens: list[OcrToken] = Field(default_factory=list)
+    suggested_source: dict[str, Any] = Field(default_factory=dict)
+    field_evidence: dict[str, Any] = Field(default_factory=dict)
+    worker: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class OcrRuntimeStatus(BaseModel):
+    state: str
+    pid: int | None = None
+    loaded_provider: str | None = None
+    idle_deadline: str | None = None
+    current_rss_mb: float | None = None
+    jobs_handled: int = 0
+    last_error: str | None = None
+
+
 class CardUpdate(BaseModel):
     front: str | None = None
     back: str | None = None
     tags: list[str] | None = None
+    confidence: float | None = None
     status: Literal["pending_review", "approved", "skipped"] | None = None
     review_state: Literal["green", "yellow", "red"] | None = None
     source: dict[str, Any] | None = None
+    source_bbox: BBox | None = None
+    warnings: list[str] | None = None
 
 
 class PageUpdate(BaseModel):

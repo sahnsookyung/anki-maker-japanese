@@ -6,15 +6,30 @@ from typing import Annotated
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
+from PIL import Image, ImageOps
 
 from app.core.config import CROP_DIR, EXPORT_DIR, OCR_COMPARE_PROVIDER, PROCESSED_DIR, UPLOAD_DIR
 from app.core.ids import new_id
 from app.db import database
 from app.export.tsv import write_tsv
 from app.extraction.pipeline import process_page
-from app.models.schemas import CardUpdate, DocumentParseResult, ExportRequest, ExportResponse, OcrComparison, Page, PageUpdate
+from app.models.schemas import (
+    CardUpdate,
+    DocumentParseResult,
+    ExportRequest,
+    ExportResponse,
+    FieldOcrPreviewRequest,
+    FieldOcrPreviewResponse,
+    OcrComparison,
+    OcrRuntimeStatus,
+    Page,
+    PageUpdate,
+)
 from app.ocr.comparison import compare_ocr_tokens
-from app.vision.paddle_ocr_vl import get_paddle_ocr_vl_parser
+from app.ocr.crop_worker import CropOcrError, crop_ocr_worker
+from app.ocr.engines import PADDLEOCR_ENGINE, PADDLEOCR_VL_ENGINE, SUPPORTED_OCR_ENGINES, normalize_ocr_engine
+from app.ocr.page_worker import run_document_parse_worker, run_page_process_worker
+from app.ocr.runtime import ocr_runtime_job
 
 
 router = APIRouter(prefix="/api")
@@ -25,6 +40,7 @@ CARD_NOT_FOUND = "Card not found."
 EXPORT_NOT_FOUND = "Export not found."
 RESPONSES = {
     400: {"description": "Unsupported request."},
+    409: {"description": "Another OCR job is already running."},
     404: {"description": "Requested resource was not found."},
     503: {"description": "Optional OCR/VLM service is unavailable."},
 }
@@ -45,21 +61,32 @@ async def upload_page(file: Annotated[UploadFile, File(...)]) -> dict[str, str]:
     suffix = Path(file.filename or "upload.jpg").suffix.lower() or ".jpg"
     if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}:
         raise HTTPException(status_code=400, detail="Unsupported image type.")
-    page_id = new_id("page")
+    upload_name = Path(file.filename or "").name.strip()
+    display_name = Path(upload_name).stem.strip()
+    existing_page = database.get_page_by_upload_name(upload_name) if upload_name else None
+    page_id = existing_page.id if existing_page else new_id("page")
     destination = UPLOAD_DIR / f"{page_id}{suffix}"
+    page_display_name = (existing_page.display_name if existing_page else None) or display_name or page_id
+    if existing_page:
+        _delete_runtime_file(existing_page.original_image_path, UPLOAD_DIR)
+        _delete_runtime_file(existing_page.processed_image_path, PROCESSED_DIR)
+        _delete_page_crops(page_id)
+        database.replace_tokens(page_id, [])
+        database.replace_cards(page_id, [])
     with destination.open("wb") as out:
         shutil.copyfileobj(file.file, out)
     page = Page(
         id=page_id,
         original_image_path=str(destination),
-        display_name=Path(file.filename or page_id).stem or page_id,
+        upload_name=upload_name or (existing_page.upload_name if existing_page else None),
+        display_name=page_display_name,
         processed_image_path=None,
         page_type="uploaded",
         page_type_confidence=0.0,
-        created_at=database.utc_now(),
+        created_at=existing_page.created_at if existing_page else database.utc_now(),
     )
     database.upsert_page(page)
-    return {"page_id": page_id, "status": "uploaded"}
+    return {"page_id": page_id, "status": "replaced" if existing_page else "uploaded"}
 
 
 @router.patch("/pages/{page_id}", responses={404: RESPONSES[404]})
@@ -88,12 +115,53 @@ def delete_page(page_id: str) -> dict[str, str]:
     return {"page_id": page_id, "status": "deleted"}
 
 
-@router.post("/pages/{page_id}/process", responses={404: RESPONSES[404]})
-def process(page_id: str):
+@router.post("/pages/{page_id}/process", responses={400: RESPONSES[400], 404: RESPONSES[404], 409: RESPONSES[409], 503: RESPONSES[503]})
+def process(
+    page_id: str,
+    engine: Annotated[
+        str,
+        Query(description=f"OCR engine to use for candidate generation: {', '.join(sorted(SUPPORTED_OCR_ENGINES))}."),
+    ] = PADDLEOCR_ENGINE,
+):
     page = database.get_page(page_id)
     if not page:
         raise HTTPException(status_code=404, detail=PAGE_NOT_FOUND)
-    return process_page(page)
+    try:
+        normalized_engine = normalize_ocr_engine(engine)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    with ocr_runtime_job(blocking=False) as acquired:
+        if not acquired:
+            raise HTTPException(status_code=409, detail="Another OCR job is already running.")
+        try:
+            if normalized_engine == PADDLEOCR_VL_ENGINE:
+                return run_page_process_worker(page.id, normalized_engine)
+            return process_page(page, engine=normalized_engine)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/pages/dedupe")
+def dedupe_pages() -> dict[str, object]:
+    pages = database.list_pages()
+    grouped: dict[str, list[Page]] = {}
+    for page in pages:
+        key = (page.upload_name or page.display_name or Path(page.original_image_path).stem or page.id).strip()
+        grouped.setdefault(key, []).append(page)
+    removed: list[dict[str, str]] = []
+    for group in grouped.values():
+        if len(group) <= 1:
+            continue
+        keep = sorted(group, key=lambda item: item.created_at, reverse=True)[0]
+        for page in group:
+            if page.id == keep.id:
+                continue
+            database.delete_page(page.id)
+            _delete_runtime_file(page.original_image_path, UPLOAD_DIR)
+            _delete_runtime_file(page.processed_image_path, PROCESSED_DIR)
+            _delete_page_crops(page.id)
+            removed.append({"page_id": page.id, "kept_page_id": keep.id})
+    return {"removed_count": len(removed), "removed": removed}
 
 
 @router.get("/pages/{page_id}/ocr", responses={404: RESPONSES[404]})
@@ -107,7 +175,7 @@ def page_ocr(page_id: str):
     }
 
 
-@router.get("/pages/{page_id}/ocr/compare", responses={404: RESPONSES[404]})
+@router.get("/pages/{page_id}/ocr/compare", responses={404: RESPONSES[404], 409: RESPONSES[409]})
 def compare_page_ocr(page_id: str, provider: Annotated[str, Query()] = OCR_COMPARE_PROVIDER) -> OcrComparison:
     page = database.get_page(page_id)
     if not page:
@@ -116,10 +184,16 @@ def compare_page_ocr(page_id: str, provider: Annotated[str, Query()] = OCR_COMPA
     if not image_path.exists():
         raise HTTPException(status_code=404, detail=PAGE_IMAGE_NOT_FOUND)
     primary_tokens = database.get_tokens(page_id)
-    return compare_ocr_tokens(image_path, page_id, primary_tokens, provider)
+    with ocr_runtime_job(blocking=False) as acquired:
+        if not acquired:
+            raise HTTPException(status_code=409, detail="Another OCR job is already running.")
+        return compare_ocr_tokens(image_path, page_id, primary_tokens, provider)
 
 
-@router.post("/pages/{page_id}/document/parse", responses={404: RESPONSES[404], 503: RESPONSES[503]})
+@router.post(
+    "/pages/{page_id}/document/parse",
+    responses={404: RESPONSES[404], 409: RESPONSES[409], 503: RESPONSES[503]},
+)
 def parse_page_document(page_id: str) -> DocumentParseResult:
     page = database.get_page(page_id)
     if not page:
@@ -127,10 +201,13 @@ def parse_page_document(page_id: str) -> DocumentParseResult:
     image_path = Path(page.processed_image_path or page.original_image_path)
     if not image_path.exists():
         raise HTTPException(status_code=404, detail=PAGE_IMAGE_NOT_FOUND)
-    try:
-        return get_paddle_ocr_vl_parser().parse(image_path, page_id)
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"PaddleOCR-VL parse failed: {exc}") from exc
+    with ocr_runtime_job(blocking=False) as acquired:
+        if not acquired:
+            raise HTTPException(status_code=409, detail="Another OCR job is already running.")
+        try:
+            return run_document_parse_worker(image_path, page_id)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=f"PaddleOCR-VL parse failed: {exc}") from exc
 
 
 @router.get("/pages/{page_id}/cards", responses={404: RESPONSES[404]})
@@ -153,6 +230,47 @@ def update_card(card_id: str, patch: CardUpdate):
     updated = type(card)(**data)
     database.upsert_card(updated)
     return updated
+
+
+@router.post(
+    "/cards/{card_id}/field-ocr/preview",
+    responses={400: RESPONSES[400], 404: RESPONSES[404], 409: RESPONSES[409]},
+)
+def preview_card_field_ocr(card_id: str, request: FieldOcrPreviewRequest) -> FieldOcrPreviewResponse:
+    card = database.get_card(card_id)
+    if not card:
+        raise HTTPException(status_code=404, detail=CARD_NOT_FOUND)
+    page = database.get_page(card.page_id)
+    if not page:
+        raise HTTPException(status_code=404, detail=PAGE_NOT_FOUND)
+    image_path = Path(page.processed_image_path or page.original_image_path)
+    if not image_path.exists():
+        raise HTTPException(status_code=404, detail=PAGE_IMAGE_NOT_FOUND)
+    page_width, page_height = _page_image_size(page, image_path)
+    with ocr_runtime_job(blocking=False) as acquired:
+        if not acquired:
+            raise HTTPException(status_code=409, detail="Another OCR job is already running.")
+        try:
+            return crop_ocr_worker.preview(
+                image_path=image_path,
+                page_id=page.id,
+                card_id=card.id,
+                source=card.source,
+                field=request.field,
+                bbox=request.bbox,
+                page_width=page_width,
+                page_height=page_height,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except CropOcrError as exc:
+            raise HTTPException(status_code=503, detail=f"Crop OCR preview failed: {exc}") from exc
+
+
+@router.get("/ocr/runtime")
+def ocr_runtime() -> OcrRuntimeStatus:
+    crop_ocr_worker.offload_if_idle()
+    return crop_ocr_worker.status()
 
 
 @router.post("/cards/{card_id}/approve", responses={404: RESPONSES[404]})
@@ -216,3 +334,11 @@ def _delete_page_crops(page_id: str) -> None:
                 crop_path.unlink()
         except OSError:
             continue
+
+
+def _page_image_size(page: Page, image_path: Path) -> tuple[int, int]:
+    if page.image_width and page.image_height:
+        return page.image_width, page.image_height
+    with Image.open(image_path) as image:
+        image = ImageOps.exif_transpose(image)
+        return image.size

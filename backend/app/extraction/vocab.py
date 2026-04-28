@@ -7,6 +7,7 @@ import re
 
 from app.core.config import KOREAN_GLOSSARY_PATH
 from app.core.ids import new_id
+from app.extraction.field_evidence import static_evidence, token_evidence
 from app.extraction.geometry import group_tokens_by_line, text_of, union_bbox
 from app.models.schemas import OcrToken
 from app.validation.dictionary import DictionaryValidator
@@ -53,6 +54,11 @@ def extract_vocab_items(tokens: list[OcrToken], validator: DictionaryValidator |
                 "surface": surface,
                 "reading": reading,
                 "meaning_ko": meaning,
+                "field_evidence": {
+                    "surface": token_evidence(surface_tokens, surface),
+                    "reading": token_evidence(reading_tokens, reading),
+                    "meaning_ko": token_evidence(hangul, meaning),
+                },
                 "evidence_tokens": [token.id for token in content],
                 "bbox": bbox,
                 "confidence": round(confidence, 3),
@@ -134,6 +140,11 @@ def _extract_vocab_items_from_layout(
                 "surface": surface,
                 "reading": reading,
                 "meaning_ko": meaning,
+                "field_evidence": {
+                    "surface": token_evidence([surface_token], surface),
+                    "reading": token_evidence([reading_token], reading) if reading_token else static_evidence(reading, "glossary"),
+                    "meaning_ko": token_evidence([meaning_token], meaning) if meaning_token else static_evidence(meaning, "glossary"),
+                },
                 "evidence_tokens": [token.id for token in evidence],
                 "bbox": bbox,
                 "confidence": round(confidence, 3),
@@ -200,6 +211,11 @@ def _dual_vocab_item(
         "surface": surface,
         "reading": reading,
         "meaning_ko": meaning,
+        "field_evidence": {
+            "surface": token_evidence([surface_token], surface),
+            "reading": token_evidence([reading_token], reading),
+            "meaning_ko": token_evidence([meaning_token], meaning),
+        },
         "evidence_tokens": [token.id for token in evidence],
         "bbox": bbox,
         "confidence": round(confidence, 3),
@@ -388,6 +404,15 @@ def _supplement_vocab_items_from_glossary(
                 "surface": entry["surface"],
                 "reading": entry["reading"],
                 "meaning_ko": entry["meaning_ko"],
+                "field_evidence": {
+                    "surface": static_evidence(entry["surface"], "glossary"),
+                    "reading": token_evidence([reading_token], entry["reading"]) if reading_token else static_evidence(entry["reading"], "glossary"),
+                    "meaning_ko": (
+                        token_evidence([meaning_token], entry["meaning_ko"])
+                        if meaning_token
+                        else static_evidence(entry["meaning_ko"], "glossary")
+                    ),
+                },
                 "evidence_tokens": [token.id for token in evidence],
                 "bbox": bbox,
                 "confidence": round(confidence, 3),

@@ -103,35 +103,20 @@ def mcq_cards(page_id: str, item: dict[str, Any]) -> list[CardCandidate]:
 
     prompt = "읽는 법?" if question_type == "reading_mcq" else "올바른 표기는?"
     tags = ["jlpt", "mcq", "reading" if question_type == "reading_mcq" else "writing"]
-    active = CardCandidate(
-        id=new_id("card"),
-        page_id=page_id,
-        source_type="question_item",
-        source_id=source_id,
-        source=source,
-        note_type=f"jp_{question_type}_recall",
-        front=f"{escape(sentence)}<br><br>밑줄: {escape(target)}<br>{prompt}",
-        back=escape(correct_answer),
-        tags=tags,
-        confidence=confidence,
-        review_state=state,
-        source_bbox=bbox,
-        warnings=warnings,
-    )
-    choice_html = "<br>".join(f"{idx}. {escape(str(choice))}" for idx, choice in enumerate(choices, start=1))
-    exam = CardCandidate(
-        id=new_id("card"),
-        page_id=page_id,
-        source_type="question_item",
-        source_id=source_id,
-        source=source,
-        note_type=f"jp_{question_type}_exam",
-        front=f"{escape(sentence)}<br><br>{choice_html}",
-        back=f"정답: {correct_choice_no}. {escape(correct_answer)}",
-        tags=[*tags, "exam-style"],
-        confidence=confidence,
-        review_state=state,
-        source_bbox=bbox,
-        warnings=warnings,
-    )
-    return [active, exam]
+    return [
+        CardCandidate(
+            id=new_id("card"),
+            page_id=page_id,
+            source_type="question_item",
+            source_id=source_id,
+            source=source,
+            note_type=f"jp_{question_type}_recall",
+            front=f"{escape(sentence)}<br><br>밑줄: {escape(target)}<br>{prompt}",
+            back=escape(correct_answer),
+            tags=tags,
+            confidence=confidence,
+            review_state=state,
+            source_bbox=bbox,
+            warnings=warnings,
+        )
+    ]
