@@ -1,6 +1,6 @@
 "use client";
 
-import { type MutableRefObject, useEffect, useRef, useState, useTransition } from "react";
+import { type MutableRefObject, useEffect, useRef, useState } from "react";
 import {
   API_BASE,
   type CardCandidate,
@@ -73,7 +73,6 @@ export function StudyWorkbench() {
   const [documentParse, setDocumentParse] = useState<DocumentParseResult | null>(null);
   const [message, setMessage] = useState("Upload a study-book photo to begin.");
   const [isBatchProcessing, setIsBatchProcessing] = useState(false);
-  const [isPending, startTransition] = useTransition();
   const evidenceRef = useRef<HTMLElement | null>(null);
   const cardRefs = useRef<Record<string, HTMLElement | null>>({});
 
@@ -138,26 +137,6 @@ export function StudyWorkbench() {
     } else {
       setMessage(`Uploaded ${result.uploaded.length} page${result.uploaded.length === 1 ? "" : "s"}. Run processing to create review candidates.`);
     }
-  }
-
-  function onProcess() {
-    if (!selectedPage) return;
-    setMessage("Processing page locally. OCR may take a moment.");
-    startTransition(async () => {
-      try {
-        const result = await processPage(selectedPage.id);
-        setSelectedPage(result.page);
-        setTokens(result.tokens);
-        setCards(result.cards);
-        setSelectedCardId(result.cards[0]?.id ?? null);
-        setComparison(null);
-        setDocumentParse(null);
-        setMessage(`Processed as ${pageTypeLabel(result.page.page_type)}. Generated ${result.cards.length} candidates.`);
-        await refreshPages(result.page.id);
-      } catch (error) {
-        setMessage(apiErrorMessage(error, "Processing failed."));
-      }
-    });
   }
 
   async function onProcessAllPages() {
@@ -385,19 +364,42 @@ export function StudyWorkbench() {
       </section>
 
       <section className="command-bar">
-        <p>{isPending ? "Working..." : message}</p>
+        <p>{isBatchProcessing ? "Working..." : message}</p>
         <div>
-          {selectedPage ? <button onClick={onProcess} disabled={isBatchProcessing}>Process page</button> : null}
           {pages.length ? (
-            <button className="secondary" onClick={() => void onProcessAllPages()} disabled={isBatchProcessing}>
-              Process all pages
+            <button
+              onClick={() => void onProcessAllPages()}
+              disabled={isBatchProcessing}
+              title="Run local PaddleOCR extraction sequentially for all uploaded pages to avoid overusing memory."
+            >
+              Process pages
             </button>
           ) : null}
-          {selectedPage ? <button className="secondary" onClick={() => void onParseDocument()}>PaddleOCR-VL</button> : null}
-          {tokens.length ? <button className="secondary" onClick={onCompareOcr}>Compare GCV</button> : null}
+          {selectedPage ? (
+            <button
+              className="secondary"
+              onClick={() => void onParseDocument()}
+              title="Diagnostic only: asks PaddleOCR-VL for document blocks/markdown. It does not currently generate Anki cards."
+            >
+              Preview VL parse
+            </button>
+          ) : null}
+          {tokens.length ? (
+            <button
+              className="secondary"
+              onClick={onCompareOcr}
+              title="Diagnostic only: compares local PaddleOCR tokens with Google Cloud Vision tokens when Google credentials are configured."
+            >
+              Compare Google OCR
+            </button>
+          ) : null}
           {cards.length ? (
-            <button onClick={onExport} disabled={exportableCount === 0}>
-              Export {exportableCount} approved
+            <button
+              onClick={onExport}
+              disabled={exportableCount === 0}
+              title={`Export ${exportableCount} approved ${exportableCount === 1 ? "entity" : "entities"} to Anki.`}
+            >
+              Export to Anki
             </button>
           ) : null}
         </div>
@@ -850,7 +852,7 @@ function CardEditor({
   return (
     <article
       ref={cardRef}
-      className={`candidate ${draft.review_state} ${selected ? "selected" : "collapsed"}`}
+      className={`candidate ${draft.review_state} ${confidenceClass(draft)} ${selected ? "selected" : "collapsed"}`}
       onClick={onSelect}
     >
       <button

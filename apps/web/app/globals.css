@@ -514,6 +514,22 @@ button:disabled {
   border-left-color: var(--red);
 }
 
+.candidate.confidence-high {
+  border-left-color: var(--green);
+}
+
+.candidate.confidence-medium {
+  border-left-color: var(--yellow);
+}
+
+.candidate.confidence-low {
+  border-left-color: var(--red);
+}
+
+.candidate.confidence-unknown {
+  border-left-color: #f6e27f;
+}
+
 .candidate-head p {
   margin: 0.25rem 0 0;
   color: var(--muted);

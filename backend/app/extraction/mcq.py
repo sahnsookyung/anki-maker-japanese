@@ -4,6 +4,7 @@ from functools import lru_cache
 import json
 from pathlib import Path
 import re
+from statistics import median
 
 from app.core.config import KOREAN_GLOSSARY_PATH
 from app.core.ids import new_id
@@ -71,7 +72,7 @@ def extract_mcq_items(tokens: list[OcrToken], answer_map: dict[int, int], page_t
         token_roles = _token_roles(block, target, correct_answer)
         target_tokens = [token for token in block if _token_role(token, target, correct_answer) == "target"]
         target_bbox = union_bbox([token.bbox for token in target_tokens]) if target_tokens else None
-        confidence = min((token.confidence for token in block), default=0.5)
+        confidence = _block_confidence(block)
         items.append(
             {
                 "id": new_id("q"),
@@ -124,6 +125,8 @@ def _question_blocks(lines: list[list[OcrToken]]) -> list[list[OcrToken]]:
 def _question_no(tokens: list[OcrToken]) -> int | None:
     for token in tokens[:5]:
         text = _normalize_digits(token.text)
+        if _choice_text_after_marker(text) or _choice_chunks(text):
+            continue
         if text in CIRCLED:
             return CIRCLED[text]
         if text.isdigit() and 1 <= int(text) <= 10:
@@ -248,8 +251,28 @@ def _looks_like_prefixed_question_text(text: str) -> bool:
     body = match.group(2).strip()
     if not _has_hiragana(body):
         return False
+    if not body or not (0x3040 <= ord(body[0]) <= 0x309F):
+        return False
     normalized_body = _normalize_for_match(body)
     return "。" in body or len(normalized_body) >= 8
+
+
+def _block_confidence(tokens: list[OcrToken]) -> float:
+    content_confidences = [
+        token.confidence
+        for token in tokens
+        if token.script_class != "punctuation" and _has_japanese_or_number(token.text)
+    ]
+    if not content_confidences:
+        content_confidences = [token.confidence for token in tokens]
+    return round(float(median(content_confidences)), 3) if content_confidences else 0.5
+
+
+def _has_japanese_or_number(text: str) -> bool:
+    return any(
+        char.isdigit() or 0x3040 <= ord(char) <= 0x30FF or 0x4E00 <= ord(char) <= 0x9FFF
+        for char in _normalize_digits(text)
+    )
 
 
 def _looks_like_question_line(line: list[OcrToken]) -> bool:

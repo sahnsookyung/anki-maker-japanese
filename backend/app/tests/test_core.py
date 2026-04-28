@@ -56,25 +56,32 @@ def test_mcq_extraction_keeps_number_prefixed_question_sentences() -> None:
         _token("q1-c2", "2下", 120, 130, "mixed"),
         _token("q1-c3", "3止", 210, 130, "mixed"),
         _token("q1-c4", "4午", 300, 130, "mixed"),
-        _token("q3-sentence", "3なつやすみにがいこくりょこうをするひとがおおくなっている。", 10, 220, "hiragana"),
-        _token("q3-c1", "1大く", 30, 250, "mixed"),
-        _token("q3-stray", "1", 105, 250, "number"),
-        _token("q3-c2", "2太く", 120, 250, "mixed"),
-        _token("q3-c3", "3広く", 210, 250, "mixed"),
-        _token("q3-c4", "4多く", 300, 250, "mixed"),
-        _token("q4-sentence", "4だれかがきょうしつのそとにたっています。", 10, 340, "hiragana"),
-        _token("q4-c1", "1赤って", 30, 370, "mixed"),
-        _token("q4-c2", "2並って", 120, 370, "mixed"),
-        _token("q4-c3", "3丘って", 210, 370, "mixed"),
-        _token("q4-c4", "4立って", 300, 370, "mixed"),
+        _token("q2-sentence-a", "まいにち", 10, 180, "hiragana"),
+        _token("q2-noise", "-", 80, 180, "punctuation", confidence=0.1),
+        _token("q2-sentence-b", "あたらしいかんじをいつつおぼえます。", 120, 180, "hiragana"),
+        _token("q2-c1", "1新しい", 30, 210, "mixed"),
+        _token("q2-c234", "２新しい駅３新い龍４新い", 120, 210, "mixed"),
+        _token("q3-sentence", "3なつやすみにがいこくりょこうをするひとがおおくなっている。", 10, 300, "hiragana"),
+        _token("q3-c1", "1大く", 30, 330, "mixed"),
+        _token("q3-stray", "1", 105, 330, "number"),
+        _token("q3-c2", "2太く", 120, 330, "mixed"),
+        _token("q3-c3", "3広く", 210, 330, "mixed"),
+        _token("q3-c4", "4多く", 300, 330, "mixed"),
+        _token("q4-sentence", "だれかがきょうしつのそとにたっています。", 10, 420, "hiragana"),
+        _token("q4-c1", "1赤って", 30, 450, "mixed"),
+        _token("q4-c2", "2並って", 120, 450, "mixed"),
+        _token("q4-c3", "3丘って", 210, 450, "mixed"),
+        _token("q4-c4", "4立って", 300, 450, "mixed"),
     ]
 
-    items = extract_mcq_items(tokens, {1: 1, 3: 4, 4: 4}, "spelling_mcq")
+    items = extract_mcq_items(tokens, {1: 1, 2: 1, 3: 4, 4: 4}, "spelling_mcq")
 
-    assert [item["question_no"] for item in items] == [1, 3, 4]
+    assert [item["question_no"] for item in items] == [1, 2, 3, 4]
     assert items[0]["target"] == "うえ"
-    assert items[1]["choices"] == ["大く", "太く", "広く", "多く"]
-    assert items[2]["correct_answer"] == "立って"
+    assert items[1]["choices"] == ["新しい", "新しい駅", "新い龍", "新い"]
+    assert items[1]["confidence"] > 0.9
+    assert items[2]["choices"] == ["大く", "太く", "広く", "多く"]
+    assert items[3]["correct_answer"] == "立って"
 
 
 def test_tsv_cleaning() -> None:
@@ -276,13 +283,13 @@ def _card(card_id: str, *, status: str, review_state: str) -> CardCandidate:
     )
 
 
-def _token(token_id: str, text: str, x: float, y: float, script_class: str) -> OcrToken:
+def _token(token_id: str, text: str, x: float, y: float, script_class: str, confidence: float = 0.95) -> OcrToken:
     return OcrToken(
         id=token_id,
         page_id="page-mcq",
         text=text,
         bbox=[x, y, x + 70, y + 20],
-        confidence=0.95,
+        confidence=confidence,
         script_class=script_class,
         source="test",
     )
