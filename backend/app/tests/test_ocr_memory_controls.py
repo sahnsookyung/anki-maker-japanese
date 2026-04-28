@@ -7,6 +7,7 @@ import json
 import subprocess
 import time
 
+import pytest
 from PIL import Image
 
 from app.db import database
@@ -184,7 +185,7 @@ def test_benchmark_default_runner_uses_per_page_subprocesses(tmp_path, monkeypat
     assert commands[0][commands[0].index("--engine") + 1] == "paddleocr"
     assert commands[1][commands[1].index("--engine") + 1] == "paddleocr_vl"
     assert results[0].vl is not None
-    assert results[0].resource_metrics["cpu_seconds"] == 0.75
+    assert results[0].resource_metrics["cpu_seconds"] == pytest.approx(0.75)
 
 
 def test_page_worker_command_enforces_rss_limit(monkeypatch) -> None:
@@ -206,10 +207,10 @@ def test_resource_metrics_include_cpu_ram_and_device_notes() -> None:
         [{"stage": "after_base", "rss_mb": 20.0, "peak_rss_mb": 30.0}],
     )
 
-    assert metrics["wall_seconds"] == 2.0
-    assert metrics["cpu_seconds"] == 1.5
-    assert metrics["cpu_percent_of_one_core"] == 75.0
-    assert metrics["peak_rss_mb"] == 30.0
+    assert metrics["wall_seconds"] == pytest.approx(2.0)
+    assert metrics["cpu_seconds"] == pytest.approx(1.5)
+    assert metrics["cpu_percent_of_one_core"] == pytest.approx(75.0)
+    assert metrics["peak_rss_mb"] == pytest.approx(30.0)
     assert metrics["npu"]["available"] is False
 
 

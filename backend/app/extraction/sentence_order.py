@@ -44,7 +44,7 @@ def _extract_locative_phrase(text: str, subject: str) -> str:
             search_from = subject_index + len(subject)
     suffix = text[search_from:]
     for start in range(len(suffix)):
-        match = re.match(r"([ぁ-んァ-ン一-龯]{1,8}?(?:に|で|へ))", suffix[start:])
+        match = re.match(r"([ぁ-んァ-ン一-龯]{1,8}?[にでへ])", suffix[start:])
         if not match:
             continue
         phrase = match.group(1)

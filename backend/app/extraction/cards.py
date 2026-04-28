@@ -84,7 +84,6 @@ def mcq_cards(page_id: str, item: dict[str, Any]) -> list[CardCandidate]:
     sentence = item.get("sentence", "")
     target = item.get("target", "")
     choices = item.get("choices", [])
-    correct_choice_no = item.get("correct_choice_no")
     correct_answer = item.get("correct_answer", "")
     bbox = item.get("bbox")
     confidence = float(item.get("confidence", 0.5))

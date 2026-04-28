@@ -38,9 +38,10 @@ PAGE_NOT_FOUND = "Page not found."
 PAGE_IMAGE_NOT_FOUND = "Page image not found."
 CARD_NOT_FOUND = "Card not found."
 EXPORT_NOT_FOUND = "Export not found."
+OCR_BUSY_DETAIL = "Another OCR job is already running."
 RESPONSES = {
     400: {"description": "Unsupported request."},
-    409: {"description": "Another OCR job is already running."},
+    409: {"description": OCR_BUSY_DETAIL},
     404: {"description": "Requested resource was not found."},
     503: {"description": "Optional OCR/VLM service is unavailable."},
 }
@@ -132,7 +133,7 @@ def process(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     with ocr_runtime_job(blocking=False) as acquired:
         if not acquired:
-            raise HTTPException(status_code=409, detail="Another OCR job is already running.")
+            raise HTTPException(status_code=409, detail=OCR_BUSY_DETAIL)
         try:
             if normalized_engine == PADDLEOCR_VL_ENGINE:
                 return run_page_process_worker(page.id, normalized_engine)
@@ -152,7 +153,7 @@ def dedupe_pages() -> dict[str, object]:
     for group in grouped.values():
         if len(group) <= 1:
             continue
-        keep = sorted(group, key=lambda item: item.created_at, reverse=True)[0]
+        keep = max(group, key=lambda item: item.created_at)
         for page in group:
             if page.id == keep.id:
                 continue
@@ -186,7 +187,7 @@ def compare_page_ocr(page_id: str, provider: Annotated[str, Query()] = OCR_COMPA
     primary_tokens = database.get_tokens(page_id)
     with ocr_runtime_job(blocking=False) as acquired:
         if not acquired:
-            raise HTTPException(status_code=409, detail="Another OCR job is already running.")
+            raise HTTPException(status_code=409, detail=OCR_BUSY_DETAIL)
         return compare_ocr_tokens(image_path, page_id, primary_tokens, provider)
 
 
@@ -203,7 +204,7 @@ def parse_page_document(page_id: str) -> DocumentParseResult:
         raise HTTPException(status_code=404, detail=PAGE_IMAGE_NOT_FOUND)
     with ocr_runtime_job(blocking=False) as acquired:
         if not acquired:
-            raise HTTPException(status_code=409, detail="Another OCR job is already running.")
+            raise HTTPException(status_code=409, detail=OCR_BUSY_DETAIL)
         try:
             return run_document_parse_worker(image_path, page_id)
         except RuntimeError as exc:
@@ -234,7 +235,7 @@ def update_card(card_id: str, patch: CardUpdate):
 
 @router.post(
     "/cards/{card_id}/field-ocr/preview",
-    responses={400: RESPONSES[400], 404: RESPONSES[404], 409: RESPONSES[409]},
+    responses={400: RESPONSES[400], 404: RESPONSES[404], 409: RESPONSES[409], 503: RESPONSES[503]},
 )
 def preview_card_field_ocr(card_id: str, request: FieldOcrPreviewRequest) -> FieldOcrPreviewResponse:
     card = database.get_card(card_id)
@@ -249,7 +250,7 @@ def preview_card_field_ocr(card_id: str, request: FieldOcrPreviewRequest) -> Fie
     page_width, page_height = _page_image_size(page, image_path)
     with ocr_runtime_job(blocking=False) as acquired:
         if not acquired:
-            raise HTTPException(status_code=409, detail="Another OCR job is already running.")
+            raise HTTPException(status_code=409, detail=OCR_BUSY_DETAIL)
         try:
             return crop_ocr_worker.preview(
                 image_path=image_path,

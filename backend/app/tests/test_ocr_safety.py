@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from PIL import Image
 
 from app.core.images import _resize_if_needed
@@ -44,5 +45,5 @@ def test_paddle_load_image_returns_manual_resize_scale(tmp_path, monkeypatch) ->
     image, scale_x, scale_y = provider._load_image(image_path)
 
     assert image.shape[:2] == (800, 1600)
-    assert scale_x == 1.125
-    assert scale_y == 1.125
+    assert scale_x == pytest.approx(1.125)
+    assert scale_y == pytest.approx(1.125)

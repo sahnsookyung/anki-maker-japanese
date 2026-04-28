@@ -423,7 +423,9 @@ def _fill_missing_choices_by_position(found: dict[int, dict[str, object]], order
         ]
         if not candidates:
             continue
-        candidates.sort(key=lambda token: (abs(((token.bbox[0] + token.bbox[2]) / 2) - expected_x), -token.confidence))
+        candidates.sort(
+            key=lambda token, expected_x=expected_x: (abs(((token.bbox[0] + token.bbox[2]) / 2) - expected_x), -token.confidence)
+        )
         token = candidates[0]
         _set_choice(
             found,

@@ -1,12 +1,13 @@
 "use client";
 
-import { type MutableRefObject, type PointerEvent, useEffect, useRef, useState } from "react";
+import { type PointerEvent, type RefObject, type KeyboardEvent, useEffect, useRef, useState } from "react";
 import {
   API_BASE,
   type CardCandidate,
   type DocumentParseResult,
   type FieldOcrPreview,
   type OcrComparison,
+  type OcrEngine,
   type OcrRuntimeStatus,
   type OcrToken,
   type Page,
@@ -26,7 +27,6 @@ import {
   updatePage,
   uploadImages
 } from "../lib/api";
-import type { OcrEngine } from "../lib/api";
 import {
   type ReviewFilter,
   applyFieldOcrPreview,
@@ -64,6 +64,7 @@ import {
 type OverlayMode = "focused" | "region" | "all" | "off";
 type CardScrollTarget = "evidence" | "card" | "none";
 type FieldRegionDraft = { cardId: string; field: string; bbox: number[] };
+type CardRefs = RefObject<Record<string, HTMLElement | null>>;
 
 const PAGE_TYPE_LABELS: Record<string, string> = {
   uploaded: "Uploaded",
@@ -76,7 +77,40 @@ const PAGE_TYPE_LABELS: Record<string, string> = {
 
 const SCRIPT_LABELS = ["paddleocr", "paddleocr_korean", "hiragana", "katakana", "kanji", "hangul", "mixed", "number"];
 
-export function StudyWorkbench() {
+function batchFailureMessage(total: number, failures: string[], engineLabel: string): string {
+  return `Processed ${total - failures.length}/${total} pages with ${engineLabel}. Failed: ${failures.join(", ")}.`;
+}
+
+function batchSuccessMessage(total: number, engineLabel: string): string {
+  return `Processed ${total} page${total === 1 ? "" : "s"} sequentially with ${engineLabel}.`;
+}
+
+function scrollTargetElement(
+  target: CardScrollTarget,
+  evidenceElement: HTMLElement | null,
+  cardElement: HTMLElement | null
+): HTMLElement | null {
+  if (target === "evidence") return evidenceElement;
+  if (target === "card") return cardElement;
+  return null;
+}
+
+function svgPoint(event: PointerEvent<SVGElement>): [number, number] {
+  const svg = event.currentTarget.ownerSVGElement ?? (event.currentTarget as SVGSVGElement);
+  const point = svg.createSVGPoint();
+  point.x = event.clientX;
+  point.y = event.clientY;
+  const matrix = svg.getScreenCTM();
+  if (!matrix) return [0, 0];
+  const transformed = point.matrixTransform(matrix.inverse());
+  return [transformed.x, transformed.y];
+}
+
+function keyActivatesCard(event: KeyboardEvent<HTMLElement>): boolean {
+  return event.key === "Enter" || event.key === " ";
+}
+
+export function StudyWorkbench() { // NOSONAR: orchestration root delegates rendering/editing to focused child components below.
   const [pages, setPages] = useState<Page[]>([]);
   const [selectedPage, setSelectedPage] = useState<Page | null>(null);
   const [tokens, setTokens] = useState<OcrToken[]>([]);
@@ -207,8 +241,8 @@ export function StudyWorkbench() {
       await refreshPages(selectedPage?.id);
       setMessage(
         failures.length
-          ? `Processed ${pages.length - failures.length}/${pages.length} pages with ${engineLabel}. Failed: ${failures.join(", ")}.`
-          : `Processed ${pages.length} page${pages.length === 1 ? "" : "s"} sequentially with ${engineLabel}.`
+          ? batchFailureMessage(pages.length, failures, engineLabel)
+          : batchSuccessMessage(pages.length, engineLabel)
       );
     } finally {
       setIsBatchProcessing(false);
@@ -242,7 +276,7 @@ export function StudyWorkbench() {
   }
 
   async function cleanupDuplicatePages() {
-    const confirmed = window.confirm("Remove duplicate local page records with the same upload name, keeping the newest copy?");
+    const confirmed = globalThis.confirm("Remove duplicate local page records with the same upload name, keeping the newest copy?");
     if (!confirmed) return;
     try {
       const result = await dedupePages();
@@ -266,7 +300,7 @@ export function StudyWorkbench() {
 
   async function removePage(page: Page) {
     const title = pageTitle(page);
-    const confirmed = window.confirm(`Delete "${title}" and its generated OCR/cards? This only removes local app state.`);
+    const confirmed = globalThis.confirm(`Delete "${title}" and its generated OCR/cards? This only removes local app state.`);
     if (!confirmed) return;
     try {
       await deletePage(page.id);
@@ -336,7 +370,7 @@ export function StudyWorkbench() {
     try {
       const result = await exportTsv([selectedPage.id], { approved_only: true, include_yellow: true, include_red: false });
       setMessage(`Exported ${result.card_count} approved cards.`);
-      window.open(`${API_BASE}${result.download_url}`, "_blank");
+      globalThis.open(`${API_BASE}${result.download_url}`, "_blank");
     } catch (error) {
       setMessage(apiErrorMessage(error, "Export failed."));
     }
@@ -384,8 +418,7 @@ export function StudyWorkbench() {
     setSelectedField((current) => (current && fields.includes(current) ? current : fields[0] ?? null));
     setFieldPreview(null);
     setRegionDraft(null);
-    const target =
-      scrollTarget === "evidence" ? evidenceRef.current : scrollTarget === "card" ? cardRefs.current[card.id] : null;
+    const target = scrollTargetElement(scrollTarget, evidenceRef.current, cardRefs.current[card.id]);
     target?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
@@ -1032,17 +1065,6 @@ function EditableEvidenceBox({
   const [drag, setDrag] = useState<{ mode: string; start: [number, number]; bbox: number[] } | null>(null);
   const [x1, y1, x2, y2] = bbox;
 
-  function svgPoint(event: PointerEvent<SVGElement>): [number, number] {
-    const svg = event.currentTarget.ownerSVGElement ?? (event.currentTarget as SVGSVGElement);
-    const point = svg.createSVGPoint();
-    point.x = event.clientX;
-    point.y = event.clientY;
-    const matrix = svg.getScreenCTM();
-    if (!matrix) return [0, 0];
-    const transformed = point.matrixTransform(matrix.inverse());
-    return [transformed.x, transformed.y];
-  }
-
   function beginDrag(event: PointerEvent<SVGElement>, mode: string) {
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -1129,7 +1151,7 @@ function CandidateList({
 }: Readonly<{
   cards: CardCandidate[];
   selectedCard: CardCandidate | null;
-  cardRefs: MutableRefObject<Record<string, HTMLElement | null>>;
+  cardRefs: CardRefs;
   onSelect: (card: CardCandidate, scrollTarget?: CardScrollTarget) => void;
   onChange: (card: CardCandidate) => Promise<void>;
   onToggleApproval: (card: CardCandidate) => Promise<void>;
@@ -1236,7 +1258,7 @@ function CandidateSection({
   title: string;
   cards: CardCandidate[];
   selectedCard: CardCandidate | null;
-  cardRefs: MutableRefObject<Record<string, HTMLElement | null>>;
+  cardRefs: CardRefs;
   onSelect: (card: CardCandidate, scrollTarget?: CardScrollTarget) => void;
   onChange: (card: CardCandidate) => Promise<void>;
   onToggleApproval: (card: CardCandidate) => Promise<void>;
@@ -1301,7 +1323,7 @@ function CandidateGroups({
 }: Readonly<{
   cards: CardCandidate[];
   selectedCard: CardCandidate | null;
-  cardRefs: MutableRefObject<Record<string, HTMLElement | null>>;
+  cardRefs: CardRefs;
   onSelect: (card: CardCandidate, scrollTarget?: CardScrollTarget) => void;
   onChange: (card: CardCandidate) => Promise<void>;
   onToggleApproval: (card: CardCandidate) => Promise<void>;
@@ -1392,7 +1414,18 @@ function CardEditor({
     <article
       ref={cardRef}
       className={`candidate ${draft.review_state} ${reviewQualityClass(draft)} ${selected ? "selected" : "collapsed"}`}
-      onClick={onSelect}
+      onClick={selected ? undefined : onSelect}
+      onKeyDown={
+        selected
+          ? undefined
+          : (event) => {
+              if (!keyActivatesCard(event)) return;
+              event.preventDefault();
+              onSelect();
+            }
+      }
+      role={selected ? undefined : "button"}
+      tabIndex={selected ? undefined : 0}
     >
       <button
         className="candidate-select"
@@ -1421,7 +1454,7 @@ function CardEditor({
       <SourceSummary card={card} />
 
       {selected ? (
-        <div className="candidate-body" onClick={(event) => event.stopPropagation()}>
+        <div className="candidate-body">
           <FieldEvidenceControls
             card={draft}
             selectedField={selectedField}

@@ -88,7 +88,12 @@ export function tokenConfidenceClass(confidence: number): string {
 }
 
 export function tokenTitle(token: OcrToken, linkedCard: CardCandidate | null, relevant: boolean): string {
-  const use = relevant ? "selected candidate evidence" : linkedCard ? `used by ${candidateTitle(linkedCard)}` : "scanned but unused";
+  let use = "scanned but unused";
+  if (relevant) {
+    use = "selected candidate evidence";
+  } else if (linkedCard) {
+    use = `used by ${candidateTitle(linkedCard)}`;
+  }
   return `${token.text} (${token.source}, ${token.script_class}, OCR ${Math.round(token.confidence * 100)}%, ${use})`;
 }
 

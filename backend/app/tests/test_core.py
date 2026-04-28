@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -693,7 +694,7 @@ def test_card_patch_persists_field_evidence_and_review_metadata(tmp_path, monkey
     assert response.status_code == 200
     updated = database.get_card("card-patch")
     assert updated is not None
-    assert updated.confidence == 0.64
+    assert updated.confidence == pytest.approx(0.64)
     assert updated.review_state == "red"
     assert updated.source_bbox == [1, 2, 3, 4]
     assert updated.warnings == ["manual check"]
