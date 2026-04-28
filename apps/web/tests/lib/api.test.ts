@@ -43,6 +43,12 @@ describe("apiGet", () => {
 
     await expect(apiGet("/api/pages/missing")).rejects.toThrow("Page not found.");
   });
+
+  it("falls back to an HTTP status message when error detail text is empty", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 500 })));
+
+    await expect(apiGet("/api/pages/broken")).rejects.toThrow("Backend request failed with HTTP 500.");
+  });
 });
 
 describe("resolveApiBase", () => {
@@ -139,6 +145,7 @@ describe("API helpers", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ ...card, status: "approved" })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ ...card, front: "updated" })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ card_count: 1, download_url: "/api/exports/export.tsv" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ card_count: 1, download_url: "/api/exports/default.tsv" })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ agreement: 0.75 })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ block_count: 2 })));
     vi.stubGlobal("fetch", fetchMock);
@@ -152,6 +159,7 @@ describe("API helpers", () => {
       card_count: 1,
       download_url: "/api/exports/export.tsv"
     });
+    await expect(exportTsv(["page-1"])).resolves.toEqual({ card_count: 1, download_url: "/api/exports/default.tsv" });
     await expect(compareOcr("page-1", "google vision")).resolves.toEqual({ agreement: 0.75 });
     await expect(parseDocument("page-1")).resolves.toEqual({ block_count: 2 });
 
@@ -161,6 +169,7 @@ describe("API helpers", () => {
       "http://127.0.0.1:8000/api/pages/page-1",
       "http://127.0.0.1:8000/api/cards/card-1/approve",
       "http://127.0.0.1:8000/api/cards/card-1",
+      "http://127.0.0.1:8000/api/exports/tsv",
       "http://127.0.0.1:8000/api/exports/tsv",
       "http://127.0.0.1:8000/api/pages/page-1/ocr/compare?provider=google%20vision",
       "http://127.0.0.1:8000/api/pages/page-1/document/parse"
@@ -172,6 +181,7 @@ describe("API helpers", () => {
     expect(imageUrl("/tmp/backend/processed/page.png")).toBe("http://127.0.0.1:8000/files/processed/page.png");
     expect(imageUrl("/tmp/backend/uploads/page.jpg")).toBe("http://127.0.0.1:8000/files/uploads/page.jpg");
     expect(imageUrl("/tmp/backend/exports/page.tsv")).toBeNull();
+    expect(imageUrl("/tmp/backend/uploads/")).toBeNull();
     expect(imageUrl(null)).toBeNull();
   });
 });

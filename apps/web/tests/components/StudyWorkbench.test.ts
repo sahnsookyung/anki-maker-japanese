@@ -1,11 +1,34 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  bboxFromSource,
+  candidateSubtitle,
+  candidateTitle,
   cardForToken,
+  cardMatchesFilter,
+  clamp,
   confidenceClass,
-  warningKey
-} from "../../components/StudyWorkbench";
-import type { CardCandidate, OcrToken } from "../../lib/api";
+  evidenceSummary,
+  evidenceViewBox,
+  focusBbox,
+  focusedTokenIds,
+  isAnswerSupportToken,
+  isHighConfidenceCard,
+  numberOrEmpty,
+  provenanceLabel,
+  sourceBbox,
+  summarizeCards,
+  syncQuestionAnswerBack,
+  textValue,
+  tokenConfidenceClass,
+  tokenDisplayClass,
+  tokenInside,
+  tokenTitle,
+  unionBoxes,
+  warningKey,
+  workflowClass
+} from "../../lib/review";
+import type { CardCandidate, OcrToken, Page } from "../../lib/api";
 
 describe("StudyWorkbench evidence helpers", () => {
   it("treats 92% candidate confidence as high-confidence visual evidence", () => {
@@ -25,6 +48,117 @@ describe("StudyWorkbench evidence helpers", () => {
     const warning = "Page contour confidence was low; using full image.";
 
     expect(warningKey(warning, 0)).not.toBe(warningKey(warning, 1));
+  });
+
+  it("summarizes and filters candidates for review lists", () => {
+    const green = candidate({ id: "green", status: "approved", review_state: "green", confidence: 0.95 });
+    const yellow = candidate({ id: "yellow", review_state: "yellow", warnings: ["Check answer"] });
+    const red = candidate({ id: "red", review_state: "red" });
+
+    expect(summarizeCards([green, yellow, red])).toEqual({ total: 3, approved: 1, needsReview: 1, red: 1 });
+    expect(cardMatchesFilter(green, "approved")).toBe(true);
+    expect(cardMatchesFilter(yellow, "needs_review")).toBe(true);
+    expect(cardMatchesFilter(red, "red")).toBe(true);
+    expect(cardMatchesFilter(green, "all")).toBe(true);
+    expect(isHighConfidenceCard(green)).toBe(true);
+    expect(isHighConfidenceCard({ ...green, warnings: ["manual review"] })).toBe(false);
+  });
+
+  it("marks workflow steps complete only when their prerequisites exist", () => {
+    const page = appPage({ page_type: "uploaded" });
+    const processedPage = appPage({ page_type: "reading_mcq" });
+    const cards = [candidate()];
+
+    expect(workflowClass(0, page, [], 0)).toBe("step complete");
+    expect(workflowClass(1, page, [], 0)).toBe("step");
+    expect(workflowClass(1, processedPage, [], 0)).toBe("step complete");
+    expect(workflowClass(2, processedPage, cards, 0)).toBe("step complete");
+    expect(workflowClass(3, processedPage, cards, 1)).toBe("step complete");
+    expect(workflowClass(3, processedPage, cards, 0)).toBe("step");
+  });
+
+  it("builds confidence-aware token display metadata", () => {
+    const page = appPage({ page_type: "reading_mcq", image_height: 1000 });
+    const selected = candidate({ confidence: 0.95, source: { question_no: 1, target: "うえ" } });
+    const token = ocrToken({ text: "1①", bbox: [10, 900, 20, 920], confidence: 0.72 });
+
+    expect(tokenDisplayClass(token, page, selected, selected, true)).toContain("selected-evidence confidence-high");
+    expect(tokenDisplayClass(token, page, null, candidate({ confidence: 0.8 }), false)).toBe("candidate-evidence confidence-medium");
+    expect(tokenDisplayClass(token, page, null, null, false)).toBe("used-context answer-support");
+    expect(tokenDisplayClass(ocrToken({ text: "abc", confidence: 0.5 }), appPage(), null, null, false)).toBe(
+      "scanned-unused token-confidence-low"
+    );
+    expect(tokenConfidenceClass(0.95)).toBe("high");
+    expect(tokenConfidenceClass(0.8)).toBe("medium");
+    expect(tokenConfidenceClass(0.2)).toBe("low");
+    expect(tokenTitle(token, selected, false)).toContain("used by Question 1");
+    expect(tokenTitle(token, null, true)).toContain("selected candidate evidence");
+    expect(isAnswerSupportToken(token, page)).toBe(true);
+    expect(isAnswerSupportToken(token, appPage({ page_type: "vocab_table" }))).toBe(false);
+  });
+
+  it("computes focused evidence geometry", () => {
+    const card = candidate({ source_bbox: [0, 0, 100, 100], source: { evidence_tokens: ["token-a", 3, "token-b"] } });
+    const tokens = [
+      ocrToken({ id: "token-a", bbox: [5, 10, 30, 35] }),
+      ocrToken({ id: "token-b", bbox: [40, 20, 70, 60] }),
+      ocrToken({ id: "other", bbox: [200, 200, 250, 250] })
+    ];
+
+    expect([...focusedTokenIds(card)]).toEqual(["token-a", "token-b"]);
+    expect(unionBoxes(tokens.slice(0, 2).map((token) => token.bbox))).toEqual([5, 10, 70, 60]);
+    expect(unionBoxes([[1, 2, 3]])).toBeNull();
+    expect(focusBbox(card, tokens)).toEqual([5, 10, 70, 60]);
+    expect(focusBbox(candidate({ source_bbox: [8, 9, 10, 11], source: {} }), [])).toEqual([8, 9, 10, 11]);
+    expect(sourceBbox(candidate({ source_bbox: null, source: { bbox: [1, 2, 3, 4] } }))).toEqual([1, 2, 3, 4]);
+    expect(bboxFromSource({ bbox: [1, 2, "bad", 4] })).toBeNull();
+    expect(tokenInside(ocrToken({ bbox: [20, 20, 30, 30] }), [10, 10, 40, 40])).toBe(true);
+    expect(tokenInside(ocrToken({ bbox: [80, 80, 90, 90] }), [10, 10, 40, 40])).toBe(false);
+  });
+
+  it("computes evidence viewport with clamped bounds", () => {
+    const page = appPage({ image_width: 1000, image_height: 2000 });
+
+    expect(evidenceViewBox(page, null)).toBe("0 0 1000 2000");
+    expect(evidenceViewBox(page, [900, 1800, 980, 1900])).toBe("456 1316 544 684");
+    expect(clamp(12, 0, 10)).toBe(10);
+    expect(clamp(-2, 0, 10)).toBe(0);
+  });
+
+  it("formats candidate and source text helpers", () => {
+    const vocab = candidate({
+      source_type: "vocab_item",
+      source: { surface: "学校", reading: "がっこう" },
+      note_type: "jp_vocab_reading"
+    });
+    const question = candidate({
+      note_type: "jp_spelling_mcq_exam",
+      source: { question_no: 6, target: "なまえ", correct_answer: "名前", correct_choice_no: 2 }
+    });
+
+    expect(candidateTitle(vocab)).toBe("学校 · がっこう");
+    expect(candidateTitle(question)).toBe("Question 6 · なまえ");
+    expect(candidateSubtitle(question)).toBe("jp_spelling_mcq_exam · 92% confidence");
+    expect(provenanceLabel("answer_strip")).toBe("answer strip");
+    expect(provenanceLabel("local_glossary")).toBe("review carefully");
+    expect(provenanceLabel("manual")).toBe("manual");
+    expect(provenanceLabel("model_inferred")).toBe("model inferred");
+    expect(textValue(true)).toBe("true");
+    expect(textValue(null, "fallback")).toBe("fallback");
+    expect(numberOrEmpty("")).toBe("");
+    expect(numberOrEmpty("7")).toBe(7);
+    expect(numberOrEmpty("oops")).toBe("oops");
+    expect(syncQuestionAnswerBack(question, question.source).back).toBe("정답: 2. 名前");
+    expect(syncQuestionAnswerBack({ ...question, note_type: "jp_spelling_mcq_recall" }, question.source).back).toBe("名前");
+    expect(syncQuestionAnswerBack(question, { correct_answer: "" }).back).toBe(question.back);
+  });
+
+  it("summarizes evidence availability", () => {
+    expect(evidenceSummary(candidate({ source: { evidence_tokens: ["token-1"] } }))).toContain("1 evidence tokens");
+    expect(evidenceSummary(candidate({ source: {}, source_bbox: [1, 2, 3, 4] }))).toBe(
+      "Source region is highlighted for the selected candidate."
+    );
+    expect(evidenceSummary(candidate({ source: {}, source_bbox: null }))).toContain("switch to All OCR");
   });
 });
 
@@ -57,6 +191,21 @@ function ocrToken(overrides: Partial<OcrToken> = {}): OcrToken {
     confidence: 0.95,
     script_class: "hiragana",
     source: "paddleocr",
+    ...overrides
+  };
+}
+
+function appPage(overrides: Partial<Page> = {}): Page {
+  return {
+    id: "page-1",
+    original_image_path: "/uploads/page.jpg",
+    processed_image_path: null,
+    page_type: "uploaded",
+    page_type_confidence: 0.9,
+    image_width: 1000,
+    image_height: 1000,
+    warnings: [],
+    created_at: "2026-04-28T00:00:00Z",
     ...overrides
   };
 }
