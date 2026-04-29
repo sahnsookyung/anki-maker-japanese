@@ -511,16 +511,17 @@ def test_process_page_accepts_explicit_ocr_engine(tmp_path, monkeypatch) -> None
         created_at="2026-04-28T00:00:00+00:00",
     )
     database.upsert_page(page)
-    captured: dict[str, str] = {}
+    captured: dict[str, str | float] = {}
 
     def fake_process_page(page_arg: Page, engine: str = "paddleocr") -> ProcessResult:
         captured["page_id"] = page_arg.id
         captured["engine"] = engine
         return ProcessResult(page=page_arg, tokens=[], cards=[], script_summary={}, answer_map={})
 
-    def fake_worker(page_id: str, engine: str) -> ProcessResult:
+    def fake_worker(page_id: str, engine: str, **kwargs) -> ProcessResult:
         captured["page_id"] = page_id
         captured["engine"] = engine
+        captured["max_rss_mb"] = kwargs["max_rss_mb"]
         return ProcessResult(page=page, tokens=[], cards=[], script_summary={}, answer_map={})
 
     monkeypatch.setattr(routes, "process_page", fake_process_page)
@@ -530,7 +531,11 @@ def test_process_page_accepts_explicit_ocr_engine(tmp_path, monkeypatch) -> None
     response = client.post("/api/pages/page-engine/process?engine=paddleocr_vl")
 
     assert response.status_code == 200
-    assert captured == {"page_id": "page-engine", "engine": "paddleocr_vl"}
+    assert captured == {
+        "page_id": "page-engine",
+        "engine": "paddleocr_vl",
+        "max_rss_mb": routes.OCR_VL_PAGE_WORKER_MAX_RSS_MB,
+    }
 
 
 def test_document_parse_route_uses_bounded_worker(tmp_path, monkeypatch) -> None:
@@ -549,11 +554,12 @@ def test_document_parse_route_uses_bounded_worker(tmp_path, monkeypatch) -> None
             created_at="2026-04-28T00:00:00+00:00",
         )
     )
-    captured: dict[str, str] = {}
+    captured: dict[str, str | float] = {}
 
-    def fake_document_worker(path, page_id: str) -> DocumentParseResult:
+    def fake_document_worker(path, page_id: str, **kwargs) -> DocumentParseResult:
         captured["path"] = str(path)
         captured["page_id"] = page_id
+        captured["max_rss_mb"] = kwargs["max_rss_mb"]
         return DocumentParseResult(
             page_id=page_id,
             provider="paddleocr_vl",
@@ -570,7 +576,11 @@ def test_document_parse_route_uses_bounded_worker(tmp_path, monkeypatch) -> None
     response = client.post("/api/pages/page-document/document/parse")
 
     assert response.status_code == 200
-    assert captured == {"path": str(image_path), "page_id": "page-document"}
+    assert captured == {
+        "path": str(image_path),
+        "page_id": "page-document",
+        "max_rss_mb": routes.OCR_VL_PAGE_WORKER_MAX_RSS_MB,
+    }
     assert response.json()["block_count"] == 1
 
 

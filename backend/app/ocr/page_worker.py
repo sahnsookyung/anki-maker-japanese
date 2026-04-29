@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,9 @@ from app.extraction.pipeline import process_page
 from app.models.schemas import DocumentParseResult, ProcessResult
 from app.ocr.engines import normalize_ocr_engine
 from app.vision.paddle_ocr_vl import get_paddle_ocr_vl_parser
+
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def run_page_process_worker(
@@ -43,7 +47,7 @@ def run_page_process_worker(
         ]
         completed = _run_worker_command(cmd, timeout_seconds=timeout_seconds, max_rss_mb=max_rss_mb)
         if completed.returncode != 0 or not output_path.exists():
-            detail = completed.stderr.strip() or completed.stdout.strip() or f"Page OCR worker exited with {completed.returncode}."
+            detail = _worker_failure_detail(completed, "Page OCR worker")
             raise RuntimeError(detail)
         return ProcessResult.model_validate_json(output_path.read_text(encoding="utf-8"))
     finally:
@@ -75,14 +79,19 @@ def run_document_parse_worker(
         ]
         completed = _run_worker_command(cmd, timeout_seconds=timeout_seconds, max_rss_mb=max_rss_mb)
         if completed.returncode != 0 or not output_path.exists():
-            detail = completed.stderr.strip() or completed.stdout.strip() or f"Document OCR worker exited with {completed.returncode}."
+            detail = _worker_failure_detail(completed, "Document OCR worker")
             raise RuntimeError(detail)
         return DocumentParseResult.model_validate_json(output_path.read_text(encoding="utf-8"))
     finally:
         output_path.unlink(missing_ok=True)
 
 
-def _run_worker_command(cmd: list[str], *, timeout_seconds: float, max_rss_mb: float) -> subprocess.CompletedProcess[str]:
+def _run_worker_command(
+    cmd: list[str],
+    *,
+    timeout_seconds: float,
+    max_rss_mb: float,
+) -> subprocess.CompletedProcess[str]:
     process = subprocess.Popen(  # NOSONAR
         cmd,
         stdout=subprocess.PIPE,
@@ -114,6 +123,45 @@ def _run_worker_command(cmd: list[str], *, timeout_seconds: float, max_rss_mb: f
         stderr = "\n".join(part for part in (stderr, failure_reason) if part)
         return subprocess.CompletedProcess(cmd, process.returncode or 137, stdout, stderr)
     return subprocess.CompletedProcess(cmd, process.returncode or 0, stdout, stderr)
+
+
+def _worker_failure_detail(completed: subprocess.CompletedProcess[str], label: str) -> str:
+    lines = _clean_worker_output(completed.stderr, completed.stdout)
+    guardrail_lines = [line for line in lines if "RSS limit" in line or "exceeded timeout" in line]
+    if guardrail_lines:
+        detail = guardrail_lines[-1]
+        if "RSS limit" in detail:
+            detail += (
+                " Increase OCR_VL_PAGE_WORKER_MAX_RSS_MB for OCR-VL if this machine has enough RAM, "
+                "or use Process with PaddleOCR."
+            )
+        return detail
+    actionable_lines = [
+        line
+        for line in lines
+        if not (
+            line.startswith("Creating model:")
+            or line.startswith("Model files already exist.")
+            or line.startswith("Loading configuration file")
+            or line.startswith("Loading weights file")
+            or line.startswith("Loaded weights file")
+            or line.startswith("use GQA")
+            or line.startswith("Bucketed engine_config")
+        )
+    ]
+    if actionable_lines:
+        return actionable_lines[-1]
+    return f"{label} exited with {completed.returncode}."
+
+
+def _clean_worker_output(*parts: str) -> list[str]:
+    lines: list[str] = []
+    for part in parts:
+        for line in ANSI_RE.sub("", part or "").splitlines():
+            cleaned = line.strip()
+            if cleaned:
+                lines.append(cleaned)
+    return lines
 
 
 def _terminate_process(process: subprocess.Popen[str]) -> None:

@@ -200,6 +200,39 @@ def test_page_worker_command_enforces_rss_limit(monkeypatch) -> None:
     assert "RSS limit" in completed.stderr
 
 
+def test_page_worker_failure_detail_prefers_guardrail_message() -> None:
+    completed = subprocess.CompletedProcess(
+        ["python", "-m", "worker"],
+        137,
+        "\x1b[32muse GQA - num_heads: 16\x1b[0m\n",
+        "\n".join(
+            [
+                "\x1b[32mLoading weights file model.safetensors\x1b[0m",
+                "Page OCR worker exceeded RSS limit of 6144 MB (observed 8171 MB).",
+            ]
+        ),
+    )
+
+    detail = page_worker._worker_failure_detail(completed, "Page OCR worker")
+
+    assert detail.startswith("Page OCR worker exceeded RSS limit of 6144 MB")
+    assert "Increase OCR_VL_PAGE_WORKER_MAX_RSS_MB" in detail
+    assert "Loading weights file" not in detail
+
+
+def test_page_worker_failure_detail_filters_model_loading_noise() -> None:
+    completed = subprocess.CompletedProcess(
+        ["python", "-m", "worker"],
+        1,
+        "Creating model: ('PaddleOCR-VL-1.5-0.9B', None, None)\n",
+        "use GQA - num_heads: 16\nA dependency error occurred during pipeline creation.",
+    )
+
+    detail = page_worker._worker_failure_detail(completed, "Page OCR worker")
+
+    assert detail == "A dependency error occurred during pipeline creation."
+
+
 def test_resource_metrics_include_cpu_ram_and_device_notes() -> None:
     metrics = benchmark_ocr_modes._resource_metrics(
         {"wall_seconds": 1.0, "user_cpu_seconds": 2.0, "system_cpu_seconds": 0.5},

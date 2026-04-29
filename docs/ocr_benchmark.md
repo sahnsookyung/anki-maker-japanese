@@ -69,10 +69,12 @@ Run a cautious one-page PaddleOCR-VL comparison:
 
 ```bash
 cd backend
-uv run python scripts/benchmark_ocr_modes.py --engine all --vl-limit 1 --worker-timeout-seconds 120 --worker-max-rss-mb 4096
+uv run python scripts/benchmark_ocr_modes.py --engine all --vl-limit 1 --worker-timeout-seconds 120 --worker-max-rss-mb 14336
 ```
 
 Keep `--vl-limit` low at first. PaddleOCR-VL is intentionally opt-in because it is heavier than the base OCR path, and this project has already seen local memory pressure from vision-model experiments. The worker memory cap is deliberate: a failed VL run should become a benchmark record, not a laptop crash.
+
+In the app server, base PaddleOCR page workers use `OCR_PAGE_WORKER_MAX_RSS_MB` and OCR-VL page/document workers use `OCR_VL_PAGE_WORKER_MAX_RSS_MB`. The default OCR-VL cap is higher because local PaddleOCR-VL 1.5 loads above the base OCR cap on this machine and one smoke parse sampled around 11.8 GB RSS; lower it if you need stricter safety, or raise it only when you have enough RAM headroom.
 
 Run golden scoring directly:
 
@@ -100,6 +102,6 @@ On April 28, 2026, guarded subprocess-isolated local runs showed:
 - The measured default, Japanese PP-OCRv3 mobile + Korean PP-OCRv5, reached 100% vocab row accuracy and 100% MCQ semantic accuracy on all four golden pages.
 - MCQ source-field accuracy is stricter than card accuracy and currently exposes remaining OCR/layout roughness on the MCQ pages.
 - Base PaddleOCR page workers peaked around 2.8 GB RSS per page on the current machine.
-- PaddleOCR-VL model loading exceeded a cautious 4096 MB worker cap during the local one-page comparison, so the benchmark reported a safe `worker_failed` result instead of continuing until the machine became unstable.
+- PaddleOCR-VL model loading exceeded a cautious 4096 MB worker cap during the local one-page comparison, later loaded successfully far enough to trip the old 6144 MB app cap at roughly 8171 MB RSS, and a bounded one-page document parse sampled around 11.8 GB RSS. The app now uses a separate `OCR_VL_PAGE_WORKER_MAX_RSS_MB` default of 14336 MB so VL can run with a bounded but realistic guardrail.
 
 Interpret those notes as a local hardware/resource snapshot, not a universal model limit. If you raise `--worker-max-rss-mb`, run one page at a time and keep the JSON metrics so the result is comparable.

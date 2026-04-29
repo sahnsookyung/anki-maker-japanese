@@ -8,7 +8,14 @@ from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from PIL import Image, ImageOps
 
-from app.core.config import CROP_DIR, EXPORT_DIR, OCR_COMPARE_PROVIDER, PROCESSED_DIR, UPLOAD_DIR
+from app.core.config import (
+    CROP_DIR,
+    EXPORT_DIR,
+    OCR_COMPARE_PROVIDER,
+    OCR_VL_PAGE_WORKER_MAX_RSS_MB,
+    PROCESSED_DIR,
+    UPLOAD_DIR,
+)
 from app.core.ids import new_id
 from app.db import database
 from app.export.tsv import write_tsv
@@ -136,7 +143,7 @@ def process(
             raise HTTPException(status_code=409, detail=OCR_BUSY_DETAIL)
         try:
             if normalized_engine == PADDLEOCR_VL_ENGINE:
-                return run_page_process_worker(page.id, normalized_engine)
+                return run_page_process_worker(page.id, normalized_engine, max_rss_mb=OCR_VL_PAGE_WORKER_MAX_RSS_MB)
             return process_page(page, engine=normalized_engine)
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -206,7 +213,7 @@ def parse_page_document(page_id: str) -> DocumentParseResult:
         if not acquired:
             raise HTTPException(status_code=409, detail=OCR_BUSY_DETAIL)
         try:
-            return run_document_parse_worker(image_path, page_id)
+            return run_document_parse_worker(image_path, page_id, max_rss_mb=OCR_VL_PAGE_WORKER_MAX_RSS_MB)
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=f"PaddleOCR-VL parse failed: {exc}") from exc
 
