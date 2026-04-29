@@ -38,6 +38,16 @@ export function initialReviewCardId(cards: CardCandidate[]): string | null {
   return cards.find((card) => !isHighConfidenceCard(card))?.id ?? cards[0]?.id ?? null;
 }
 
+export function nextReviewCardId(cards: CardCandidate[], currentCardId: string): string | null {
+  const currentIndex = cards.findIndex((card) => card.id === currentCardId);
+  const afterCurrent = currentIndex >= 0 ? cards.slice(currentIndex + 1) : cards;
+  return (
+    afterCurrent.find((card) => card.status !== "approved" && card.review_state !== "red")?.id ??
+    cards.find((card) => card.status !== "approved" && card.review_state !== "red" && card.id !== currentCardId)?.id ??
+    null
+  );
+}
+
 export function reviewQualityClass(card: CardCandidate | null): string {
   if (!card) return "confidence-unknown";
   if (card.review_state === "red") return "confidence-low";

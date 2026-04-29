@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import shutil
 from typing import Annotated
 
@@ -154,7 +155,9 @@ def dedupe_pages() -> dict[str, object]:
     pages = database.list_pages()
     grouped: dict[str, list[Page]] = {}
     for page in pages:
-        key = (page.upload_name or page.display_name or Path(page.original_image_path).stem or page.id).strip()
+        key = _page_cleanup_key(page)
+        if not key:
+            continue
         grouped.setdefault(key, []).append(page)
     removed: list[dict[str, str]] = []
     for group in grouped.values():
@@ -342,6 +345,25 @@ def _delete_page_crops(page_id: str) -> None:
                 crop_path.unlink()
         except OSError:
             continue
+
+
+def _page_cleanup_key(page: Page) -> str | None:
+    upload_name = (page.upload_name or "").strip()
+    if upload_name:
+        return f"upload:{upload_name.casefold()}"
+
+    # Legacy rows created before upload_name tracking can still be deduped when their
+    # stored original filename is a human-facing import name rather than an internal page id.
+    original_name = Path(page.original_image_path).name.strip()
+    if not original_name:
+        return None
+    original_stem = Path(original_name).stem.strip()
+    if not original_stem or re.fullmatch(r"page_[0-9a-f]{12}", original_stem):
+        return None
+    display_name = (page.display_name or "").strip()
+    if display_name and display_name != original_stem:
+        return None
+    return f"legacy:{original_name.casefold()}"
 
 
 def _page_image_size(page: Page, image_path: Path) -> tuple[int, int]:

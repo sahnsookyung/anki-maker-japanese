@@ -22,6 +22,7 @@ import {
   initialReviewCardId,
   isAnswerSupportToken,
   isHighConfidenceCard,
+  nextReviewCardId,
   numberOrEmpty,
   provenanceLabel,
   reviewReasonBadges,
@@ -106,6 +107,10 @@ describe("StudyWorkbench evidence helpers", () => {
     expect(initialReviewCardId([green, yellow])).toBe("yellow");
     expect(initialReviewCardId([green])).toBe("green");
     expect(initialReviewCardId([])).toBeNull();
+    expect(nextReviewCardId([yellow, green, red], "yellow")).toBeNull();
+    expect(nextReviewCardId([{ ...yellow, status: "approved" }], "yellow")).toBeNull();
+    expect(nextReviewCardId([yellow, candidate({ id: "next", review_state: "yellow" })], "yellow")).toBe("next");
+    expect(nextReviewCardId([candidate({ id: "first", review_state: "yellow" }), green], "missing")).toBe("first");
   });
 
   it("marks workflow steps complete only when their prerequisites exist", () => {

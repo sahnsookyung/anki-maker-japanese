@@ -32,7 +32,7 @@ def process_page(page: Page, engine: str = PADDLEOCR_ENGINE) -> ProcessResult:
     cards: list[CardCandidate] = []
     all_tokens = list(tokens)
     if page_type == "vocab_table":
-        if VOCAB_DUAL_OCR_ENABLED and engine_result.engine == PADDLEOCR_ENGINE:
+        if VOCAB_DUAL_OCR_ENABLED and not any(token.source == PADDLEOCR_VL_ENGINE for token in tokens):
             korean_tokens, korean_ocr_warnings = recognize_with_provider(processed_path, page.id, "paddle_korean")
             all_tokens.extend(korean_tokens)
             ocr_warnings.extend(korean_ocr_warnings)

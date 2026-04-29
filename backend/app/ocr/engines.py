@@ -30,11 +30,69 @@ def run_ocr_engine(image_path: Path, page_id: str, engine: str = PADDLEOCR_ENGIN
         tokens, warnings = recognize_with_warnings(image_path, page_id)
         return OcrEngineResult(engine=normalized, tokens=tokens, warnings=warnings)
     parsed = get_paddle_ocr_vl_parser().parse(image_path, page_id)
-    tokens, conversion_warnings = tokens_from_document_parse(parsed)
-    warnings = [*parsed.warnings, *conversion_warnings]
+    vl_tokens, conversion_warnings = tokens_from_document_parse(parsed)
+    geometry_tokens, geometry_warnings = recognize_with_warnings(image_path, page_id)
+    tokens = _align_tokens_to_geometry(vl_tokens, geometry_tokens) if geometry_tokens else vl_tokens
+    warnings = [
+        *parsed.warnings,
+        *conversion_warnings,
+        *geometry_warnings,
+        (
+            "PaddleOCR-VL text was parsed, but visual evidence uses PaddleOCR word boxes "
+            "because VL boxes are document-block geometry."
+        ),
+    ]
+    if geometry_tokens and vl_tokens:
+        warnings.append("PaddleOCR-VL tokens keep VL text with PaddleOCR-aligned evidence boxes when text matches.")
+    elif not geometry_tokens and vl_tokens:
+        warnings.append("PaddleOCR word geometry was unavailable; using PaddleOCR-VL block-derived boxes for review only.")
     if not tokens:
         warnings.append("PaddleOCR-VL produced no normalized OCR tokens; review page manually.")
     return OcrEngineResult(engine=normalized, tokens=tokens, warnings=warnings, document_parse=parsed)
+
+
+def _align_tokens_to_geometry(vl_tokens: list[OcrToken], geometry_tokens: list[OcrToken]) -> list[OcrToken]:
+    if not vl_tokens or not geometry_tokens:
+        return vl_tokens
+    used_geometry_ids: set[str] = set()
+    aligned: list[OcrToken] = []
+    for token in vl_tokens:
+        match = _best_geometry_match(token, geometry_tokens, used_geometry_ids)
+        if match is None:
+            aligned.append(token)
+            continue
+        used_geometry_ids.add(match.id)
+        aligned.append(
+            token.model_copy(
+                update={
+                    "bbox": match.bbox,
+                    "confidence": min(token.confidence, match.confidence),
+                }
+            )
+        )
+    return aligned
+
+
+def _best_geometry_match(token: OcrToken, geometry_tokens: list[OcrToken], used_geometry_ids: set[str]) -> OcrToken | None:
+    normalized_token = _normalize_match_text(token.text)
+    if not normalized_token:
+        return None
+    candidates = [
+        candidate
+        for candidate in geometry_tokens
+        if candidate.id not in used_geometry_ids and _normalize_match_text(candidate.text) == normalized_token
+    ]
+    if not candidates:
+        return None
+    token_center_y = (token.bbox[1] + token.bbox[3]) / 2
+    return min(candidates, key=lambda candidate: (abs(((candidate.bbox[1] + candidate.bbox[3]) / 2) - token_center_y), -candidate.confidence))
+
+
+def _normalize_match_text(text: str) -> str:
+    normalized = re.sub(r"\\(?:underline|text)\{([^{}]*)\}", r"\1", text)
+    normalized = re.sub(r"\\[A-Za-z]+", "", normalized)
+    normalized = normalized.replace("{", "").replace("}", "")
+    return re.sub(r"\s+", "", normalized)
 
 
 def normalize_ocr_engine(engine: str | None) -> str:

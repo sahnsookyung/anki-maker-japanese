@@ -1,0 +1,53 @@
+export type PageTiming = {
+  pageId: string;
+  pageTitle: string;
+  ms: number;
+  success: boolean;
+};
+
+export function durationMs(start: number, end: number): number {
+  return Math.max(0, Math.round(end - start));
+}
+
+export function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.round(seconds % 60);
+  return `${minutes}m ${remainder}s`;
+}
+
+export function percentile(values: number[], percentileValue: number): number {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((first, second) => first - second);
+  const clamped = Math.min(1, Math.max(0, percentileValue));
+  const index = Math.round((sorted.length - 1) * clamped);
+  return sorted[index];
+}
+
+export function batchTimingSummary(
+  timings: PageTiming[],
+  totalPages: number,
+  failures: string[],
+  engineLabel: string
+): string {
+  const measured = timings.map((timing) => timing.ms);
+  const totalMs = measured.reduce((sum, value) => sum + value, 0);
+  const averageMs = measured.length ? totalMs / measured.length : 0;
+  const minMs = measured.length ? Math.min(...measured) : 0;
+  const maxMs = measured.length ? Math.max(...measured) : 0;
+  const prefix = failures.length
+    ? `Processed ${totalPages - failures.length}/${totalPages} pages with ${engineLabel}`
+    : `Processed ${totalPages} page${totalPages === 1 ? "" : "s"} with ${engineLabel}`;
+  const stats = [
+    `total ${formatDuration(totalMs)}`,
+    `avg ${formatDuration(averageMs)}`,
+    `min ${formatDuration(minMs)}`,
+    `p25 ${formatDuration(percentile(measured, 0.25))}`,
+    `p75 ${formatDuration(percentile(measured, 0.75))}`,
+    `max ${formatDuration(maxMs)}`
+  ].join(", ");
+  const failureText = failures.length ? ` Failed: ${failures.join(", ")}.` : ".";
+  return `${prefix} in frontend time: ${stats}${failureText}`;
+}

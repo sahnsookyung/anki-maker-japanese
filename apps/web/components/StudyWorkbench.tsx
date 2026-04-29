@@ -11,6 +11,7 @@ import {
   type OcrRuntimeStatus,
   type OcrToken,
   type Page,
+  type ProcessResult,
   apiGet,
   apiErrorMessage,
   approveCard,
@@ -27,6 +28,7 @@ import {
   updatePage,
   uploadImages
 } from "../lib/api";
+import { batchTimingSummary, durationMs, formatDuration, type PageTiming } from "../lib/batchTiming";
 import {
   type ReviewFilter,
   applyFieldOcrPreview,
@@ -45,6 +47,7 @@ import {
   focusedTokenIdsForField,
   initialReviewCardId,
   isHighConfidenceCard,
+  nextReviewCardId,
   numberOrEmpty,
   provenanceLabel,
   reviewReasonBadges,
@@ -76,14 +79,6 @@ const PAGE_TYPE_LABELS: Record<string, string> = {
 };
 
 const SCRIPT_LABELS = ["paddleocr", "paddleocr_korean", "hiragana", "katakana", "kanji", "hangul", "mixed", "number"];
-
-function batchFailureMessage(total: number, failures: string[], engineLabel: string): string {
-  return `Processed ${total - failures.length}/${total} pages with ${engineLabel}. Failed: ${failures.join(", ")}.`;
-}
-
-function batchSuccessMessage(total: number, engineLabel: string): string {
-  return `Processed ${total} page${total === 1 ? "" : "s"} sequentially with ${engineLabel}.`;
-}
 
 function scrollTargetElement(
   target: CardScrollTarget,
@@ -140,7 +135,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
     void refreshPages();
   }, []);
 
-  const selectedCard = cards.find((card) => card.id === selectedCardId) ?? cards[0] ?? null;
+  const selectedCard = selectedCardId ? cards.find((card) => card.id === selectedCardId) ?? null : null;
   const cardStats = summarizeCards(cards);
   const filteredCards = cards.filter((card) => cardMatchesFilter(card, reviewFilter));
   const exportableCount = cards.filter((card) => card.status === "approved" && card.review_state !== "red").length;
@@ -218,32 +213,28 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
     if (!pages.length || !beginOcrAction()) return;
     setIsBatchProcessing(true);
     const failures: string[] = [];
-    let lastSelectedResult: Awaited<ReturnType<typeof processPage>> | null = null;
+    const timings: PageTiming[] = [];
     const engineLabel = engine === "paddleocr_vl" ? "PaddleOCR-VL" : "PaddleOCR";
     try {
       for (const [index, page] of pages.entries()) {
         setMessage(`Processing page ${index + 1}/${pages.length} with ${engineLabel}: ${pageTitle(page)}...`);
+        const startedAt = performance.now();
         try {
           const result = await processPage(page.id, engine);
-          if (page.id === selectedPage?.id) {
-            lastSelectedResult = result;
-          }
+          const elapsedMs = durationMs(startedAt, performance.now());
+          timings.push({ pageId: page.id, pageTitle: pageTitle(page), ms: elapsedMs, success: true });
+          applyProcessResult(result, true);
+          const processedTitle = pageTitle(result.page);
+          setMessage(`Processed ${index + 1}/${pages.length} with ${engineLabel}: ${processedTitle} in ${formatDuration(elapsedMs)}.`);
         } catch (error) {
-          failures.push(`${pageTitle(page)} (${apiErrorMessage(error, "Processing failed.")})`);
+          const elapsedMs = durationMs(startedAt, performance.now());
+          timings.push({ pageId: page.id, pageTitle: pageTitle(page), ms: elapsedMs, success: false });
+          const failedPage = `${pageTitle(page)} (${apiErrorMessage(error, "Processing failed.")})`;
+          failures.push(failedPage);
+          setMessage(`Failed ${index + 1}/${pages.length} with ${engineLabel}: ${failedPage}`);
         }
       }
-      if (lastSelectedResult) {
-        setSelectedPage(lastSelectedResult.page);
-        setTokens(lastSelectedResult.tokens);
-        setCards(lastSelectedResult.cards);
-        setSelectedCardId(initialReviewCardId(lastSelectedResult.cards));
-      }
-      await refreshPages(selectedPage?.id);
-      setMessage(
-        failures.length
-          ? batchFailureMessage(pages.length, failures, engineLabel)
-          : batchSuccessMessage(pages.length, engineLabel)
-      );
+      setMessage(batchTimingSummary(timings, pages.length, failures, engineLabel));
     } finally {
       setIsBatchProcessing(false);
       finishOcrAction();
@@ -256,16 +247,12 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
     else setProcessingPageId(page.id);
     const engineLabel = engine === "paddleocr_vl" ? "PaddleOCR-VL" : "PaddleOCR";
     setMessage(`Processing ${pageTitle(page)} with ${engineLabel}...`);
+    const startedAt = performance.now();
     try {
       const result = await processPage(page.id, engine);
-      if (selectedPage?.id === page.id) {
-        setSelectedPage(result.page);
-        setTokens(result.tokens);
-        setCards(result.cards);
-        setSelectedCardId(initialReviewCardId(result.cards));
-      }
-      await refreshPages(page.id);
-      setMessage(`Processed ${pageTitle(result.page)} with ${engineLabel}.`);
+      applyProcessResult(result, true);
+      const elapsedMs = durationMs(startedAt, performance.now());
+      setMessage(`Processed ${pageTitle(result.page)} with ${engineLabel} in ${formatDuration(elapsedMs)}.`);
     } catch (error) {
       setMessage(apiErrorMessage(error, "Processing page failed."));
     } finally {
@@ -342,6 +329,9 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
       const nextCards = cards.map((item) => (item.id === updated.id ? updated : item));
       setCards(nextCards);
       syncPageCardSummary(updated.page_id, nextCards);
+      setSelectedCardId(nextReviewCardId(nextCards, updated.id));
+      setRegionDraft(null);
+      setFieldPreview(null);
       setMessage("Approved card.");
     } catch (error) {
       setMessage(apiErrorMessage(error, "Approving card failed."));
@@ -359,6 +349,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
       const nextCards = cards.map((item) => (item.id === updated.id ? updated : item));
       setCards(nextCards);
       syncPageCardSummary(updated.page_id, nextCards);
+      setSelectedCardId(updated.id);
       setMessage("Moved card back to pending review.");
     } catch (error) {
       setMessage(apiErrorMessage(error, "Unapproving card failed."));
@@ -510,6 +501,34 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
           : page
       )
     );
+  }
+
+  function applyProcessResult(result: ProcessResult, selectResult: boolean) {
+    const summary = summarizeCards(result.cards);
+    setPages((current) =>
+      current.map((page) =>
+        page.id === result.page.id
+          ? {
+              ...result.page,
+              card_count: summary.total,
+              approved_card_count: summary.approved,
+              red_card_count: summary.red
+            }
+          : page
+      )
+    );
+    if (!selectResult) return;
+    setSelectedPage({
+      ...result.page,
+      card_count: summary.total,
+      approved_card_count: summary.approved,
+      red_card_count: summary.red
+    });
+    setTokens(result.tokens);
+    setCards(result.cards);
+    setSelectedCardId(initialReviewCardId(result.cards));
+    setComparison(null);
+    setDocumentParse(null);
   }
 
   const processedUrl = imageUrl(selectedPage?.processed_image_path);

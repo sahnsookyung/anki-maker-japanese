@@ -52,6 +52,27 @@ def test_mcq_extraction_keeps_printed_question_numbers_when_previous_blocks_are_
     assert [item["question_no"] for item in items] == [5, 8]
 
 
+def test_mcq_extraction_sorts_items_by_printed_question_number() -> None:
+    tokens = [
+        _token("q8-no", "8", 10, 100, "number"),
+        _token("q8-sentence", "そのまちにはがっこうがいつつあります。", 30, 100, "hiragana"),
+        _token("q8-c1", "1 学校", 30, 130, "mixed"),
+        _token("q8-c2", "2 学校", 120, 130, "mixed"),
+        _token("q8-c3", "3 学校", 210, 130, "mixed"),
+        _token("q8-c4", "4 学校", 300, 130, "mixed"),
+        _token("q5-no", "5", 10, 220, "number"),
+        _token("q5-sentence", "あしたのてんきははれるでしょう。", 30, 220, "hiragana"),
+        _token("q5-c1", "1 天気", 30, 250, "mixed"),
+        _token("q5-c2", "2 天気", 120, 250, "mixed"),
+        _token("q5-c3", "3 天気", 210, 250, "mixed"),
+        _token("q5-c4", "4 天気", 300, 250, "mixed"),
+    ]
+
+    items = extract_mcq_items(tokens, {5: 1, 8: 4}, "spelling_mcq")
+
+    assert [item["question_no"] for item in items] == [5, 8]
+
+
 def test_mcq_extraction_keeps_number_prefixed_question_sentences() -> None:
     tokens = [
         _token("q1-sentence", "1そのほんはうえのたなにあるよ。", 10, 100, "hiragana"),
@@ -638,6 +659,141 @@ def test_dedupe_pages_keeps_newest_upload_and_removes_artifacts(tmp_path, monkey
     assert not old_upload.exists()
     assert not old_processed.exists()
     assert not old_crop.exists()
+
+
+def test_dedupe_pages_still_cleans_processed_duplicates_by_upload_name(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "dedupe-processed.db")
+    upload_dir = tmp_path / "uploads"
+    processed_dir = tmp_path / "processed"
+    crop_dir = tmp_path / "crops"
+    upload_dir.mkdir()
+    processed_dir.mkdir()
+    crop_dir.mkdir()
+    monkeypatch.setattr(routes, "UPLOAD_DIR", upload_dir)
+    monkeypatch.setattr(routes, "PROCESSED_DIR", processed_dir)
+    monkeypatch.setattr(routes, "CROP_DIR", crop_dir)
+    database.init_db()
+
+    old_upload = upload_dir / "page-old.jpg"
+    old_processed = processed_dir / "page-old.png"
+    old_crop = crop_dir / "page-old_card_target.png"
+    old_upload.write_bytes(b"old")
+    old_processed.write_bytes(b"processed")
+    old_crop.write_bytes(b"crop")
+    database.upsert_page(
+        Page(
+            id="page-old",
+            original_image_path=str(old_upload),
+            upload_name="lesson-2.jpg",
+            display_name="Lesson 2",
+            processed_image_path=str(old_processed),
+            page_type="reading_mcq",
+            page_type_confidence=0.91,
+            warnings=["legacy warning"],
+            created_at="2026-04-27T00:00:00+00:00",
+        )
+    )
+    database.replace_tokens("page-old", [_token("token-old", "古い", 1, 1, "kanji")])
+    database.replace_cards("page-old", [_card("card-old", status="pending_review", review_state="yellow")])
+    database.upsert_page(
+        Page(
+            id="page-new",
+            original_image_path=str(upload_dir / "page-new.jpg"),
+            upload_name="lesson-2.jpg",
+            display_name="Lesson 2 refreshed",
+            processed_image_path=str(processed_dir / "page-new.png"),
+            page_type="reading_mcq",
+            page_type_confidence=0.98,
+            warnings=[],
+            created_at="2026-04-28T00:00:00+00:00",
+        )
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/pages/dedupe")
+
+    assert response.status_code == 200
+    assert response.json()["removed_count"] == 1
+    assert database.get_page("page-old") is None
+    assert database.get_page("page-new") is not None
+    assert database.get_tokens("page-old") == []
+    assert database.get_cards("page-old") == []
+    assert not old_upload.exists()
+    assert not old_processed.exists()
+    assert not old_crop.exists()
+
+
+def test_dedupe_pages_ignores_generated_runtime_paths_without_upload_name(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "dedupe-generated.db")
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    monkeypatch.setattr(routes, "UPLOAD_DIR", upload_dir)
+    database.init_db()
+    database.upsert_page(
+        Page(
+            id="page-old",
+            original_image_path=str(upload_dir / "page_aaaaaaaaaaaa.jpg"),
+            display_name="Lesson 3 review",
+            page_type="reading_mcq",
+            page_type_confidence=0.91,
+            warnings=[],
+            created_at="2026-04-27T00:00:00+00:00",
+        )
+    )
+    database.upsert_page(
+        Page(
+            id="page-new",
+            original_image_path=str(upload_dir / "page_bbbbbbbbbbbb.jpg"),
+            display_name="Lesson 3 review",
+            page_type="reading_mcq",
+            page_type_confidence=0.92,
+            warnings=[],
+            created_at="2026-04-28T00:00:00+00:00",
+        )
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/pages/dedupe")
+
+    assert response.status_code == 200
+    assert response.json()["removed_count"] == 0
+    assert database.get_page("page-old") is not None
+    assert database.get_page("page-new") is not None
+
+
+def test_dedupe_pages_uses_legacy_original_filename_when_upload_name_missing(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "dedupe-legacy.db")
+    database.init_db()
+    database.upsert_page(
+        Page(
+            id="page-old",
+            original_image_path=str(tmp_path / "imports-a" / "Category 1 page.jpg"),
+            display_name="Category 1 page",
+            page_type="uploaded",
+            page_type_confidence=0.0,
+            warnings=[],
+            created_at="2026-04-27T00:00:00+00:00",
+        )
+    )
+    database.upsert_page(
+        Page(
+            id="page-new",
+            original_image_path=str(tmp_path / "imports-b" / "Category 1 page.jpg"),
+            display_name="Category 1 page",
+            page_type="uploaded",
+            page_type_confidence=0.0,
+            warnings=[],
+            created_at="2026-04-28T00:00:00+00:00",
+        )
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/pages/dedupe")
+
+    assert response.status_code == 200
+    assert response.json()["removed_count"] == 1
+    assert database.get_page("page-old") is None
+    assert database.get_page("page-new") is not None
 
 
 def test_delete_page_removes_database_rows_and_runtime_files(tmp_path, monkeypatch) -> None:

@@ -109,7 +109,15 @@ def extract_mcq_items(tokens: list[OcrToken], answer_map: dict[int, int], page_t
                 "warnings": warnings,
             }
         )
-    return items
+    return sorted(items, key=_question_sort_key)
+
+
+def _question_sort_key(item: dict) -> tuple[int, float, str]:
+    question_no = item.get("question_no")
+    sort_no = int(question_no) if isinstance(question_no, int) else 10_000
+    bbox = item.get("bbox")
+    y = float(bbox[1]) if isinstance(bbox, list) and len(bbox) >= 2 and isinstance(bbox[1], (int, float)) else 0.0
+    return (sort_no, y, str(item.get("id", "")))
 
 
 def _question_blocks(lines: list[list[OcrToken]]) -> list[list[OcrToken]]:

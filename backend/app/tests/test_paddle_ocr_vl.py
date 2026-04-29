@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.vision import paddle_ocr_vl
+from app.ocr import engines
 from app.vision.paddle_ocr_vl import (
     PaddleOcrVlDocumentParser,
     _blocks_from_payload,
@@ -14,7 +15,8 @@ from app.vision.paddle_ocr_vl import (
     _normalized_vl_backend,
 )
 from app.models.schemas import DocumentParseBlock, DocumentParseResult
-from app.ocr.engines import normalize_ocr_engine, tokens_from_document_parse
+from app.ocr.engines import normalize_ocr_engine, run_ocr_engine, tokens_from_document_parse
+from app.ocr.providers import make_token
 
 
 def test_blocks_from_paddle_ocr_vl_payload() -> None:
@@ -79,6 +81,66 @@ def test_paddle_ocr_vl_markdown_without_boxes_uses_synthetic_token_boxes() -> No
     assert warnings == [
         "PaddleOCR-VL output was converted to synthetic OCR boxes; use it for text quality comparison, not precise evidence geometry."
     ]
+
+
+def test_paddle_ocr_vl_processing_uses_base_word_geometry(monkeypatch, tmp_path) -> None:
+    parsed = DocumentParseResult(
+        page_id="page-vl",
+        provider="paddleocr_vl",
+        source_image_path=str(tmp_path / "page.png"),
+        backend="fake",
+        block_count=1,
+        blocks=[
+            DocumentParseBlock(
+                label="text",
+                content="2 \\underline{\\text{あたらしい}}",
+                bbox=[20, 1100, 900, 1150],
+                order=1,
+            )
+        ],
+    )
+    base_token = make_token("page-vl", "あたらしい", [120, 420, 210, 450], 0.98, "paddleocr")
+
+    class FakeParser:
+        def parse(self, image_path, page_id):
+            return parsed
+
+    monkeypatch.setattr(engines, "get_paddle_ocr_vl_parser", lambda: FakeParser())
+    monkeypatch.setattr(engines, "recognize_with_warnings", lambda image_path, page_id: ([base_token], []))
+
+    result = run_ocr_engine(tmp_path / "page.png", "page-vl", "paddleocr_vl")
+
+    aligned_token = next(token for token in result.tokens if "underline" in token.text)
+    assert aligned_token.source == "paddleocr_vl"
+    assert aligned_token.bbox == base_token.bbox
+    assert result.document_parse == parsed
+    assert any("visual evidence uses PaddleOCR word boxes" in warning for warning in result.warnings)
+    assert any("tokens keep VL text" in warning for warning in result.warnings)
+
+
+def test_paddle_ocr_vl_processing_falls_back_to_vl_boxes_when_base_geometry_missing(monkeypatch, tmp_path) -> None:
+    parsed = DocumentParseResult(
+        page_id="page-vl",
+        provider="paddleocr_vl",
+        source_image_path=str(tmp_path / "page.png"),
+        backend="fake",
+        block_count=1,
+        blocks=[DocumentParseBlock(label="text", content="学校", bbox=[10, 20, 80, 44], order=1)],
+    )
+
+    class FakeParser:
+        def parse(self, image_path, page_id):
+            return parsed
+
+    monkeypatch.setattr(engines, "get_paddle_ocr_vl_parser", lambda: FakeParser())
+    monkeypatch.setattr(engines, "recognize_with_warnings", lambda image_path, page_id: ([], ["base unavailable"]))
+
+    result = run_ocr_engine(tmp_path / "page.png", "page-vl", "paddleocr_vl")
+
+    assert [token.text for token in result.tokens] == ["学校"]
+    assert result.tokens[0].source == "paddleocr_vl"
+    assert "base unavailable" in result.warnings
+    assert any("using PaddleOCR-VL block-derived boxes" in warning for warning in result.warnings)
 
 
 def test_normalize_ocr_engine_aliases() -> None:
