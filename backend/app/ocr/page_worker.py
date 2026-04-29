@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import warnings
 
 from app.core.config import BACKEND_DIR, OCR_PAGE_JOB_TIMEOUT_SECONDS, OCR_PAGE_WORKER_MAX_RSS_MB
 from app.db import database
@@ -163,7 +164,13 @@ def _child_pids(pid: int) -> list[int]:
     return descendants
 
 
+def _suppress_non_actionable_dependency_warnings() -> None:
+    warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL.*")
+    warnings.filterwarnings("ignore", message="No ccache found.*")
+
+
 def main() -> int:
+    _suppress_non_actionable_dependency_warnings()
     parser = argparse.ArgumentParser(description="Run one page through a bounded OCR processing worker.")
     parser.add_argument("--page-id", required=True)
     parser.add_argument("--engine", default="paddleocr")

@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+from pathlib import Path
 import sys
 from types import SimpleNamespace
 
 import pytest
 
 from app.vision import paddle_ocr_vl
-from app.vision.paddle_ocr_vl import PaddleOcrVlDocumentParser, _blocks_from_payload, _normalized_vl_backend
+from app.vision.paddle_ocr_vl import (
+    PaddleOcrVlDocumentParser,
+    _blocks_from_payload,
+    _pipeline_creation_help,
+    _normalized_vl_backend,
+)
 from app.models.schemas import DocumentParseBlock, DocumentParseResult
 from app.ocr.engines import normalize_ocr_engine, tokens_from_document_parse
 
@@ -130,8 +136,27 @@ def test_pipeline_creation_dependency_error_is_actionable(monkeypatch) -> None:
     monkeypatch.setattr(paddle_ocr_vl, "PADDLE_OCR_VL_BACKEND", "")
     monkeypatch.setattr(paddle_ocr_vl, "PADDLE_OCR_VL_SERVER_URL", "")
 
-    with pytest.raises(RuntimeError, match="uv sync --group dev --extra ocr-vl"):
+    with pytest.raises(RuntimeError, match="uv sync --group dev --extra ocr --extra ocr-vl"):
         PaddleOcrVlDocumentParser()
+
+
+def test_pipeline_creation_error_lists_missing_paddlex_ocr_dependencies(monkeypatch) -> None:
+    monkeypatch.setattr(paddle_ocr_vl, "_missing_paddlex_ocr_dependencies", lambda: ["einops", "tokenizers"])
+    error = RuntimeError("A dependency error occurred during pipeline creation.")
+    error.__cause__ = RuntimeError("PaddleX OCR extras are missing")
+
+    message = _pipeline_creation_help("", error)
+
+    assert "Missing PaddleX OCR dependencies: einops, tokenizers." in message
+    assert "Original error: PaddleX OCR extras are missing" in message
+
+
+def test_dev_backend_script_keeps_ocr_vl_dependencies_installed() -> None:
+    script = Path(__file__).resolve().parents[3] / "scripts" / "dev-backend.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert "--extra ocr" in text
+    assert "--extra ocr-vl" in text
 
 
 def test_rejects_unsupported_vl_backend_before_pipeline_creation() -> None:

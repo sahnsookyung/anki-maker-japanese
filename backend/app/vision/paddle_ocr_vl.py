@@ -111,17 +111,39 @@ def _normalized_vl_backend(value: str | None) -> str | None:
 
 def _pipeline_creation_help(configured_backend: str, exc: Exception) -> str:
     backend = _normalized_vl_backend(configured_backend)
+    missing = _missing_paddlex_ocr_dependencies()
+    missing_suffix = f" Missing PaddleX OCR dependencies: {', '.join(missing)}." if missing else ""
+    root_cause = _root_error_message(exc)
     if backend is None:
         return (
-            "PaddleOCR-VL local pipeline creation failed. Run `uv sync --group dev --extra ocr-vl` from backend/, "
+            "PaddleOCR-VL local pipeline creation failed. Run `uv sync --group dev --extra ocr --extra ocr-vl` from backend/, "
             "then leave PADDLE_OCR_VL_BACKEND empty for local PaddlePaddle inference. "
-            f"Original error: {exc}"
+            f"{missing_suffix} Original error: {root_cause}"
         )
     return (
         f"PaddleOCR-VL pipeline creation failed for backend {backend!r}. "
         "Verify PADDLE_OCR_VL_SERVER_URL points to a running OpenAI-compatible /v1 service and that optional "
-        f"dependencies are installed with `uv sync --group dev --extra ocr-vl`. Original error: {exc}"
+        f"dependencies are installed with `uv sync --group dev --extra ocr --extra ocr-vl`.{missing_suffix} "
+        f"Original error: {root_cause}"
     )
+
+
+def _missing_paddlex_ocr_dependencies() -> list[str]:
+    try:
+        from paddlex.utils import deps
+    except Exception:
+        return []
+    try:
+        return sorted(dep for dep in deps.EXTRAS["ocr"] if not deps.is_dep_available(dep))
+    except Exception:
+        return []
+
+
+def _root_error_message(exc: Exception) -> str:
+    current: BaseException = exc
+    while current.__cause__ is not None:
+        current = current.__cause__
+    return str(current)
 
 
 def _display_vl_backend(value: str | None) -> str:
