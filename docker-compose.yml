@@ -1,8 +1,11 @@
 services:
   backend:
-    image: python:3.11-slim
-    working_dir: /app/backend
-    command: sh -c "pip install uv && uv sync --group dev --extra ocr && uv run uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    image: python:3.12-slim
+    working_dir: /app
+    command: sh -c "pip install uv && bash scripts/dev-backend.sh"
+    environment:
+      BACKEND_HOST: 0.0.0.0
+      BACKEND_PORT: 8000
     volumes:
       - .:/app
     ports:

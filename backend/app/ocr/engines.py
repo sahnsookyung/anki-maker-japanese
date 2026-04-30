@@ -56,12 +56,13 @@ def _align_tokens_to_geometry(vl_tokens: list[OcrToken], geometry_tokens: list[O
         return vl_tokens
     used_geometry_ids: set[str] = set()
     aligned: list[OcrToken] = []
+    cursor = 0
     for token in vl_tokens:
-        match = _best_geometry_match(token, geometry_tokens, used_geometry_ids)
+        match, match_index = _best_geometry_match(token, geometry_tokens, used_geometry_ids, cursor)
         if match is None:
-            aligned.append(token)
             continue
         used_geometry_ids.add(match.id)
+        cursor = match_index + 1
         aligned.append(
             token.model_copy(
                 update={
@@ -70,22 +71,28 @@ def _align_tokens_to_geometry(vl_tokens: list[OcrToken], geometry_tokens: list[O
                 }
             )
         )
-    return aligned
+    return sorted(aligned, key=lambda token: (token.bbox[1], token.bbox[0], token.id))
 
 
-def _best_geometry_match(token: OcrToken, geometry_tokens: list[OcrToken], used_geometry_ids: set[str]) -> OcrToken | None:
+def _best_geometry_match(
+    token: OcrToken,
+    geometry_tokens: list[OcrToken],
+    used_geometry_ids: set[str],
+    cursor: int,
+) -> tuple[OcrToken | None, int]:
     normalized_token = _normalize_match_text(token.text)
     if not normalized_token:
-        return None
+        return None, -1
     candidates = [
-        candidate
-        for candidate in geometry_tokens
+        (index, candidate)
+        for index, candidate in enumerate(geometry_tokens)
         if candidate.id not in used_geometry_ids and _normalize_match_text(candidate.text) == normalized_token
     ]
     if not candidates:
-        return None
-    token_center_y = (token.bbox[1] + token.bbox[3]) / 2
-    return min(candidates, key=lambda candidate: (abs(((candidate.bbox[1] + candidate.bbox[3]) / 2) - token_center_y), -candidate.confidence))
+        return None, -1
+    ordered_candidates = [candidate for candidate in candidates if candidate[0] >= cursor] or candidates
+    match_index, match = min(ordered_candidates, key=lambda item: (item[0] < cursor, abs(item[0] - cursor), -item[1].confidence))
+    return match, match_index
 
 
 def _normalize_match_text(text: str) -> str:

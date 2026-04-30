@@ -3,10 +3,14 @@ import { describe, expect, it } from "vitest";
 import {
   bboxFromSource,
   applyFieldOcrPreview,
+  applyQuestionChoicesEdit,
+  applyQuestionSourceEdit,
+  applyVocabSourceEdit,
   candidateSubtitle,
   candidateTitle,
   cardForToken,
   cardMatchesFilter,
+  choicesText,
   choicesFromText,
   clamp,
   confidenceClass,
@@ -22,6 +26,7 @@ import {
   initialReviewCardId,
   isAnswerSupportToken,
   isHighConfidenceCard,
+  normalizeBbox,
   nextReviewCardId,
   numberOrEmpty,
   provenanceLabel,
@@ -165,6 +170,13 @@ describe("StudyWorkbench evidence helpers", () => {
     expect(tokenInside(ocrToken({ bbox: [80, 80, 90, 90] }), [10, 10, 40, 40])).toBe(false);
   });
 
+  it("normalizes reversed OCR-VL bounding boxes before geometry checks", () => {
+    expect(normalizeBbox([40, 30, 10, 5])).toEqual([10, 5, 40, 30]);
+    expect(normalizeBbox([10, 5, 10, 30])).toBeNull();
+    expect(unionBoxes([[40, 30, 10, 5], [45, 35, 50, 40]])).toEqual([10, 5, 50, 40]);
+    expect(tokenInside(ocrToken({ bbox: [40, 30, 10, 5] }), [0, 0, 50, 50])).toBe(true);
+  });
+
   it("computes evidence viewport with clamped bounds", () => {
     const page = appPage({ image_width: 1000, image_height: 2000 });
 
@@ -198,10 +210,31 @@ describe("StudyWorkbench evidence helpers", () => {
     expect(numberOrEmpty("7")).toBe(7);
     expect(numberOrEmpty("oops")).toBe("oops");
     expect(choicesFromText(" 天気 \n\n夫気\n夫气 ")).toEqual(["天気", "夫気", "夫气"]);
+    expect(choicesText({ choices: ["上", "止", "午", "下"] })).toBe("上\n止\n午\n下");
     expect(uniqueStrings(["a", "a", "b"])).toEqual(["a", "b"]);
     expect(syncQuestionAnswerBack({ ...question, note_type: "jp_spelling_mcq_exam" }, question.source).back).toBe("정답: 2. 名前");
     expect(syncQuestionAnswerBack(question, question.source).back).toBe("名前");
     expect(syncQuestionAnswerBack(question, { correct_answer: "" }).back).toBe(question.back);
+  });
+
+  it("updates question choices and derived answer summaries together", () => {
+    const card = candidate({
+      review_state: "red",
+      warnings: ["Expected exactly four choices."],
+      source: { question_no: 1, target: "うえ", correct_choice_no: 1, correct_answer: "old", choices: ["old"] }
+    });
+
+    const updatedChoices = applyQuestionChoicesEdit(card, "上\n止\n午\n下\n");
+
+    expect(updatedChoices.source.choices).toEqual(["上", "止", "午", "下"]);
+    expect(updatedChoices.source.correct_answer).toBe("上");
+    expect(updatedChoices.back).toBe("上");
+    expect(updatedChoices.review_state).toBe("yellow");
+    expect(updatedChoices.warnings).toEqual([]);
+
+    const updatedChoiceNo = applyQuestionSourceEdit(updatedChoices, "correct_choice_no", "3");
+    expect(updatedChoiceNo.source.correct_answer).toBe("午");
+    expect(updatedChoiceNo.back).toBe("午");
   });
 
   it("separates provenance labels from review reason badges", () => {
@@ -235,8 +268,44 @@ describe("StudyWorkbench evidence helpers", () => {
     expect(updated.source.choices).toEqual(["天気", "天気", "", ""]);
     expect(updated.source.correct_answer).toBe("天気");
     expect(updated.source.field_evidence).toMatchObject({ choice_2: { text: "天気" } });
+    expect(choicesText(updated.source)).toBe("天気\n天気\n\n");
     expect(updated.back).toBe("天気");
     expect(updated.warnings).toEqual([]);
+  });
+
+  it("updates vocabulary facts and derived semantic cards together", () => {
+    const card = candidate({
+      source_type: "vocab_item",
+      note_type: "jp_vocab_writing",
+      source: { surface: "学校", reading: "がっこう", meaning_ko: "학교" },
+      front: "old front",
+      back: "old back"
+    });
+
+    const edited = applyVocabSourceEdit(card, "surface", "先生");
+
+    expect(edited.source.surface).toBe("先生");
+    expect(edited.front).toContain("がっこう");
+    expect(edited.back).toBe("先生");
+
+    const previewed = applyFieldOcrPreview(edited, {
+      card_id: card.id,
+      page_id: card.page_id,
+      field: "reading",
+      bbox: [10, 20, 30, 40],
+      provider: "paddle",
+      text: "せんせい",
+      confidence: 0.94,
+      tokens: [],
+      suggested_source: { reading: "せんせい" },
+      field_evidence: { bbox: [10, 20, 30, 40], text: "せんせい" },
+      worker: { state: "running" },
+      warnings: []
+    });
+
+    expect(previewed.source.reading).toBe("せんせい");
+    expect(previewed.front).toContain("せんせい");
+    expect(previewed.back).toBe("先生");
   });
 
   it("summarizes evidence availability", () => {

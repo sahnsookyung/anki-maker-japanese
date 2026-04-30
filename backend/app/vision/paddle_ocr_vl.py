@@ -27,7 +27,7 @@ class PaddleOcrVlDocumentParser:
         try:
             from paddleocr import PaddleOCRVL
         except Exception as exc:
-            raise RuntimeError("PaddleOCR-VL is unavailable. Run `uv sync --extra ocr-vl` in backend/.") from exc
+            raise RuntimeError("PaddleOCR-VL is unavailable. Run `uv sync --python 3.12 --extra ocr-vl` in backend/.") from exc
 
         kwargs: dict[str, Any] = {
             "vl_rec_backend": _normalized_vl_backend(PADDLE_OCR_VL_BACKEND),
@@ -116,14 +116,14 @@ def _pipeline_creation_help(configured_backend: str, exc: Exception) -> str:
     root_cause = _root_error_message(exc)
     if backend is None:
         return (
-            "PaddleOCR-VL local pipeline creation failed. Run `uv sync --group dev --extra ocr --extra ocr-vl` from backend/, "
+            "PaddleOCR-VL local pipeline creation failed. Run `uv sync --python 3.12 --group dev --extra ocr --extra ocr-vl` from backend/, "
             "then leave PADDLE_OCR_VL_BACKEND empty for local PaddlePaddle inference. "
             f"{missing_suffix} Original error: {root_cause}"
         )
     return (
         f"PaddleOCR-VL pipeline creation failed for backend {backend!r}. "
         "Verify PADDLE_OCR_VL_SERVER_URL points to a running OpenAI-compatible /v1 service and that optional "
-        f"dependencies are installed with `uv sync --group dev --extra ocr --extra ocr-vl`.{missing_suffix} "
+        f"dependencies are installed with `uv sync --python 3.12 --group dev --extra ocr --extra ocr-vl`.{missing_suffix} "
         f"Original error: {root_cause}"
     )
 

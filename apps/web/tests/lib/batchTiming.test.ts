@@ -31,7 +31,7 @@ describe("batch timing helpers", () => {
       "PaddleOCR"
     );
 
-    expect(message).toBe("Processed 4 pages with PaddleOCR in frontend time: total 10s, avg 2.5s, min 1.0s, p25 2.0s, p75 3.0s, max 4.0s.");
+    expect(message).toBe("Processed 4/4 pages with PaddleOCR in frontend time: total 10s, avg 2.5s, min 1.0s, p25 2.0s, p75 3.0s, max 4.0s.");
   });
 
   it("includes failed pages in the batch timing summary", () => {
@@ -48,5 +48,17 @@ describe("batch timing helpers", () => {
     expect(message).toContain("Processed 1/2 pages with PaddleOCR-VL");
     expect(message).toContain("total 1.5s");
     expect(message).toContain("Failed: Page 2 (OCR failed.).");
+  });
+
+  it("summarizes partial page processing during sequential batches", () => {
+    const message = batchTimingSummary(
+      [{ pageId: "page-1", pageTitle: "Page 1", ms: 1000, success: true }],
+      4,
+      [],
+      "PaddleOCR-VL",
+      1
+    );
+
+    expect(message).toContain("Processed 1/4 page with PaddleOCR-VL");
   });
 });

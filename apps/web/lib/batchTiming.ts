@@ -30,7 +30,8 @@ export function batchTimingSummary(
   timings: PageTiming[],
   totalPages: number,
   failures: string[],
-  engineLabel: string
+  engineLabel: string,
+  processedPages = totalPages
 ): string {
   const measured = timings.map((timing) => timing.ms);
   const totalMs = measured.reduce((sum, value) => sum + value, 0);
@@ -38,8 +39,8 @@ export function batchTimingSummary(
   const minMs = measured.length ? Math.min(...measured) : 0;
   const maxMs = measured.length ? Math.max(...measured) : 0;
   const prefix = failures.length
-    ? `Processed ${totalPages - failures.length}/${totalPages} pages with ${engineLabel}`
-    : `Processed ${totalPages} page${totalPages === 1 ? "" : "s"} with ${engineLabel}`;
+    ? `Processed ${Math.max(0, processedPages - failures.length)}/${totalPages} pages with ${engineLabel}`
+    : `Processed ${processedPages}/${totalPages} page${processedPages === 1 ? "" : "s"} with ${engineLabel}`;
   const stats = [
     `total ${formatDuration(totalMs)}`,
     `avg ${formatDuration(averageMs)}`,

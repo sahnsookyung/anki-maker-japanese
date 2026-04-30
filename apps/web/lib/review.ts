@@ -134,11 +134,11 @@ export function focusBbox(card: CardCandidate | null, tokens: OcrToken[], field:
 }
 
 export function sourceBbox(card: CardCandidate | null): number[] | null {
-  return card?.source_bbox ?? bboxFromSource(card?.source);
+  return normalizeBbox(card?.source_bbox) ?? bboxFromSource(card?.source);
 }
 
 export function unionBoxes(boxes: number[][]): number[] | null {
-  const valid = boxes.filter((box) => box.length === 4 && box.every((value) => Number.isFinite(value)));
+  const valid = boxes.map((box) => normalizeBbox(box)).filter((box): box is number[] => Boolean(box));
   if (!valid.length) return null;
   return [
     Math.min(...valid.map((box) => box[0])),
@@ -149,10 +149,11 @@ export function unionBoxes(boxes: number[][]): number[] | null {
 }
 
 export function evidenceViewBox(page: Page, bbox: number[] | null): string {
-  if (!bbox || !page.image_width || !page.image_height) {
+  const normalized = normalizeBbox(bbox);
+  if (!normalized || !page.image_width || !page.image_height) {
     return `0 0 ${page.image_width ?? 1} ${page.image_height ?? 1}`;
   }
-  const [x1, y1, x2, y2] = bbox;
+  const [x1, y1, x2, y2] = normalized;
   const width = Math.max(x2 - x1, page.image_width * 0.22);
   const height = Math.max(y2 - y1, page.image_height * 0.18);
   const padding = Math.max(width, height) * 0.45;
@@ -172,7 +173,7 @@ export function clamp(value: number, min: number, max: number): number {
 export function bboxFromSource(source: Record<string, unknown> | undefined): number[] | null {
   const bbox = source?.bbox;
   if (!Array.isArray(bbox) || bbox.length !== 4) return null;
-  return bbox.every((value) => typeof value === "number") ? bbox : null;
+  return normalizeBbox(bbox);
 }
 
 export function fieldEvidence(card: CardCandidate | null, field: string | null): Record<string, unknown> | null {
@@ -185,7 +186,7 @@ export function fieldEvidence(card: CardCandidate | null, field: string | null):
 
 export function fieldBbox(card: CardCandidate | null, field: string | null): number[] | null {
   const bbox = fieldEvidence(card, field)?.bbox;
-  return Array.isArray(bbox) && bbox.length === 4 && bbox.every((value) => typeof value === "number") ? bbox : null;
+  return normalizeBbox(bbox);
 }
 
 export function editableFieldBbox(
@@ -194,8 +195,8 @@ export function editableFieldBbox(
   draft?: { cardId?: string; field?: string; bbox?: unknown } | null
 ): number[] | null {
   if (card && field && draft?.cardId === card.id && draft.field === field) {
-    const bbox = draft.bbox;
-    if (Array.isArray(bbox) && bbox.length === 4 && bbox.every((value) => typeof value === "number")) return bbox;
+    const bbox = normalizeBbox(draft.bbox);
+    if (bbox) return bbox;
   }
   return fieldBbox(card, field) ?? sourceBbox(card);
 }
@@ -216,10 +217,26 @@ export function allFieldTokenIds(card: CardCandidate | null): Set<string> {
 }
 
 export function tokenInside(token: OcrToken, bbox: number[]): boolean {
-  const [x1, y1, x2, y2] = bbox;
-  const cx = (token.bbox[0] + token.bbox[2]) / 2;
-  const cy = (token.bbox[1] + token.bbox[3]) / 2;
+  const normalizedToken = normalizeBbox(token.bbox);
+  const normalizedBbox = normalizeBbox(bbox);
+  if (!normalizedToken || !normalizedBbox) return false;
+  const [x1, y1, x2, y2] = normalizedBbox;
+  const cx = (normalizedToken[0] + normalizedToken[2]) / 2;
+  const cy = (normalizedToken[1] + normalizedToken[3]) / 2;
   return cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2;
+}
+
+export function normalizeBbox(value: unknown): number[] | null {
+  if (!Array.isArray(value) || value.length !== 4) return null;
+  const numbers = value.map((item) => (typeof item === "number" ? item : Number(item)));
+  if (!numbers.every((item) => Number.isFinite(item))) return null;
+  const [x1, y1, x2, y2] = numbers;
+  const left = Math.min(x1, x2);
+  const right = Math.max(x1, x2);
+  const top = Math.min(y1, y2);
+  const bottom = Math.max(y1, y2);
+  if (right <= left || bottom <= top) return null;
+  return [left, top, right, bottom];
 }
 
 export function evidenceSummary(card: CardCandidate): string {
@@ -262,7 +279,11 @@ export function applyFieldOcrPreview(card: CardCandidate, preview: FieldOcrPrevi
     ...card.warnings.filter((warning) => !(preview.field.startsWith("choice_") && warning.includes("four choices"))),
     ...preview.warnings
   ]);
-  const next = syncQuestionAnswerBack({ ...card, source, warnings: nextWarnings, confidence: preview.confidence || card.confidence }, source);
+  const nextBase = { ...card, source, warnings: nextWarnings, confidence: preview.confidence || card.confidence };
+  if (card.source_type === "vocab_item") {
+    return syncVocabCardText(nextBase, source);
+  }
+  const next = syncQuestionAnswerBack(nextBase, source);
   if (preview.field === "sentence" || preview.field === "target") {
     return { ...next, front: questionFront(next) };
   }
@@ -327,6 +348,60 @@ export function syncQuestionAnswerBack(card: CardCandidate, source: Record<strin
   return { ...card, back: answer };
 }
 
+export function applyQuestionSourceEdit(card: CardCandidate, field: string, value: string): CardCandidate {
+  const nextSource = { ...card.source, [field]: field === "question_no" || field === "correct_choice_no" ? numberOrEmpty(value) : value };
+  if (field === "correct_choice_no") {
+    const choices = sourceChoices(nextSource);
+    const choiceNo = Number(nextSource.correct_choice_no);
+    if (Number.isInteger(choiceNo) && choices[choiceNo - 1]) {
+      nextSource.correct_answer = choices[choiceNo - 1];
+    }
+  }
+  return syncQuestionAnswerBack({ ...card, source: nextSource }, nextSource);
+}
+
+export function applyQuestionChoicesEdit(card: CardCandidate, value: string): CardCandidate {
+  const choices = choicesFromText(value);
+  const choiceNo = Number(card.source.correct_choice_no);
+  const correctAnswer = Number.isInteger(choiceNo) && choices[choiceNo - 1] ? choices[choiceNo - 1] : card.source.correct_answer;
+  const nextSource = { ...card.source, choices, correct_answer: correctAnswer };
+  const nextWarnings = choices.length === 4
+    ? card.warnings.filter((warning) => !/exactly four choices|four choices/i.test(warning))
+    : uniqueStrings([...card.warnings, "Expected exactly four choices."]);
+  const nextState = choices.length === 4 && card.review_state === "red" ? "yellow" : card.review_state;
+  return syncQuestionAnswerBack({ ...card, source: nextSource, warnings: nextWarnings, review_state: nextState }, nextSource);
+}
+
+export function applyVocabSourceEdit(card: CardCandidate, field: string, value: string): CardCandidate {
+  const nextSource = { ...card.source, [field]: value };
+  return syncVocabCardText({ ...card, source: nextSource }, nextSource);
+}
+
+export function syncVocabCardText(card: CardCandidate, source: Record<string, unknown>): CardCandidate {
+  if (card.source_type !== "vocab_item") return card;
+  const surface = textValue(source.surface);
+  const reading = textValue(source.reading);
+  const meaning = textValue(source.meaning_ko);
+  if (card.note_type === "jp_vocab_reading") {
+    return { ...card, front: `${escapeHtml(surface)}<br>뜻: ${escapeHtml(meaning)}<br><br>읽는 법?`, back: escapeHtml(reading) };
+  }
+  if (card.note_type === "jp_vocab_meaning") {
+    return { ...card, front: `${escapeHtml(surface)}<br>${escapeHtml(reading)}<br><br>뜻?`, back: escapeHtml(meaning) };
+  }
+  if (card.note_type === "jp_vocab_writing") {
+    return { ...card, front: `${escapeHtml(reading)}<br>${escapeHtml(meaning)}<br><br>올바른 표기는?`, back: escapeHtml(surface) };
+  }
+  return card;
+}
+
+export function sourceChoices(source: Record<string, unknown>): string[] {
+  return Array.isArray(source.choices) ? source.choices.map(String) : [];
+}
+
+export function choicesText(source: Record<string, unknown>): string {
+  return sourceChoices(source).join("\n");
+}
+
 export function choicesFromText(value: string): string[] {
   return value
     .split(/\r?\n/)
@@ -336,4 +411,13 @@ export function choicesFromText(value: string): string[] {
 
 export function uniqueStrings(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#x27;");
 }

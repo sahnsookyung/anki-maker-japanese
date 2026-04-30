@@ -16,11 +16,13 @@ npm run dev
 
 `npm run dev` starts the FastAPI backend on `127.0.0.1:8000` when it is not already running, waits for `/api/health`, then starts Next.js on `127.0.0.1:3000`.
 
+The backend dev script uses `uv` with the repo-pinned Python from `backend/.python-version` (`3.12`). It first tries to install local OCR plus OCR-VL extras, then falls back to base PaddleOCR if only OCR-VL is unavailable. If PaddlePaddle does not publish a wheel for your Python/platform, the backend still starts without local OCR so the UI can run; set `ANKI_MAKER_REQUIRE_LOCAL_OCR=1` if you want startup to fail instead.
+
 Manual backend:
 
 ```bash
 cd backend
-uv sync --group dev --extra ocr
+uv sync --python 3.12 --group dev --extra ocr
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
@@ -34,6 +36,14 @@ npm run dev
 
 Open http://localhost:3000.
 
+Docker fallback:
+
+```bash
+docker compose up
+```
+
+Docker is the recommended path for machines where local PaddlePaddle wheels are unavailable, especially macOS Intel laptops.
+
 ## Optional Local OCR / VLM
 
 The backend now uses `uv` instead of handwritten `requirements.txt` files or manual virtualenv setup.
@@ -42,14 +52,16 @@ Local OCR is expected to run with PaddleOCR 3.5.0:
 
 ```bash
 cd backend
-uv sync --group dev --extra ocr
+uv sync --python 3.12 --group dev --extra ocr
 ```
+
+PaddlePaddle wheel support is platform-specific. The current lockfile has wheels for common Linux x86_64, Windows x86_64, and macOS Apple Silicon Python versions, but not every Python/platform pair. If `uv sync` reports that `paddlepaddle` has no binary distribution, use the pinned Python 3.12 first, then use Docker if the platform itself is unsupported.
 
 PaddleOCR-VL is available as an optional document parser for comparing Paddle's own VLM-style extraction against the lightweight OCR pipeline:
 
 ```bash
 cd backend
-uv sync --group dev --extra ocr --extra ocr-vl
+uv sync --python 3.12 --group dev --extra ocr --extra ocr-vl
 ```
 
 The backend exposes it at `POST /api/pages/{page_id}/document/parse`. Keep it opt-in while testing memory and output quality.
@@ -58,7 +70,7 @@ Install Google Cloud Vision comparison support only if you want the optional com
 
 ```bash
 cd backend
-uv sync --group dev --extra ocr --extra cloud
+uv sync --python 3.12 --group dev --extra ocr --extra cloud
 ```
 
 Create a repo-level `.env` and place your Google service-account JSON at the path referenced by `GOOGLE_APPLICATION_CREDENTIALS`. This app uses the Google Cloud SDK credential-file flow rather than a raw `GOOGLE_API_KEY`.

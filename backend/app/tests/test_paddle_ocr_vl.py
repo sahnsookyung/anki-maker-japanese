@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -143,6 +145,63 @@ def test_paddle_ocr_vl_processing_falls_back_to_vl_boxes_when_base_geometry_miss
     assert any("using PaddleOCR-VL block-derived boxes" in warning for warning in result.warnings)
 
 
+def test_paddle_ocr_vl_processing_keeps_visual_boxes_on_real_geometry(monkeypatch, tmp_path) -> None:
+    parsed = DocumentParseResult(
+        page_id="page-vl",
+        provider="paddleocr_vl",
+        source_image_path=str(tmp_path / "page.png"),
+        backend="fake",
+        block_count=0,
+        markdown_text="$\n2 \\underline{\\text{あたらしい}}\n1 新しい 2 新しい",
+    )
+    geometry_tokens = [
+        make_token("page-vl", "2", [10, 100, 20, 120], 0.99, "paddleocr"),
+        make_token("page-vl", "あたらしい", [30, 100, 140, 120], 0.98, "paddleocr"),
+        make_token("page-vl", "新しい", [30, 140, 90, 160], 0.97, "paddleocr"),
+        make_token("page-vl", "新しい", [180, 140, 240, 160], 0.96, "paddleocr"),
+    ]
+
+    class FakeParser:
+        def parse(self, image_path, page_id):
+            return parsed
+
+    monkeypatch.setattr(engines, "get_paddle_ocr_vl_parser", lambda: FakeParser())
+    monkeypatch.setattr(engines, "recognize_with_warnings", lambda image_path, page_id: (geometry_tokens, []))
+
+    result = run_ocr_engine(tmp_path / "page.png", "page-vl", "paddleocr_vl")
+
+    assert all(token.bbox in [geometry.bbox for geometry in geometry_tokens] for token in result.tokens)
+    assert "$" not in [token.text for token in result.tokens]
+    assert any(token.text == "\\underline{\\text{あたらしい}}" and token.bbox == [30, 100, 140, 120] for token in result.tokens)
+
+
+def test_paddle_ocr_vl_processing_excludes_unmatched_base_ocr_tokens(monkeypatch, tmp_path) -> None:
+    parsed = DocumentParseResult(
+        page_id="page-vl",
+        provider="paddleocr_vl",
+        source_image_path=str(tmp_path / "page.png"),
+        backend="fake",
+        block_count=1,
+        blocks=[DocumentParseBlock(label="text", content="学校", bbox=[10, 20, 120, 50], order=1)],
+    )
+    geometry_tokens = [
+        make_token("page-vl", "学校", [10, 20, 70, 45], 0.98, "paddleocr"),
+        make_token("page-vl", "base-only", [80, 20, 150, 45], 0.99, "paddleocr"),
+    ]
+
+    class FakeParser:
+        def parse(self, image_path, page_id):
+            return parsed
+
+    monkeypatch.setattr(engines, "get_paddle_ocr_vl_parser", lambda: FakeParser())
+    monkeypatch.setattr(engines, "recognize_with_warnings", lambda image_path, page_id: (geometry_tokens, []))
+
+    result = run_ocr_engine(tmp_path / "page.png", "page-vl", "paddleocr_vl")
+
+    assert [token.text for token in result.tokens] == ["学校"]
+    assert all(token.source == "paddleocr_vl" for token in result.tokens)
+
+
 def test_normalize_ocr_engine_aliases() -> None:
     assert normalize_ocr_engine("base") == "paddleocr"
     assert normalize_ocr_engine("vl") == "paddleocr_vl"
@@ -198,7 +257,7 @@ def test_pipeline_creation_dependency_error_is_actionable(monkeypatch) -> None:
     monkeypatch.setattr(paddle_ocr_vl, "PADDLE_OCR_VL_BACKEND", "")
     monkeypatch.setattr(paddle_ocr_vl, "PADDLE_OCR_VL_SERVER_URL", "")
 
-    with pytest.raises(RuntimeError, match="uv sync --group dev --extra ocr --extra ocr-vl"):
+    with pytest.raises(RuntimeError, match="uv sync --python 3.12 --group dev --extra ocr --extra ocr-vl"):
         PaddleOcrVlDocumentParser()
 
 
@@ -217,8 +276,142 @@ def test_dev_backend_script_keeps_ocr_vl_dependencies_installed() -> None:
     script = Path(__file__).resolve().parents[3] / "scripts" / "dev-backend.sh"
     text = script.read_text(encoding="utf-8")
 
+    assert "--no-build" not in text
+    assert '--python "$backend_python"' in text
     assert "--extra ocr" in text
     assert "--extra ocr-vl" in text
+    assert "ANKI_MAKER_REQUIRE_LOCAL_OCR" in text
+    assert "BACKEND_HOST" in text
+    assert "BACKEND_PORT" in text
+
+
+def test_backend_python_version_is_pinned_for_paddle_wheels() -> None:
+    python_version = Path(__file__).resolve().parents[2] / ".python-version"
+
+    assert python_version.read_text(encoding="utf-8").strip() == "3.12"
+
+
+def test_dev_backend_script_falls_back_to_base_ocr_when_vl_install_is_unavailable(tmp_path) -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    script = repo_root / "scripts" / "dev-backend.sh"
+    calls_path = tmp_path / "uv-calls.txt"
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+echo "$*" >> "$FAKE_UV_CALLS"
+if [[ "$1" == "sync" && "$*" == *"--extra ocr-vl"* ]]; then
+  echo 'error: Distribution `paddlepaddle==3.3.1` cannot be installed because it has no binary distribution' >&2
+  exit 1
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+    env = {
+        **os.environ,
+        "FAKE_UV_CALLS": str(calls_path),
+        "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+    }
+
+    result = subprocess.run(
+        ["bash", str(script)],
+        cwd=repo_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = calls_path.read_text(encoding="utf-8")
+    assert "sync --python 3.12 --group dev --extra ocr --extra ocr-vl" in calls
+    assert "sync --python 3.12 --group dev --extra ocr\n" in calls
+    assert "run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000" in calls
+    assert "Full local OCR dependencies could not be installed" in result.stdout
+    assert "Started with base PaddleOCR support only" in result.stdout
+
+
+def test_dev_backend_script_can_start_without_ocr_when_base_paddle_is_unavailable(tmp_path) -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    script = repo_root / "scripts" / "dev-backend.sh"
+    calls_path = tmp_path / "uv-calls.txt"
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+echo "$*" >> "$FAKE_UV_CALLS"
+if [[ "$1" == "sync" && "$*" == *"--extra ocr"* ]]; then
+  echo "error: Distribution paddlepaddle has no binary distribution" >&2
+  exit 1
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+    env = {
+        **os.environ,
+        "FAKE_UV_CALLS": str(calls_path),
+        "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+    }
+
+    result = subprocess.run(
+        ["bash", str(script)],
+        cwd=repo_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = calls_path.read_text(encoding="utf-8")
+    assert "sync --python 3.12 --group dev --extra ocr --extra ocr-vl" in calls
+    assert "sync --python 3.12 --group dev --extra ocr\n" in calls
+    assert "sync --python 3.12 --group dev\n" in calls
+    assert "Base PaddleOCR dependencies also could not be installed" in result.stdout
+
+
+def test_dev_backend_script_can_require_local_ocr_install(tmp_path) -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    script = repo_root / "scripts" / "dev-backend.sh"
+    calls_path = tmp_path / "uv-calls.txt"
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+echo "$*" >> "$FAKE_UV_CALLS"
+echo "error: Distribution paddlepaddle has no binary distribution" >&2
+exit 1
+""",
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+    env = {
+        **os.environ,
+        "ANKI_MAKER_REQUIRE_LOCAL_OCR": "1",
+        "FAKE_UV_CALLS": str(calls_path),
+        "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+    }
+
+    result = subprocess.run(
+        ["bash", str(script)],
+        cwd=repo_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    calls = calls_path.read_text(encoding="utf-8")
+    assert "sync --python 3.12 --group dev --extra ocr --extra ocr-vl" in calls
+    assert "sync --python 3.12 --group dev\n" not in calls
 
 
 def test_rejects_unsupported_vl_backend_before_pipeline_creation() -> None:

@@ -293,6 +293,15 @@ button:disabled:hover {
   color: var(--muted);
 }
 
+.page-select .page-timing {
+  color: var(--accent-2);
+  font-weight: 700;
+}
+
+.page-select .page-timing.failed {
+  color: var(--red);
+}
+
 .page-actions {
   display: flex;
   flex-wrap: wrap;
@@ -662,7 +671,7 @@ button:disabled:hover {
 
 .question-source-editor {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.75rem;
   border: 1px solid rgba(31, 111, 139, 0.18);
   border-radius: 1rem;
@@ -735,12 +744,85 @@ button:disabled:hover {
   padding: 0 0.35rem;
 }
 
-.question-source-editor label:nth-of-type(2) {
+.question-field-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.55rem;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.question-field-label.active {
+  color: var(--accent-2);
+  font-weight: 700;
+}
+
+.field-focus-button {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  text-align: left;
+  box-shadow: none;
+  overflow-wrap: anywhere;
+}
+
+.field-focus-button:hover {
+  box-shadow: none;
+  transform: none;
+}
+
+.field-mini-actions,
+.choice-field-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  justify-content: flex-end;
+}
+
+.field-eye,
+.choice-eye {
+  border-color: rgba(31, 111, 139, 0.18);
+  background: white;
+  color: var(--accent-2);
+  padding: 0.24rem 0.45rem;
+  font-size: 0.72rem;
+}
+
+.field-eye.preview {
+  border-color: rgba(185, 79, 49, 0.22);
+  color: var(--accent);
+}
+
+.choice-eye.active {
+  color: white;
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+}
+
+.question-source-editor .question-field {
+  margin-top: 0;
+}
+
+.question-source-editor .question-field.wide,
+.question-source-editor .choice-editor {
   grid-column: 1 / -1;
 }
 
-.question-source-editor .choice-editor {
-  grid-column: 1 / -1;
+.inline-field-preview {
+  border: 1px solid rgba(47, 125, 85, 0.22);
+  border-radius: 0.8rem;
+  background: #f4fbf5;
+  color: var(--ink);
+  padding: 0.65rem;
+}
+
+.inline-field-preview p {
+  margin: 0.3rem 0 0;
+  overflow-wrap: anywhere;
 }
 
 .badge {

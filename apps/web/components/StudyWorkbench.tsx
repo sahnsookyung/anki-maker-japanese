@@ -1,6 +1,6 @@
 "use client";
 
-import { type PointerEvent, type RefObject, type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { type PointerEvent, type RefObject, type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import {
   API_BASE,
   type CardCandidate,
@@ -32,11 +32,14 @@ import { batchTimingSummary, durationMs, formatDuration, type PageTiming } from 
 import {
   type ReviewFilter,
   applyFieldOcrPreview,
+  applyQuestionChoicesEdit,
+  applyQuestionSourceEdit,
+  applyVocabSourceEdit,
   cardForToken,
   cardMatchesFilter,
   candidateSubtitle,
   candidateTitle,
-  choicesFromText,
+  choicesText,
   editableFieldBbox,
   evidenceSummary,
   evidenceViewBox,
@@ -47,14 +50,13 @@ import {
   focusedTokenIdsForField,
   initialReviewCardId,
   isHighConfidenceCard,
+  normalizeBbox,
   nextReviewCardId,
-  numberOrEmpty,
   provenanceLabel,
   reviewReasonBadges,
   reviewQualityClass,
   sourceBbox,
   summarizeCards,
-  syncQuestionAnswerBack,
   textValue,
   tokenDisplayClass,
   tokenInside,
@@ -68,6 +70,7 @@ type OverlayMode = "focused" | "region" | "all" | "off";
 type CardScrollTarget = "evidence" | "card" | "none";
 type FieldRegionDraft = { cardId: string; field: string; bbox: number[] };
 type CardRefs = RefObject<Record<string, HTMLElement | null>>;
+type PageTimingStatus = PageTiming & { engineLabel: string };
 
 const PAGE_TYPE_LABELS: Record<string, string> = {
   uploaded: "Uploaded",
@@ -127,6 +130,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
   const [vlProcessingPageId, setVlProcessingPageId] = useState<string | null>(null);
   const [isComparingOcr, setIsComparingOcr] = useState(false);
   const [isPreviewingField, setIsPreviewingField] = useState(false);
+  const [pageTimingById, setPageTimingById] = useState<Record<string, PageTimingStatus>>({});
   const evidenceRef = useRef<HTMLElement | null>(null);
   const cardRefs = useRef<Record<string, HTMLElement | null>>({});
   const ocrActionInFlightRef = useRef(false);
@@ -217,21 +221,31 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
     const engineLabel = engine === "paddleocr_vl" ? "PaddleOCR-VL" : "PaddleOCR";
     try {
       for (const [index, page] of pages.entries()) {
+        if (engine === "paddleocr_vl") setVlProcessingPageId(page.id);
+        else setProcessingPageId(page.id);
         setMessage(`Processing page ${index + 1}/${pages.length} with ${engineLabel}: ${pageTitle(page)}...`);
         const startedAt = performance.now();
         try {
           const result = await processPage(page.id, engine);
           const elapsedMs = durationMs(startedAt, performance.now());
-          timings.push({ pageId: page.id, pageTitle: pageTitle(page), ms: elapsedMs, success: true });
+          const timing = { pageId: page.id, pageTitle: pageTitle(result.page), ms: elapsedMs, success: true };
+          timings.push(timing);
+          recordPageTiming(timing, engineLabel);
           applyProcessResult(result, true);
-          const processedTitle = pageTitle(result.page);
-          setMessage(`Processed ${index + 1}/${pages.length} with ${engineLabel}: ${processedTitle} in ${formatDuration(elapsedMs)}.`);
+          setMessage(batchTimingSummary(timings, pages.length, failures, engineLabel, index + 1));
+          await yieldToBrowser();
         } catch (error) {
           const elapsedMs = durationMs(startedAt, performance.now());
-          timings.push({ pageId: page.id, pageTitle: pageTitle(page), ms: elapsedMs, success: false });
+          const timing = { pageId: page.id, pageTitle: pageTitle(page), ms: elapsedMs, success: false };
+          timings.push(timing);
+          recordPageTiming(timing, engineLabel);
           const failedPage = `${pageTitle(page)} (${apiErrorMessage(error, "Processing failed.")})`;
           failures.push(failedPage);
-          setMessage(`Failed ${index + 1}/${pages.length} with ${engineLabel}: ${failedPage}`);
+          setMessage(batchTimingSummary(timings, pages.length, failures, engineLabel, index + 1));
+          await yieldToBrowser();
+        } finally {
+          if (engine === "paddleocr_vl") setVlProcessingPageId(null);
+          else setProcessingPageId(null);
         }
       }
       setMessage(batchTimingSummary(timings, pages.length, failures, engineLabel));
@@ -252,8 +266,11 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
       const result = await processPage(page.id, engine);
       applyProcessResult(result, true);
       const elapsedMs = durationMs(startedAt, performance.now());
+      recordPageTiming({ pageId: result.page.id, pageTitle: pageTitle(result.page), ms: elapsedMs, success: true }, engineLabel);
       setMessage(`Processed ${pageTitle(result.page)} with ${engineLabel} in ${formatDuration(elapsedMs)}.`);
     } catch (error) {
+      const elapsedMs = durationMs(startedAt, performance.now());
+      recordPageTiming({ pageId: page.id, pageTitle: pageTitle(page), ms: elapsedMs, success: false }, engineLabel);
       setMessage(apiErrorMessage(error, "Processing page failed."));
     } finally {
       if (engine === "paddleocr_vl") setVlProcessingPageId(null);
@@ -427,20 +444,23 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
     setFieldPreview(null);
     const bbox = fieldBbox(card, field) ?? sourceBbox(card);
     setRegionDraft(bbox ? { cardId: card.id, field, bbox } : null);
-    evidenceRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
-  async function previewSelectedField() {
-    if (!selectedCard || !selectedField) return;
-    const bbox = editableFieldBbox(selectedCard, selectedField, regionDraft);
+  async function previewSelectedField(field = selectedField, card = selectedCard) {
+    if (!card || !field) return;
+    const activeDraft = regionDraft?.cardId === card.id && regionDraft.field === field ? regionDraft : null;
+    const bbox = editableFieldBbox(card, field, activeDraft);
     if (!bbox) return;
     if (!beginOcrAction()) return;
+    setSelectedCardId(card.id);
+    setSelectedField(field);
+    setRegionDraft({ cardId: card.id, field, bbox });
     setIsPreviewingField(true);
-    setMessage(`Previewing OCR for ${fieldLabel(selectedField)}...`);
+    setMessage(`Previewing OCR for ${fieldLabel(field)}...`);
     try {
-      const preview = await previewFieldOcr(selectedCard.id, selectedField, bbox);
+      const preview = await previewFieldOcr(card.id, field, bbox);
       setFieldPreview(preview);
-      setMessage(preview.text ? `OCR preview for ${fieldLabel(selectedField)}: ${preview.text}` : "OCR preview returned no text.");
+      setMessage(preview.text ? `OCR preview for ${fieldLabel(field)}: ${preview.text}` : "OCR preview returned no text.");
     } catch (error) {
       setMessage(apiErrorMessage(error, "Field OCR preview failed."));
     } finally {
@@ -503,6 +523,13 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
     );
   }
 
+  function recordPageTiming(timing: PageTiming, engineLabel: string) {
+    setPageTimingById((current) => ({
+      ...current,
+      [timing.pageId]: { ...timing, engineLabel }
+    }));
+  }
+
   function applyProcessResult(result: ProcessResult, selectResult: boolean) {
     const summary = summarizeCards(result.cards);
     setPages((current) =>
@@ -533,7 +560,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
 
   const processedUrl = imageUrl(selectedPage?.processed_image_path);
   const originalUrl = imageUrl(selectedPage?.original_image_path);
-  const visibleUrl = processedUrl ?? originalUrl;
+  const visibleUrl = versionedImageUrl(processedUrl ?? originalUrl, selectedPage, tokens.length, cards.length);
 
   return (
     <main className="app-shell">
@@ -570,7 +597,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
       </section>
 
       <section className="command-bar">
-        <p>{isBatchProcessing ? "Working..." : message}</p>
+        <p>{message}</p>
         <div>
           {pages.length ? (
             <button
@@ -579,6 +606,16 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
               title="Create Anki review candidates by running local PaddleOCR sequentially across all pages."
             >
               Process pages with PaddleOCR
+            </button>
+          ) : null}
+          {pages.length ? (
+            <button
+              className="vl-scan"
+              onClick={() => void onProcessAllPages("paddleocr_vl")}
+              disabled={anyOcrJobRunning}
+              title="Create Anki review candidates by running PaddleOCR-VL sequentially across all pages. This is slower and memory-guarded."
+            >
+              Process pages with OCR-VL
             </button>
           ) : null}
           {selectedPage ? (
@@ -634,6 +671,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
               processing={processingPageId === page.id}
               vlProcessing={vlProcessingPageId === page.id}
               disabled={anyOcrJobRunning}
+              timing={pageTimingById[page.id]}
             />
           ))}
         </aside>
@@ -760,12 +798,10 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
               onChange={saveCard}
               onToggleApproval={toggleApproval}
               selectedField={selectedField}
-              regionDraft={regionDraft}
               fieldPreview={fieldPreview}
               isPreviewingField={isPreviewingField}
               onSelectField={selectField}
-              onRegionDraftChange={setRegionDraft}
-              onPreviewField={() => void previewSelectedField()}
+              onPreviewField={(field, card) => void previewSelectedField(field, card)}
               onApplyFieldPreview={() => void applySelectedFieldPreview()}
               onCancelFieldPreview={() => {
                 setFieldPreview(null);
@@ -784,6 +820,7 @@ function PageCard({
   page,
   active,
   candidateCount,
+  timing,
   onSelect,
   onRename,
   onDelete,
@@ -796,6 +833,7 @@ function PageCard({
   page: Page;
   active: boolean;
   candidateCount: number;
+  timing?: PageTimingStatus;
   onSelect: () => void;
   onRename: (name: string) => Promise<void>;
   onDelete: () => Promise<void>;
@@ -831,6 +869,11 @@ function PageCard({
           <strong>{pageTitle(page)}</strong>
           <span>{pageTypeLabel(page.page_type)} · {Math.round(page.page_type_confidence * 100)}%</span>
           <small>{page.warnings.length} warnings · {cardSummary}</small>
+          {timing ? (
+            <small className={timing.success ? "page-timing" : "page-timing failed"}>
+              {timing.engineLabel}: {timing.success ? "processed" : "failed"} in {formatDuration(timing.ms)}
+            </small>
+          ) : null}
         </button>
       )}
       {editing ? null : (
@@ -934,13 +977,15 @@ function EvidenceStage({
       </div>
     );
   }
-  const focusBox = mode === "focused" || mode === "region" ? focusBbox(card, tokens, selectedField) : null;
+  const focusBox = mode === "focused" ? focusBbox(card, tokens, selectedField) : mode === "region" ? sourceBbox(card) : null;
   const viewBox = evidenceViewBox(page, focusBox);
   return (
     <div className={focusBox ? "image-stage zoomed" : "image-stage"}>
       <svg
         className="evidence-svg"
         viewBox={viewBox}
+        width={page.image_width}
+        height={page.image_height}
         aria-label="Uploaded study page with OCR evidence overlay"
         preserveAspectRatio="xMidYMid meet"
       >
@@ -991,7 +1036,7 @@ function TokenOverlay({
 }>) {
   if (!page?.image_width || !page.image_height || mode === "off") return null;
   const relevantIds = focusedTokenIdsForField(card, selectedField);
-  const sourceBox = fieldBbox(card, selectedField) ?? sourceBbox(card);
+  const sourceBox = mode === "region" ? sourceBbox(card) : fieldBbox(card, selectedField) ?? sourceBbox(card);
   const selectedConfidenceClass = reviewQualityClass(card);
   const filteredTokens = activeFilters.size
     ? tokens.filter((token) => activeFilters.has(token.script_class) || activeFilters.has(token.source))
@@ -1022,7 +1067,9 @@ function TokenOverlay({
       {shouldRenderTokens
         ? filteredTokens.map((token) => {
             const relevant = relevantIds.has(token.id) || (!relevantIds.size && sourceBox ? tokenInside(token, sourceBox) : false);
-            const [x1, y1, x2, y2] = token.bbox;
+            const bbox = clampBbox(token.bbox, page);
+            if (!bbox) return null;
+            const [x1, y1, x2, y2] = bbox;
             const linkedCard = cardForToken(cards, token);
             const displayClass = tokenDisplayClass(token, page, card, linkedCard, relevant);
             return (
@@ -1056,7 +1103,9 @@ function EvidenceBox({
   className,
   onClick
 }: Readonly<{ bbox: number[]; className: string; onClick?: () => void }>) {
-  const [x1, y1, x2, y2] = bbox;
+  const normalized = normalizeBbox(bbox);
+  if (!normalized) return null;
+  const [x1, y1, x2, y2] = normalized;
   return (
     <rect
       x={x1}
@@ -1082,12 +1131,15 @@ function EditableEvidenceBox({
   onChange
 }: Readonly<{ bbox: number[]; page: Page; onChange: (bbox: number[]) => void }>) {
   const [drag, setDrag] = useState<{ mode: string; start: [number, number]; bbox: number[] } | null>(null);
-  const [x1, y1, x2, y2] = bbox;
+  const normalized = clampBbox(bbox, page);
+  if (!normalized) return null;
+  const activeBbox = normalized;
+  const [x1, y1, x2, y2] = activeBbox;
 
   function beginDrag(event: PointerEvent<SVGElement>, mode: string) {
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
-    setDrag({ mode, start: svgPoint(event), bbox });
+    setDrag({ mode, start: svgPoint(event), bbox: activeBbox });
   }
 
   function moveDrag(event: PointerEvent<SVGElement>) {
@@ -1107,7 +1159,8 @@ function EditableEvidenceBox({
       if (drag.mode.includes("n")) top += dy;
       if (drag.mode.includes("s")) bottom += dy;
     }
-    onChange(clampBbox([left, top, right, bottom], page));
+    const next = clampBbox([left, top, right, bottom], page);
+    if (next) onChange(next);
   }
 
   return (
@@ -1140,14 +1193,16 @@ function EditableEvidenceBox({
   );
 }
 
-function clampBbox(bbox: number[], page: Page): number[] {
+function clampBbox(bbox: number[], page: Page): number[] | null {
+  const normalized = normalizeBbox(bbox);
+  if (!normalized) return null;
   const width = page.image_width ?? 1;
   const height = page.image_height ?? 1;
-  const left = Math.max(0, Math.min(width, Math.min(bbox[0], bbox[2])));
-  const right = Math.max(0, Math.min(width, Math.max(bbox[0], bbox[2])));
-  const top = Math.max(0, Math.min(height, Math.min(bbox[1], bbox[3])));
-  const bottom = Math.max(0, Math.min(height, Math.max(bbox[1], bbox[3])));
-  return [left, top, right, bottom];
+  const left = Math.max(0, Math.min(width, normalized[0]));
+  const right = Math.max(0, Math.min(width, normalized[2]));
+  const top = Math.max(0, Math.min(height, normalized[1]));
+  const bottom = Math.max(0, Math.min(height, normalized[3]));
+  return normalizeBbox([left, top, right, bottom]);
 }
 
 function CandidateList({
@@ -1158,11 +1213,9 @@ function CandidateList({
   onChange,
   onToggleApproval,
   selectedField,
-  regionDraft,
   fieldPreview,
   isPreviewingField,
   onSelectField,
-  onRegionDraftChange,
   onPreviewField,
   onApplyFieldPreview,
   onCancelFieldPreview,
@@ -1175,12 +1228,10 @@ function CandidateList({
   onChange: (card: CardCandidate) => Promise<void>;
   onToggleApproval: (card: CardCandidate) => Promise<void>;
   selectedField: string | null;
-  regionDraft: FieldRegionDraft | null;
   fieldPreview: FieldOcrPreview | null;
   isPreviewingField: boolean;
   onSelectField: (field: string, card?: CardCandidate | null) => void;
-  onRegionDraftChange: (draft: FieldRegionDraft) => void;
-  onPreviewField: () => void;
+  onPreviewField: (field?: string, card?: CardCandidate) => void;
   onApplyFieldPreview: () => void;
   onCancelFieldPreview: () => void;
   grouped: boolean;
@@ -1196,11 +1247,9 @@ function CandidateList({
           onChange={onChange}
           onToggleApproval={onToggleApproval}
           selectedField={selectedField}
-          regionDraft={regionDraft}
           fieldPreview={fieldPreview}
           isPreviewingField={isPreviewingField}
           onSelectField={onSelectField}
-          onRegionDraftChange={onRegionDraftChange}
           onPreviewField={onPreviewField}
           onApplyFieldPreview={onApplyFieldPreview}
           onCancelFieldPreview={onCancelFieldPreview}
@@ -1222,11 +1271,9 @@ function CandidateList({
         onChange={onChange}
         onToggleApproval={onToggleApproval}
         selectedField={selectedField}
-        regionDraft={regionDraft}
         fieldPreview={fieldPreview}
         isPreviewingField={isPreviewingField}
         onSelectField={onSelectField}
-        onRegionDraftChange={onRegionDraftChange}
         onPreviewField={onPreviewField}
         onApplyFieldPreview={onApplyFieldPreview}
         onCancelFieldPreview={onCancelFieldPreview}
@@ -1241,11 +1288,9 @@ function CandidateList({
         onChange={onChange}
         onToggleApproval={onToggleApproval}
         selectedField={selectedField}
-        regionDraft={regionDraft}
         fieldPreview={fieldPreview}
         isPreviewingField={isPreviewingField}
         onSelectField={onSelectField}
-        onRegionDraftChange={onRegionDraftChange}
         onPreviewField={onPreviewField}
         onApplyFieldPreview={onApplyFieldPreview}
         onCancelFieldPreview={onCancelFieldPreview}
@@ -1264,11 +1309,9 @@ function CandidateSection({
   onChange,
   onToggleApproval,
   selectedField,
-  regionDraft,
   fieldPreview,
   isPreviewingField,
   onSelectField,
-  onRegionDraftChange,
   onPreviewField,
   onApplyFieldPreview,
   onCancelFieldPreview,
@@ -1282,12 +1325,10 @@ function CandidateSection({
   onChange: (card: CardCandidate) => Promise<void>;
   onToggleApproval: (card: CardCandidate) => Promise<void>;
   selectedField: string | null;
-  regionDraft: FieldRegionDraft | null;
   fieldPreview: FieldOcrPreview | null;
   isPreviewingField: boolean;
   onSelectField: (field: string, card?: CardCandidate | null) => void;
-  onRegionDraftChange: (draft: FieldRegionDraft) => void;
-  onPreviewField: () => void;
+  onPreviewField: (field?: string, card?: CardCandidate) => void;
   onApplyFieldPreview: () => void;
   onCancelFieldPreview: () => void;
   open?: boolean;
@@ -1309,11 +1350,9 @@ function CandidateSection({
           onChange={onChange}
           onToggleApproval={onToggleApproval}
           selectedField={selectedField}
-          regionDraft={regionDraft}
           fieldPreview={fieldPreview}
           isPreviewingField={isPreviewingField}
           onSelectField={onSelectField}
-          onRegionDraftChange={onRegionDraftChange}
           onPreviewField={onPreviewField}
           onApplyFieldPreview={onApplyFieldPreview}
           onCancelFieldPreview={onCancelFieldPreview}
@@ -1331,11 +1370,9 @@ function CandidateGroups({
   onChange,
   onToggleApproval,
   selectedField,
-  regionDraft,
   fieldPreview,
   isPreviewingField,
   onSelectField,
-  onRegionDraftChange,
   onPreviewField,
   onApplyFieldPreview,
   onCancelFieldPreview
@@ -1347,12 +1384,10 @@ function CandidateGroups({
   onChange: (card: CardCandidate) => Promise<void>;
   onToggleApproval: (card: CardCandidate) => Promise<void>;
   selectedField: string | null;
-  regionDraft: FieldRegionDraft | null;
   fieldPreview: FieldOcrPreview | null;
   isPreviewingField: boolean;
   onSelectField: (field: string, card?: CardCandidate | null) => void;
-  onRegionDraftChange: (draft: FieldRegionDraft) => void;
-  onPreviewField: () => void;
+  onPreviewField: (field?: string, card?: CardCandidate) => void;
   onApplyFieldPreview: () => void;
   onCancelFieldPreview: () => void;
 }>) {
@@ -1376,11 +1411,9 @@ function CandidateGroups({
           onChange={onChange}
           onToggleApproval={onToggleApproval}
           selectedField={selectedField}
-          regionDraft={regionDraft}
           fieldPreview={fieldPreview}
           isPreviewingField={isPreviewingField}
           onSelectField={onSelectField}
-          onRegionDraftChange={onRegionDraftChange}
           onPreviewField={onPreviewField}
           onApplyFieldPreview={onApplyFieldPreview}
           onCancelFieldPreview={onCancelFieldPreview}
@@ -1398,11 +1431,9 @@ function CardEditor({
   onChange,
   onToggleApproval,
   selectedField,
-  regionDraft,
   fieldPreview,
   isPreviewingField,
   onSelectField,
-  onRegionDraftChange,
   onPreviewField,
   onApplyFieldPreview,
   onCancelFieldPreview
@@ -1414,12 +1445,10 @@ function CardEditor({
   onChange: (card: CardCandidate) => Promise<void>;
   onToggleApproval: (card: CardCandidate) => Promise<void>;
   selectedField: string | null;
-  regionDraft: FieldRegionDraft | null;
   fieldPreview: FieldOcrPreview | null;
   isPreviewingField: boolean;
   onSelectField: (field: string, card?: CardCandidate | null) => void;
-  onRegionDraftChange: (draft: FieldRegionDraft) => void;
-  onPreviewField: () => void;
+  onPreviewField: (field?: string, card?: CardCandidate) => void;
   onApplyFieldPreview: () => void;
   onCancelFieldPreview: () => void;
 }>) {
@@ -1454,19 +1483,17 @@ function CardEditor({
         warnings={warnings}
         onSelect={onSelect}
       />
-      <SourceSummary card={card} />
+      <SourceSummary card={draft} />
 
       {selected ? (
         <CandidateBody
           card={card}
           draft={draft}
           selectedField={selectedField}
-          regionDraft={regionDraft}
           fieldPreview={fieldPreview}
           isPreviewingField={isPreviewingField}
           onDraftChange={setDraft}
           onSelectField={onSelectField}
-          onRegionDraftChange={onRegionDraftChange}
           onPreviewField={onPreviewField}
           onApplyFieldPreview={onApplyFieldPreview}
           onCancelFieldPreview={onCancelFieldPreview}
@@ -1529,12 +1556,10 @@ function CandidateBody({
   card,
   draft,
   selectedField,
-  regionDraft,
   fieldPreview,
   isPreviewingField,
   onDraftChange,
   onSelectField,
-  onRegionDraftChange,
   onPreviewField,
   onApplyFieldPreview,
   onCancelFieldPreview,
@@ -1544,13 +1569,11 @@ function CandidateBody({
   card: CardCandidate;
   draft: CardCandidate;
   selectedField: string | null;
-  regionDraft: FieldRegionDraft | null;
   fieldPreview: FieldOcrPreview | null;
   isPreviewingField: boolean;
   onDraftChange: (card: CardCandidate) => void;
   onSelectField: (field: string, card?: CardCandidate | null) => void;
-  onRegionDraftChange: (draft: FieldRegionDraft) => void;
-  onPreviewField: () => void;
+  onPreviewField: (field?: string, card?: CardCandidate) => void;
   onApplyFieldPreview: () => void;
   onCancelFieldPreview: () => void;
   onChange: (card: CardCandidate) => Promise<void>;
@@ -1558,19 +1581,32 @@ function CandidateBody({
 }>) {
   return (
     <div className="candidate-body">
-      <FieldEvidenceControls
-        card={draft}
-        selectedField={selectedField}
-        regionDraft={regionDraft}
-        fieldPreview={fieldPreview}
-        isPreviewingField={isPreviewingField}
-        onSelectField={(field) => onSelectField(field, draft)}
-        onRegionDraftChange={onRegionDraftChange}
-        onPreviewField={onPreviewField}
-        onApplyFieldPreview={onApplyFieldPreview}
-        onCancelFieldPreview={onCancelFieldPreview}
-      />
-      {card.source_type === "question_item" ? <QuestionSourceEditor card={draft} onChange={onDraftChange} /> : null}
+      {card.source_type === "question_item" ? (
+        <QuestionSourceEditor
+          card={draft}
+          selectedField={selectedField}
+          fieldPreview={fieldPreview}
+          isPreviewingField={isPreviewingField}
+          onChange={onDraftChange}
+          onSelectField={(field) => onSelectField(field, draft)}
+          onPreviewField={(field) => onPreviewField(field, draft)}
+          onApplyFieldPreview={onApplyFieldPreview}
+          onCancelFieldPreview={onCancelFieldPreview}
+        />
+      ) : null}
+      {card.source_type === "vocab_item" ? (
+        <VocabSourceEditor
+          card={draft}
+          selectedField={selectedField}
+          fieldPreview={fieldPreview}
+          isPreviewingField={isPreviewingField}
+          onChange={onDraftChange}
+          onSelectField={(field) => onSelectField(field, draft)}
+          onPreviewField={(field) => onPreviewField(field, draft)}
+          onApplyFieldPreview={onApplyFieldPreview}
+          onCancelFieldPreview={onCancelFieldPreview}
+        />
+      ) : null}
       <label>
         <span>Front</span>
         <textarea value={draft.front} onChange={(event) => onDraftChange({ ...draft, front: event.target.value })} />
@@ -1607,157 +1643,171 @@ function CandidateBody({
   );
 }
 
-function FieldEvidenceControls({
+function QuestionSourceEditor({
   card,
   selectedField,
-  regionDraft,
   fieldPreview,
   isPreviewingField,
+  onChange,
   onSelectField,
-  onRegionDraftChange,
   onPreviewField,
   onApplyFieldPreview,
   onCancelFieldPreview
 }: Readonly<{
   card: CardCandidate;
   selectedField: string | null;
-  regionDraft: FieldRegionDraft | null;
   fieldPreview: FieldOcrPreview | null;
   isPreviewingField: boolean;
+  onChange: (card: CardCandidate) => void;
   onSelectField: (field: string) => void;
-  onRegionDraftChange: (draft: FieldRegionDraft) => void;
-  onPreviewField: () => void;
+  onPreviewField: (field: string) => void;
   onApplyFieldPreview: () => void;
   onCancelFieldPreview: () => void;
 }>) {
-  const fields = fieldNamesForCard(card);
-  const activeField = selectedField && fields.includes(selectedField) ? selectedField : fields[0] ?? null;
-  const activeBbox = activeField ? editableFieldBbox(card, activeField, regionDraft) : null;
-  const matchingPreview = fieldPreview?.card_id === card.id && fieldPreview.field === activeField ? fieldPreview : null;
-
-  function updateBbox(index: number, value: string) {
-    if (!activeField || !activeBbox) return;
-    const next = [...activeBbox];
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) return;
-    next[index] = parsed;
-    onRegionDraftChange({ cardId: card.id, field: activeField, bbox: next });
-  }
-
-  return (
-    <fieldset className="field-evidence-controls">
-      <legend>Field OCR evidence</legend>
-      <div className="field-chip-row">
-        {fields.map((field) => (
-          <button
-            key={field}
-            type="button"
-            className={field === activeField ? "field-chip active" : "field-chip"}
-            onClick={() => onSelectField(field)}
-            title={`Focus visual evidence for ${fieldLabel(field)}`}
-          >
-            {fieldLabel(field)}
-          </button>
-        ))}
-      </div>
-      {activeField && activeBbox ? (
-        <div className="bbox-editor">
-          <p className="muted">Drag the highlighted box on the image, or fine-tune the coordinates here.</p>
-          {activeBbox.map((value, index) => (
-            <label key={`${activeField}-${index}`}>
-              <span>{["x1", "y1", "x2", "y2"][index]}</span>
-              <input value={Math.round(value)} inputMode="numeric" onChange={(event) => updateBbox(index, event.target.value)} />
-            </label>
-          ))}
-          <div className="actions candidate-actions">
-            <button className="secondary" type="button" onClick={onPreviewField} disabled={isPreviewingField}>
-              {isPreviewingField ? "Previewing..." : "Preview OCR for this field"}
-            </button>
-            <button className="ghost" type="button" onClick={onCancelFieldPreview}>Cancel field edit</button>
-          </div>
-        </div>
-      ) : (
-        <p className="muted">No field box is available yet. Use the source region or All OCR mode to inspect this card.</p>
-      )}
-      {matchingPreview ? (
-        <div className="field-preview">
-          <strong>Suggested {fieldLabel(matchingPreview.field)}</strong>
-          <p>{matchingPreview.text || "No text detected."}</p>
-          {matchingPreview.warnings.length ? <WarningList warnings={matchingPreview.warnings} compact /> : null}
-          <div className="actions candidate-actions">
-            <button type="button" onClick={onApplyFieldPreview}>Apply suggestion</button>
-            <button className="ghost" type="button" onClick={onCancelFieldPreview}>Discard</button>
-          </div>
-        </div>
-      ) : null}
-    </fieldset>
-  );
-}
-
-function QuestionSourceEditor({
-  card,
-  onChange
-}: Readonly<{
-  card: CardCandidate;
-  onChange: (card: CardCandidate) => void;
-}>) {
   const source = card.source;
+  const [choicesDraft, setChoicesDraft] = useState(choicesText(source));
+  const savedChoicesText = choicesText(source);
+  useEffect(() => setChoicesDraft(savedChoicesText), [savedChoicesText]);
+
   function updateSource(field: string, value: string) {
-    const nextSource = { ...source, [field]: field === "question_no" || field === "correct_choice_no" ? numberOrEmpty(value) : value };
-    const nextCard = syncQuestionAnswerBack({ ...card, source: nextSource }, nextSource);
-    onChange(nextCard);
+    onChange(applyQuestionSourceEdit(card, field, value));
   }
 
   function updateChoices(value: string) {
-    const choices = choicesFromText(value);
-    const choiceNo = Number(source.correct_choice_no);
-    const correctAnswer = Number.isInteger(choiceNo) && choices[choiceNo - 1] ? choices[choiceNo - 1] : source.correct_answer;
-    const nextSource = { ...source, choices, correct_answer: correctAnswer };
-    const nextWarnings = choices.length === 4
-      ? card.warnings.filter((warning) => !warning.includes("exactly four choices"))
-      : uniqueStrings([...card.warnings, "Expected exactly four choices."]);
-    const nextState = choices.length === 4 && card.review_state === "red" ? "yellow" : card.review_state;
-    const nextCard = syncQuestionAnswerBack({ ...card, source: nextSource, warnings: nextWarnings, review_state: nextState }, nextSource);
-    onChange(nextCard);
+    setChoicesDraft(value);
+    onChange(applyQuestionChoicesEdit(card, value));
   }
 
   return (
     <fieldset className="question-source-editor">
       <legend>Question facts</legend>
-      <label>
-        <span>Question no.</span>
-        <input value={textValue(source.question_no)} onChange={(event) => updateSource("question_no", event.target.value)} />
+      <QuestionFieldLabel field="question_no" selectedField={selectedField} onSelectField={onSelectField} onPreviewField={onPreviewField}>
+        Question no.
+      </QuestionFieldLabel>
+      <label className="question-field">
+        <input
+          value={textValue(source.question_no)}
+          onFocus={() => onSelectField("question_no")}
+          onChange={(event) => updateSource("question_no", event.target.value)}
+        />
+        <InlineFieldPreview
+          card={card}
+          field="question_no"
+          fieldPreview={fieldPreview}
+          isPreviewingField={isPreviewingField}
+          onApplyFieldPreview={onApplyFieldPreview}
+          onCancelFieldPreview={onCancelFieldPreview}
+        />
       </label>
-      <label>
-        <span>Sentence</span>
-        <textarea value={textValue(source.sentence)} onChange={(event) => updateSource("sentence", event.target.value)} />
+      <QuestionFieldLabel field="sentence" selectedField={selectedField} onSelectField={onSelectField} onPreviewField={onPreviewField}>
+        Sentence
+      </QuestionFieldLabel>
+      <label className="question-field wide">
+        <textarea
+          value={textValue(source.sentence)}
+          onFocus={() => onSelectField("sentence")}
+          onChange={(event) => updateSource("sentence", event.target.value)}
+        />
+        <InlineFieldPreview
+          card={card}
+          field="sentence"
+          fieldPreview={fieldPreview}
+          isPreviewingField={isPreviewingField}
+          onApplyFieldPreview={onApplyFieldPreview}
+          onCancelFieldPreview={onCancelFieldPreview}
+        />
       </label>
-      <label>
-        <span>Target</span>
-        <input value={textValue(source.target)} onChange={(event) => updateSource("target", event.target.value)} />
+      <QuestionFieldLabel field="target" selectedField={selectedField} onSelectField={onSelectField} onPreviewField={onPreviewField}>
+        Target
+      </QuestionFieldLabel>
+      <label className="question-field">
+        <input
+          value={textValue(source.target)}
+          onFocus={() => onSelectField("target")}
+          onChange={(event) => updateSource("target", event.target.value)}
+        />
+        <InlineFieldPreview
+          card={card}
+          field="target"
+          fieldPreview={fieldPreview}
+          isPreviewingField={isPreviewingField}
+          onApplyFieldPreview={onApplyFieldPreview}
+          onCancelFieldPreview={onCancelFieldPreview}
+        />
       </label>
-      <label>
+      <div className="question-field-label">
         <span>Correct choice no.</span>
+      </div>
+      <label className="question-field">
         <input
           inputMode="numeric"
           value={textValue(source.correct_choice_no)}
+          onFocus={() => onSelectField("correct_answer")}
           onChange={(event) => updateSource("correct_choice_no", event.target.value)}
         />
       </label>
-      <label>
-        <span>Correct answer</span>
-        <input value={textValue(source.correct_answer)} onChange={(event) => updateSource("correct_answer", event.target.value)} />
-      </label>
-      <label className="choice-editor">
-        <span>Choices (one per line)</span>
-        <textarea
-          value={Array.isArray(source.choices) ? source.choices.map(String).join("\n") : ""}
-          onChange={(event) => updateChoices(event.target.value)}
+      <QuestionFieldLabel field="correct_answer" selectedField={selectedField} onSelectField={onSelectField} onPreviewField={onPreviewField}>
+        Correct answer
+      </QuestionFieldLabel>
+      <label className="question-field">
+        <input
+          value={textValue(source.correct_answer)}
+          onFocus={() => onSelectField("correct_answer")}
+          onChange={(event) => updateSource("correct_answer", event.target.value)}
+        />
+        <InlineFieldPreview
+          card={card}
+          field="correct_answer"
+          fieldPreview={fieldPreview}
+          isPreviewingField={isPreviewingField}
+          onApplyFieldPreview={onApplyFieldPreview}
+          onCancelFieldPreview={onCancelFieldPreview}
         />
       </label>
-      <label>
-        <span>Answer source</span>
-        <select value={textValue(source.answer_source, "manual")} onChange={(event) => updateSource("answer_source", event.target.value)}>
+      <QuestionFieldLabel field="choice_1" selectedField={selectedField} onSelectField={onSelectField} onPreviewField={onPreviewField}>
+        Choices (one per line)
+      </QuestionFieldLabel>
+      <label className="choice-editor question-field wide">
+        <div className="choice-field-actions" aria-label="Choice OCR evidence actions">
+          {["choice_1", "choice_2", "choice_3", "choice_4"].map((field) => (
+            <button
+              key={field}
+              type="button"
+              className={selectedField === field ? "choice-eye active" : "choice-eye"}
+              onClick={() => onSelectField(field)}
+              title={`Highlight OCR evidence for ${fieldLabel(field)}`}
+            >
+              {fieldLabel(field)}
+            </button>
+          ))}
+        </div>
+        <textarea
+          value={choicesDraft}
+          onFocus={() => onSelectField(selectedField?.startsWith("choice_") ? selectedField : "choice_1")}
+          onChange={(event) => updateChoices(event.target.value)}
+          placeholder={"1st choice\n2nd choice\n3rd choice\n4th choice"}
+        />
+        {["choice_1", "choice_2", "choice_3", "choice_4"].map((field) => (
+          <InlineFieldPreview
+            key={field}
+            card={card}
+            field={field}
+            fieldPreview={fieldPreview}
+            isPreviewingField={isPreviewingField}
+            onApplyFieldPreview={onApplyFieldPreview}
+            onCancelFieldPreview={onCancelFieldPreview}
+          />
+        ))}
+      </label>
+      <QuestionFieldLabel field="answer_source" selectedField={selectedField} onSelectField={onSelectField} onPreviewField={onPreviewField}>
+        Answer source
+      </QuestionFieldLabel>
+      <label className="question-field">
+        <select
+          value={textValue(source.answer_source, "manual")}
+          onFocus={() => onSelectField("answer_source")}
+          onChange={(event) => updateSource("answer_source", event.target.value)}
+        >
           <option value="manual">Manual correction</option>
           <option value="answer_strip">Answer strip</option>
           <option value="local_glossary">Local glossary</option>
@@ -1765,6 +1815,132 @@ function QuestionSourceEditor({
         </select>
       </label>
     </fieldset>
+  );
+}
+
+function VocabSourceEditor({
+  card,
+  selectedField,
+  fieldPreview,
+  isPreviewingField,
+  onChange,
+  onSelectField,
+  onPreviewField,
+  onApplyFieldPreview,
+  onCancelFieldPreview
+}: Readonly<{
+  card: CardCandidate;
+  selectedField: string | null;
+  fieldPreview: FieldOcrPreview | null;
+  isPreviewingField: boolean;
+  onChange: (card: CardCandidate) => void;
+  onSelectField: (field: string) => void;
+  onPreviewField: (field: string) => void;
+  onApplyFieldPreview: () => void;
+  onCancelFieldPreview: () => void;
+}>) {
+  const source = card.source;
+
+  function fieldInput(field: "surface" | "reading" | "meaning_ko", label: string) {
+    return (
+      <>
+        <QuestionFieldLabel field={field} selectedField={selectedField} onSelectField={onSelectField} onPreviewField={onPreviewField}>
+          {label}
+        </QuestionFieldLabel>
+        <label className="question-field">
+          <input
+            value={textValue(source[field])}
+            onFocus={() => onSelectField(field)}
+            onChange={(event) => onChange(applyVocabSourceEdit(card, field, event.target.value))}
+          />
+          <InlineFieldPreview
+            card={card}
+            field={field}
+            fieldPreview={fieldPreview}
+            isPreviewingField={isPreviewingField}
+            onApplyFieldPreview={onApplyFieldPreview}
+            onCancelFieldPreview={onCancelFieldPreview}
+          />
+        </label>
+      </>
+    );
+  }
+
+  return (
+    <fieldset className="question-source-editor">
+      <legend>Vocabulary facts</legend>
+      {fieldInput("surface", "Surface")}
+      {fieldInput("reading", "Reading")}
+      {fieldInput("meaning_ko", "Korean meaning")}
+    </fieldset>
+  );
+}
+
+function QuestionFieldLabel({
+  field,
+  selectedField,
+  onSelectField,
+  onPreviewField,
+  children
+}: Readonly<{
+  field: string;
+  selectedField: string | null;
+  onSelectField: (field: string) => void;
+  onPreviewField: (field: string) => void;
+  children: ReactNode;
+}>) {
+  return (
+    <div className={selectedField === field ? "question-field-label active" : "question-field-label"}>
+      <button
+        type="button"
+        className="field-focus-button"
+        onClick={() => onSelectField(field)}
+        title={`Highlight OCR evidence for ${fieldLabel(field)}`}
+      >
+        {children}
+      </button>
+      <div className="field-mini-actions">
+        <button type="button" className="field-eye preview" onClick={() => onPreviewField(field)} title={`Preview OCR for ${fieldLabel(field)}`}>
+          Scan
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function InlineFieldPreview({
+  card,
+  field,
+  fieldPreview,
+  isPreviewingField,
+  onApplyFieldPreview,
+  onCancelFieldPreview
+}: Readonly<{
+  card: CardCandidate;
+  field: string;
+  fieldPreview: FieldOcrPreview | null;
+  isPreviewingField: boolean;
+  onApplyFieldPreview: () => void;
+  onCancelFieldPreview: () => void;
+}>) {
+  const matchingPreview = fieldPreview?.card_id === card.id && fieldPreview.field === field ? fieldPreview : null;
+  if (!matchingPreview && (!isPreviewingField || fieldPreview?.field !== field)) return null;
+  return (
+    <div className="inline-field-preview">
+      {matchingPreview ? (
+        <>
+          <strong>Suggested {fieldLabel(matchingPreview.field)}</strong>
+          <p>{matchingPreview.text || "No text detected."}</p>
+          {matchingPreview.warnings.length ? <WarningList warnings={matchingPreview.warnings} compact /> : null}
+          <div className="actions candidate-actions">
+            <button type="button" onClick={onApplyFieldPreview}>Apply suggestion</button>
+            <button className="ghost" type="button" onClick={onCancelFieldPreview}>Discard</button>
+          </div>
+        </>
+      ) : (
+        <p className="muted">Previewing OCR...</p>
+      )}
+    </div>
   );
 }
 
@@ -1830,6 +2006,26 @@ function OcrComparisonPanel({ comparison }: Readonly<{ comparison: OcrComparison
 
 function pageTitle(page: Page): string {
   return page.display_name?.trim() || page.original_image_path.split("/").pop()?.replace(/\.[^.]+$/, "") || page.id;
+}
+
+function versionedImageUrl(url: string | null, page: Page | null, tokenCount: number, cardCount: number): string | null {
+  if (!url || !page) return url;
+  const revision = [
+    page.id,
+    page.processed_image_path ?? page.original_image_path,
+    page.page_type,
+    page.page_type_confidence,
+    tokenCount,
+    cardCount
+  ].join(":");
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}v=${encodeURIComponent(revision)}`;
+}
+
+function yieldToBrowser(): Promise<void> {
+  return new Promise((resolve) => {
+    globalThis.requestAnimationFrame?.(() => resolve()) ?? setTimeout(resolve, 0);
+  });
 }
 
 function pageTypeLabel(type: string): string {
