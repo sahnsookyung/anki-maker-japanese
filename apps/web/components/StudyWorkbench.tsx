@@ -846,55 +846,142 @@ function PageCard({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(pageTitle(page));
   useEffect(() => setDraft(pageTitle(page)), [page]);
-  const approvedCount = page.approved_card_count ?? 0;
-  const redCount = page.red_card_count ?? 0;
-  const cardSummary = candidateCount ? `${approvedCount}/${candidateCount} approved · ${redCount} blocked` : "No candidates";
   return (
-    <article className={active ? "page-card active" : "page-card"}>
+    <article className={pageCardClass(active)}>
       {editing ? (
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            void onRename(draft).then(() => setEditing(false));
-          }}
-        >
-          <input value={draft} onChange={(event) => setDraft(event.target.value)} autoFocus />
-          <div className="mini-actions">
-            <button type="submit">Save</button>
-            <button type="button" className="ghost" onClick={() => setEditing(false)}>Cancel</button>
-          </div>
-        </form>
+        <PageRenameForm
+          draft={draft}
+          onDraftChange={setDraft}
+          onCancel={() => setEditing(false)}
+          onSave={() => void onRename(draft).then(() => setEditing(false))}
+        />
       ) : (
-        <button className="page-select" onClick={onSelect}>
-          <strong>{pageTitle(page)}</strong>
-          <span>{pageTypeLabel(page.page_type)} · {Math.round(page.page_type_confidence * 100)}%</span>
-          <small>{page.warnings.length} warnings · {cardSummary}</small>
-          {timing ? (
-            <small className={timing.success ? "page-timing" : "page-timing failed"}>
-              {timing.engineLabel}: {timing.success ? "processed" : "failed"} in {formatDuration(timing.ms)}
-            </small>
-          ) : null}
-        </button>
+        <PageSelectButton page={page} candidateCount={candidateCount} timing={timing} onSelect={onSelect} />
       )}
       {editing ? null : (
-        <div className="page-actions">
-          <button className="rename" disabled={disabled} onClick={() => setEditing(true)}>Rename</button>
-          <button className="process-page" disabled={disabled || processing} onClick={() => void onProcess()}>
-            {processing ? "Processing" : "Process"}
-          </button>
-          <button
-            className="vl-page"
-            disabled={disabled || vlProcessing}
-            onClick={() => void onVlProcess()}
-            title="Create candidates for only this page with PaddleOCR-VL."
-          >
-            {vlProcessing ? "VL processing" : "Process VL"}
-          </button>
-          <button className="delete-page" disabled={disabled} onClick={() => void onDelete()}>Delete</button>
-        </div>
+        <PageActions
+          disabled={disabled}
+          processing={processing}
+          vlProcessing={vlProcessing}
+          onEdit={() => setEditing(true)}
+          onDelete={onDelete}
+          onProcess={onProcess}
+          onVlProcess={onVlProcess}
+        />
       )}
     </article>
   );
+}
+
+function PageRenameForm({
+  draft,
+  onDraftChange,
+  onCancel,
+  onSave
+}: Readonly<{
+  draft: string;
+  onDraftChange: (value: string) => void;
+  onCancel: () => void;
+  onSave: () => void;
+}>) {
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSave();
+      }}
+    >
+      <input value={draft} onChange={(event) => onDraftChange(event.target.value)} autoFocus />
+      <div className="mini-actions">
+        <button type="submit">Save</button>
+        <button type="button" className="ghost" onClick={onCancel}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+function PageSelectButton({
+  page,
+  candidateCount,
+  timing,
+  onSelect
+}: Readonly<{
+  page: Page;
+  candidateCount: number;
+  timing?: PageTimingStatus;
+  onSelect: () => void;
+}>) {
+  return (
+    <button className="page-select" onClick={onSelect}>
+      <strong>{pageTitle(page)}</strong>
+      <span>{pageTypeLabel(page.page_type)} · {Math.round(page.page_type_confidence * 100)}%</span>
+      <small>{page.warnings.length} warnings · {pageCardSummary(page, candidateCount)}</small>
+      {timing ? <PageTimingLine timing={timing} /> : null}
+    </button>
+  );
+}
+
+function PageTimingLine({ timing }: Readonly<{ timing: PageTimingStatus }>) {
+  return (
+    <small className={pageTimingClass(timing)}>
+      {timing.engineLabel}: {pageTimingStatus(timing)} in {formatDuration(timing.ms)}
+    </small>
+  );
+}
+
+function PageActions({
+  disabled,
+  processing,
+  vlProcessing,
+  onEdit,
+  onDelete,
+  onProcess,
+  onVlProcess
+}: Readonly<{
+  disabled: boolean;
+  processing: boolean;
+  vlProcessing: boolean;
+  onEdit: () => void;
+  onDelete: () => Promise<void>;
+  onProcess: () => Promise<void>;
+  onVlProcess: () => Promise<void>;
+}>) {
+  return (
+    <div className="page-actions">
+      <button className="rename" disabled={disabled} onClick={onEdit}>Rename</button>
+      <button className="process-page" disabled={disabled || processing} onClick={() => void onProcess()}>
+        {processing ? "Processing" : "Process"}
+      </button>
+      <button
+        className="vl-page"
+        disabled={disabled || vlProcessing}
+        onClick={() => void onVlProcess()}
+        title="Create candidates for only this page with PaddleOCR-VL."
+      >
+        {vlProcessing ? "VL processing" : "Process VL"}
+      </button>
+      <button className="delete-page" disabled={disabled} onClick={() => void onDelete()}>Delete</button>
+    </div>
+  );
+}
+
+function pageCardClass(active: boolean): string {
+  return active ? "page-card active" : "page-card";
+}
+
+function pageCardSummary(page: Page, candidateCount: number): string {
+  if (!candidateCount) return "No candidates";
+  const approvedCount = page.approved_card_count ?? 0;
+  const redCount = page.red_card_count ?? 0;
+  return `${approvedCount}/${candidateCount} approved · ${redCount} blocked`;
+}
+
+function pageTimingClass(timing: PageTimingStatus): string {
+  return timing.success ? "page-timing" : "page-timing failed";
+}
+
+function pageTimingStatus(timing: PageTimingStatus): string {
+  return timing.success ? "processed" : "failed";
 }
 
 function EvidenceHeader({
@@ -977,7 +1064,7 @@ function EvidenceStage({
       </div>
     );
   }
-  const focusBox = mode === "focused" ? focusBbox(card, tokens, selectedField) : mode === "region" ? sourceBbox(card) : null;
+  const focusBox = stageFocusBox(mode, card, tokens, selectedField);
   const viewBox = evidenceViewBox(page, focusBox);
   return (
     <div className={focusBox ? "image-stage zoomed" : "image-stage"}>
@@ -1011,6 +1098,17 @@ function EvidenceStage({
       </svg>
     </div>
   );
+}
+
+function stageFocusBox(
+  mode: OverlayMode,
+  card: CardCandidate | null,
+  tokens: OcrToken[],
+  selectedField: string | null
+): number[] | null {
+  if (mode === "focused") return focusBbox(card, tokens, selectedField);
+  if (mode === "region") return sourceBbox(card);
+  return null;
 }
 
 function TokenOverlay({
@@ -1685,6 +1783,7 @@ function QuestionSourceEditor({
         Question no.
       </QuestionFieldLabel>
       <label className="question-field">
+        <span className="sr-only">Question no.</span>
         <input
           value={textValue(source.question_no)}
           onFocus={() => onSelectField("question_no")}
@@ -1703,6 +1802,7 @@ function QuestionSourceEditor({
         Sentence
       </QuestionFieldLabel>
       <label className="question-field wide">
+        <span className="sr-only">Sentence</span>
         <textarea
           value={textValue(source.sentence)}
           onFocus={() => onSelectField("sentence")}
@@ -1721,6 +1821,7 @@ function QuestionSourceEditor({
         Target
       </QuestionFieldLabel>
       <label className="question-field">
+        <span className="sr-only">Target</span>
         <input
           value={textValue(source.target)}
           onFocus={() => onSelectField("target")}
@@ -1739,6 +1840,7 @@ function QuestionSourceEditor({
         <span>Correct choice no.</span>
       </div>
       <label className="question-field">
+        <span className="sr-only">Correct choice no.</span>
         <input
           inputMode="numeric"
           value={textValue(source.correct_choice_no)}
@@ -1750,6 +1852,7 @@ function QuestionSourceEditor({
         Correct answer
       </QuestionFieldLabel>
       <label className="question-field">
+        <span className="sr-only">Correct answer</span>
         <input
           value={textValue(source.correct_answer)}
           onFocus={() => onSelectField("correct_answer")}
@@ -1768,6 +1871,7 @@ function QuestionSourceEditor({
         Choices (one per line)
       </QuestionFieldLabel>
       <label className="choice-editor question-field wide">
+        <span className="sr-only">Choices, one per line</span>
         <div className="choice-field-actions" aria-label="Choice OCR evidence actions">
           {["choice_1", "choice_2", "choice_3", "choice_4"].map((field) => (
             <button
@@ -1803,6 +1907,7 @@ function QuestionSourceEditor({
         Answer source
       </QuestionFieldLabel>
       <label className="question-field">
+        <span className="sr-only">Answer source</span>
         <select
           value={textValue(source.answer_source, "manual")}
           onFocus={() => onSelectField("answer_source")}
@@ -1848,6 +1953,7 @@ function VocabSourceEditor({
           {label}
         </QuestionFieldLabel>
         <label className="question-field">
+          <span className="sr-only">{label}</span>
           <input
             value={textValue(source[field])}
             onFocus={() => onSelectField(field)}

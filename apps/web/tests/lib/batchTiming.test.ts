@@ -61,4 +61,15 @@ describe("batch timing helpers", () => {
 
     expect(message).toContain("Processed 1/4 page with PaddleOCR-VL");
   });
+
+  it("handles empty timing samples without dividing by missing data", () => {
+    expect(percentile([100, 200], -1)).toBe(100);
+    expect(percentile([100, 200], 2)).toBe(200);
+
+    const message = batchTimingSummary([], 1, [], "PaddleOCR");
+
+    expect(message).toBe(
+      "Processed 1/1 page with PaddleOCR in frontend time: total 0ms, avg 0ms, min 0ms, p25 0ms, p75 0ms, max 0ms."
+    );
+  });
 });

@@ -38,9 +38,9 @@ export function batchTimingSummary(
   const averageMs = measured.length ? totalMs / measured.length : 0;
   const minMs = measured.length ? Math.min(...measured) : 0;
   const maxMs = measured.length ? Math.max(...measured) : 0;
-  const prefix = failures.length
-    ? `Processed ${Math.max(0, processedPages - failures.length)}/${totalPages} pages with ${engineLabel}`
-    : `Processed ${processedPages}/${totalPages} page${processedPages === 1 ? "" : "s"} with ${engineLabel}`;
+  const successfulPages = failures.length ? Math.max(0, processedPages - failures.length) : processedPages;
+  const pageWord = failures.length ? "pages" : pageLabel(processedPages);
+  const prefix = `Processed ${successfulPages}/${totalPages} ${pageWord} with ${engineLabel}`;
   const stats = [
     `total ${formatDuration(totalMs)}`,
     `avg ${formatDuration(averageMs)}`,
@@ -51,4 +51,8 @@ export function batchTimingSummary(
   ].join(", ");
   const failureText = failures.length ? ` Failed: ${failures.join(", ")}.` : ".";
   return `${prefix} in frontend time: ${stats}${failureText}`;
+}
+
+function pageLabel(count: number): string {
+  return count === 1 ? "page" : "pages";
 }

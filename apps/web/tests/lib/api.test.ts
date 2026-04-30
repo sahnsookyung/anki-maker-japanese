@@ -52,6 +52,19 @@ describe("apiGet", () => {
 
     await expect(apiGet("/api/pages/broken")).rejects.toThrow("Backend request failed with HTTP 500.");
   });
+
+  it("falls back to HTTP status when reading error text fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 502,
+        text: vi.fn().mockRejectedValue(new Error("stream failed"))
+      })
+    );
+
+    await expect(apiGet("/api/pages/broken-stream")).rejects.toThrow("Backend request failed with HTTP 502.");
+  });
 });
 
 describe("resolveApiBase", () => {
