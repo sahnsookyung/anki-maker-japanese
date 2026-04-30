@@ -111,7 +111,7 @@ function keyActivatesCard(event: KeyboardEvent<HTMLElement>): boolean {
 }
 
 function loadStoredBatchReport(): BatchTimingReport | null {
-  if (typeof globalThis.window === "undefined") return null;
+  if (globalThis.window === undefined) return null;
   try {
     const raw = globalThis.localStorage.getItem(BATCH_REPORT_STORAGE_KEY);
     if (!raw) return null;
