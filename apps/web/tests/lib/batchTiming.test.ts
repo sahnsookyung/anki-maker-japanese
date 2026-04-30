@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { batchTimingSummary, durationMs, formatDuration, percentile } from "../../lib/batchTiming";
+import { batchTimingReport, batchTimingSummary, durationMs, formatDuration, percentile } from "../../lib/batchTiming";
 
 describe("batch timing helpers", () => {
   it("formats frontend processing durations compactly", () => {
@@ -19,19 +19,50 @@ describe("batch timing helpers", () => {
   });
 
   it("summarizes total, average, min, max, and quartile processing times", () => {
-    const message = batchTimingSummary(
-      [
-        { pageId: "page-1", pageTitle: "Page 1", ms: 1000, success: true },
-        { pageId: "page-2", pageTitle: "Page 2", ms: 2000, success: true },
-        { pageId: "page-3", pageTitle: "Page 3", ms: 3000, success: true },
-        { pageId: "page-4", pageTitle: "Page 4", ms: 4000, success: true }
-      ],
-      4,
-      [],
-      "PaddleOCR"
-    );
+    const timings = [
+      { pageId: "page-1", pageTitle: "Page 1", ms: 1000, success: true },
+      { pageId: "page-2", pageTitle: "Page 2", ms: 2000, success: true },
+      { pageId: "page-3", pageTitle: "Page 3", ms: 3000, success: true },
+      { pageId: "page-4", pageTitle: "Page 4", ms: 4000, success: true }
+    ];
+    const message = batchTimingSummary(timings, 4, [], "PaddleOCR");
+    const report = batchTimingReport(timings, 4, [], "PaddleOCR");
 
     expect(message).toBe("Processed 4/4 pages with PaddleOCR in frontend time: total 10s, avg 2.5s, min 1.0s, p25 2.0s, p75 3.0s, max 4.0s.");
+    expect(report).toMatchObject({
+      engineLabel: "PaddleOCR",
+      totalPages: 4,
+      processedPages: 4,
+      successfulPages: 4,
+      failedPages: 0,
+      stats: {
+        total: "10s",
+        average: "2.5s",
+        min: "1.0s",
+        p25: "2.0s",
+        p75: "3.0s",
+        max: "4.0s"
+      }
+    });
+  });
+
+  it("keeps failed-page details in the structured report", () => {
+    const report = batchTimingReport(
+      [
+        { pageId: "page-1", pageTitle: "Page 1", ms: 1000, success: true },
+        { pageId: "page-2", pageTitle: "Page 2", ms: 500, success: false }
+      ],
+      3,
+      ["Page 2 (OCR failed.)"],
+      "PaddleOCR-VL",
+      2
+    );
+
+    expect(report.successfulPages).toBe(1);
+    expect(report.failedPages).toBe(1);
+    expect(report.processedPages).toBe(2);
+    expect(report.failures).toEqual(["Page 2 (OCR failed.)"]);
+    expect(report.text).toContain("Processed 1/3 pages with PaddleOCR-VL");
   });
 
   it("includes failed pages in the batch timing summary", () => {

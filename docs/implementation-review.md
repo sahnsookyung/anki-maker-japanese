@@ -19,8 +19,8 @@ This is a living checklist for `japanese_study_image_to_anki_plan.md`.
 - Official Ollama `qwen3.5` configured as an optional local VLM target.
 - Optional VLM cleanup pipeline for row/question crops, gated by `VLM_CLEANUP_ENABLED`, with JSON/evidence-token enforcement.
 - Dictionary validation hook through `DICTIONARY_PATH`.
-- Review UI for editing card front/back/tags, approving candidates, warnings, and TSV export.
-- Basic tests for script classification, answer parsing, and TSV escaping.
+- Review UI for editing card front/back/tags, approving candidates, warnings, and CSV export.
+- Basic tests for script classification, answer parsing, and export escaping.
 
 ## Partially Implemented
 

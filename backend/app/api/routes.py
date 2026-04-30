@@ -19,6 +19,7 @@ from app.core.config import (
 )
 from app.core.ids import new_id
 from app.db import database
+from app.export.anki_csv import write_csv
 from app.export.tsv import write_tsv
 from app.extraction.pipeline import process_page
 from app.models.schemas import (
@@ -296,16 +297,7 @@ def approve_card(card_id: str):
 
 @router.post("/exports/tsv")
 def export_tsv(request: ExportRequest) -> ExportResponse:
-    page_ids = set(request.page_ids)
-    cards = database.get_cards()
-    if page_ids:
-        cards = [card for card in cards if card.page_id in page_ids]
-    if request.approved_only:
-        cards = [card for card in cards if card.status == "approved"]
-    cards = [card for card in cards if card.review_state != "red" or request.include_red]
-    if not request.include_yellow:
-        cards = [card for card in cards if card.review_state != "yellow"]
-
+    cards = _exportable_cards(request)
     export_id = new_id("export")
     path = EXPORT_DIR / f"{export_id}.tsv"
     write_tsv(path, cards)
@@ -317,14 +309,42 @@ def export_tsv(request: ExportRequest) -> ExportResponse:
     )
 
 
+@router.post("/exports/csv")
+def export_csv(request: ExportRequest) -> ExportResponse:
+    cards = _exportable_cards(request)
+    export_id = new_id("export")
+    path = EXPORT_DIR / f"{export_id}.csv"
+    write_csv(path, cards)
+    return ExportResponse(
+        export_id=export_id,
+        path=str(path),
+        card_count=len(cards),
+        download_url=f"/api/exports/{export_id}.csv",
+    )
+
+
 @router.get("/exports/{filename}", responses={404: RESPONSES[404]})
 def download_export(filename: str):
-    if Path(filename).name != filename or not filename.endswith(".tsv"):
+    if Path(filename).name != filename or Path(filename).suffix not in {".csv", ".tsv"}:
         raise HTTPException(status_code=404, detail=EXPORT_NOT_FOUND)
     path = EXPORT_DIR / filename
     if not path.exists():
         raise HTTPException(status_code=404, detail=EXPORT_NOT_FOUND)
-    return FileResponse(path, media_type="text/tab-separated-values; charset=utf-8", filename=filename)
+    media_type = "text/csv; charset=utf-8" if filename.endswith(".csv") else "text/tab-separated-values; charset=utf-8"
+    return FileResponse(path, media_type=media_type, filename=filename)
+
+
+def _exportable_cards(request: ExportRequest) -> list:
+    page_ids = set(request.page_ids)
+    cards = database.get_cards()
+    if page_ids:
+        cards = [card for card in cards if card.page_id in page_ids]
+    if request.approved_only:
+        cards = [card for card in cards if card.status == "approved"]
+    cards = [card for card in cards if card.review_state != "red" or request.include_red]
+    if not request.include_yellow:
+        cards = [card for card in cards if card.review_state != "yellow"]
+    return cards
 
 
 def _delete_runtime_file(path_value: str | None, allowed_dir: Path) -> None:

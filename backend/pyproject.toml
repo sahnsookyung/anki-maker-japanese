@@ -33,6 +33,9 @@ ocr-vl = [
 cloud = [
   "google-cloud-vision>=3.8",
 ]
+anki-import = [
+  "anki>=25.0",
+]
 
 [dependency-groups]
 dev = [

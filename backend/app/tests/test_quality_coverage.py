@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import csv
 import json
+from io import StringIO
 
 from app.core.script import char_script, classify_script, script_summary
 from app.evaluation.golden import load_golden_pages, meaning_matches
+from app.export.anki_csv import ANKI_FILE_HEADERS, cards_to_csv, write_csv
 from app.export.tsv import cards_to_tsv, write_tsv
 from app.models.schemas import CardCandidate
 from app.validation.dictionary import DictionaryValidator
@@ -55,6 +58,43 @@ def test_cards_to_tsv_and_write_tsv_escape_review_fields(tmp_path) -> None:
     output = tmp_path / "exports" / "cards.tsv"
     write_tsv(output, [card])
     assert output.read_text(encoding="utf-8") == tsv
+
+
+def test_cards_to_csv_writes_anki_headers_and_round_trips_fields(tmp_path) -> None:
+    card = CardCandidate(
+        id="card-1",
+        page_id="page-1",
+        source_type="vocab_item",
+        source_id="vocab-1",
+        note_type="jp_vocab_reading",
+        front='学校, "がっこう"\t校',
+        back="school\n학교<br>学校",
+        tags=["jlpt", "needs-review"],
+        confidence=0.87654,
+        source_bbox=[1, 2, 3, 4],
+        warnings=[],
+    )
+
+    csv_text = cards_to_csv([card])
+
+    assert csv_text.splitlines()[: len(ANKI_FILE_HEADERS)] == ANKI_FILE_HEADERS
+    data_lines = [line for line in csv_text.splitlines() if not line.startswith("#")]
+    rows = list(csv.reader(StringIO("\n".join(data_lines))))
+    assert rows == [
+        [
+            "jp_vocab_reading",
+            '学校, "がっこう"\t校',
+            "school<br>학교<br>学校",
+            "page-1",
+            "[1.0, 2.0, 3.0, 4.0]",
+            "0.877",
+            "jlpt needs-review",
+        ]
+    ]
+
+    output = tmp_path / "exports" / "cards.csv"
+    write_csv(output, [card])
+    assert output.read_text(encoding="utf-8") == csv_text
 
 
 def test_dictionary_validator_handles_missing_invalid_and_unknown_pairs(tmp_path) -> None:

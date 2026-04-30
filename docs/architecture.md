@@ -1,6 +1,6 @@
 # Architecture
 
-This app is a local-first review pipeline for turning Japanese workbook photos into editable Anki TSV candidates. The core design choice is that OCR output is never treated as final truth: the backend creates candidates with evidence and warnings, and the frontend helps a human approve only the cards that are good enough to export.
+This app is a local-first review pipeline for turning Japanese workbook photos into editable Anki CSV candidates. The core design choice is that OCR output is never treated as final truth: the backend creates candidates with evidence and warnings, and the frontend helps a human approve only the cards that are good enough to export.
 
 ## Core OCR Strategy
 
@@ -63,7 +63,7 @@ Why this matters:
 │ - Optional OCR-VL processing │
 │ - Review focused evidence    │
 │ - Edit / approve candidates  │
-│ - Export approved TSV        │
+│ - Export approved CSV        │
 └───────────────┬──────────────┘
                 │ HTTP / JSON
                 ▼
@@ -80,7 +80,7 @@ Why this matters:
 │ - /api/pages/{id}/ocr        │
 │ - /api/pages/{id}/cards      │
 │ - /api/cards/{id}            │
-│ - /api/exports/tsv           │
+│ - /api/exports/csv           │
 └───────┬──────────────┬───────┘
         │              │
         │              │ static files
@@ -162,9 +162,9 @@ Why this matters:
    Red cards are blocked from normal export.
 
 6. Export
-   Browser calls POST /api/exports/tsv.
+   Browser calls POST /api/exports/csv.
    Backend filters to approved cards by default and excludes red cards.
-   Backend writes a TSV into backend/exports and returns a download URL.
+   Backend writes an Anki-headered CSV into backend/exports and returns a download URL.
 ```
 
 ## Runtime State vs Fixtures
@@ -341,9 +341,19 @@ uv run python scripts/benchmark_ocr_modes.py --engine all --vl-limit 1 --worker-
 uv run python -m compileall app scripts
 
 cd ../apps/web
+npx playwright install chromium
 npm run test:coverage
+npm run test:e2e
 npm run lint
 npm run build
+```
+
+Optional Anki import verifier:
+
+```bash
+cd backend
+uv sync --group dev --extra anki-import
+uv run python scripts/verify_anki_csv_import.py backend/exports/example.csv
 ```
 
 Clean disposable runtime state when needed:

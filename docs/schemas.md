@@ -27,4 +27,4 @@ The backend stores canonical extraction results as JSON-backed rows in SQLite an
 - `status`: `pending_review`, `approved`, or `skipped`.
 - `warnings`: issues that should be inspected before export.
 
-Only approved cards are exported by default. Red cards are blocked from export unless explicitly included through the API.
+Only approved cards are exported by default. Red cards are blocked from export unless explicitly included through the API. The primary Anki export is CSV with Anki text-import headers; TSV remains a legacy compatibility format.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -345,19 +346,90 @@ def test_page_display_name_migrates_and_persists(tmp_path, monkeypatch) -> None:
 def test_export_download_rejects_path_traversal(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(routes, "EXPORT_DIR", tmp_path)
 
-    safe_file = tmp_path / "export_123.tsv"
-    safe_file.write_text("note_type\tfront\n", encoding="utf-8")
+    safe_file = tmp_path / "export_123.csv"
+    safe_file.write_text("#separator:Comma\n", encoding="utf-8")
 
-    response = routes.download_export("export_123.tsv")
+    response = routes.download_export("export_123.csv")
     assert response.path == safe_file
+    assert response.media_type == "text/csv; charset=utf-8"
 
-    for filename in ("../secret.tsv", "nested/export.tsv", "export_123.txt"):
+    legacy_file = tmp_path / "export_legacy.tsv"
+    legacy_file.write_text("note_type\tfront\n", encoding="utf-8")
+    assert routes.download_export("export_legacy.tsv").media_type == "text/tab-separated-values; charset=utf-8"
+
+    for filename in ("../secret.csv", "nested/export.csv", "export_123.txt"):
         try:
             routes.download_export(filename)
         except HTTPException as exc:
             assert exc.status_code == 404
         else:
             raise AssertionError(f"{filename} should not be downloadable")
+
+
+def test_export_csv_route_filters_and_writes_anki_csv(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "exports.db")
+    monkeypatch.setattr(routes, "EXPORT_DIR", tmp_path / "exports")
+    database.init_db()
+    database.replace_cards(
+        "page-export",
+        [
+            CardCandidate(
+                id="green-approved",
+                page_id="page-export",
+                source_type="vocab_item",
+                source_id="source-1",
+                note_type="jp_vocab_reading",
+                front="学校",
+                back="がっこう",
+                tags=["jlpt"],
+                confidence=0.91,
+                status="approved",
+                review_state="green",
+                warnings=[],
+            ),
+            CardCandidate(
+                id="red-approved",
+                page_id="page-export",
+                source_type="vocab_item",
+                source_id="source-2",
+                note_type="jp_vocab_reading",
+                front="危険",
+                back="きけん",
+                tags=[],
+                confidence=0.2,
+                status="approved",
+                review_state="red",
+                warnings=[],
+            ),
+            CardCandidate(
+                id="pending",
+                page_id="page-export",
+                source_type="vocab_item",
+                source_id="source-3",
+                note_type="jp_vocab_reading",
+                front="先生",
+                back="せんせい",
+                tags=[],
+                confidence=0.8,
+                status="pending_review",
+                review_state="yellow",
+                warnings=[],
+            ),
+        ],
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/exports/csv", json={"page_ids": ["page-export"], "approved_only": True})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["card_count"] == 1
+    assert payload["download_url"].endswith(".csv")
+    csv_text = (tmp_path / "exports" / Path(payload["path"]).name).read_text(encoding="utf-8")
+    assert "#separator:Comma" in csv_text
+    assert "学校" in csv_text
+    assert "危険" not in csv_text
+    assert "先生" not in csv_text
 
 
 def test_list_pages_includes_card_counts(tmp_path, monkeypatch) -> None:

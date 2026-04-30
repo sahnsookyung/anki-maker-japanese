@@ -211,7 +211,7 @@ button:disabled:hover {
   overflow-wrap: anywhere;
 }
 
-.command-bar div,
+.command-actions,
 .actions,
 .mini-actions,
 .filter-pills,
@@ -223,9 +223,73 @@ button:disabled:hover {
   align-items: center;
 }
 
-.command-bar div {
+.command-actions {
   justify-content: flex-end;
   min-width: 0;
+}
+
+.batch-summary-card {
+  display: grid;
+  gap: 0.7rem;
+  border: 1px solid rgba(31, 111, 139, 0.18);
+  border-radius: 1rem;
+  background:
+    linear-gradient(135deg, rgba(31, 111, 139, 0.08), rgba(255, 250, 240, 0.82)),
+    var(--panel-strong);
+  padding: 0.75rem;
+  margin: 0.75rem 0;
+}
+
+.batch-summary-card .eyebrow {
+  margin-bottom: 0.15rem;
+  font-size: 0.74rem;
+}
+
+.batch-summary-card strong,
+.batch-summary-card span {
+  display: block;
+}
+
+.batch-summary-card span,
+.batch-failures {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.batch-summary-card dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem;
+  margin: 0;
+}
+
+.batch-summary-card dl div {
+  border: 1px solid rgba(56, 45, 31, 0.1);
+  border-radius: 0.75rem;
+  background: rgba(255, 255, 255, 0.58);
+  padding: 0.45rem;
+}
+
+.batch-summary-card dt,
+.batch-summary-card dd {
+  margin: 0;
+}
+
+.batch-summary-card dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.batch-summary-card dd {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.batch-failures {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .workspace {
@@ -1041,7 +1105,7 @@ textarea {
     line-height: 0.96;
   }
 
-  .command-bar div {
+  .command-actions {
     justify-content: stretch;
   }
 

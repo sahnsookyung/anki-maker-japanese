@@ -5,6 +5,24 @@ export type PageTiming = {
   success: boolean;
 };
 
+export type BatchTimingReport = {
+  text: string;
+  engineLabel: string;
+  totalPages: number;
+  processedPages: number;
+  successfulPages: number;
+  failedPages: number;
+  failures: string[];
+  stats: {
+    total: string;
+    average: string;
+    min: string;
+    p25: string;
+    p75: string;
+    max: string;
+  };
+};
+
 export function durationMs(start: number, end: number): number {
   return Math.max(0, Math.round(end - start));
 }
@@ -33,6 +51,16 @@ export function batchTimingSummary(
   engineLabel: string,
   processedPages = totalPages
 ): string {
+  return batchTimingReport(timings, totalPages, failures, engineLabel, processedPages).text;
+}
+
+export function batchTimingReport(
+  timings: PageTiming[],
+  totalPages: number,
+  failures: string[],
+  engineLabel: string,
+  processedPages = totalPages
+): BatchTimingReport {
   const measured = timings.map((timing) => timing.ms);
   const totalMs = measured.reduce((sum, value) => sum + value, 0);
   const averageMs = measured.length ? totalMs / measured.length : 0;
@@ -41,16 +69,33 @@ export function batchTimingSummary(
   const successfulPages = failures.length ? Math.max(0, processedPages - failures.length) : processedPages;
   const pageWord = failures.length ? "pages" : pageLabel(processedPages);
   const prefix = `Processed ${successfulPages}/${totalPages} ${pageWord} with ${engineLabel}`;
-  const stats = [
-    `total ${formatDuration(totalMs)}`,
-    `avg ${formatDuration(averageMs)}`,
-    `min ${formatDuration(minMs)}`,
-    `p25 ${formatDuration(percentile(measured, 0.25))}`,
-    `p75 ${formatDuration(percentile(measured, 0.75))}`,
-    `max ${formatDuration(maxMs)}`
+  const stats = {
+    total: formatDuration(totalMs),
+    average: formatDuration(averageMs),
+    min: formatDuration(minMs),
+    p25: formatDuration(percentile(measured, 0.25)),
+    p75: formatDuration(percentile(measured, 0.75)),
+    max: formatDuration(maxMs)
+  };
+  const statsText = [
+    `total ${stats.total}`,
+    `avg ${stats.average}`,
+    `min ${stats.min}`,
+    `p25 ${stats.p25}`,
+    `p75 ${stats.p75}`,
+    `max ${stats.max}`
   ].join(", ");
   const failureText = failures.length ? ` Failed: ${failures.join(", ")}.` : ".";
-  return `${prefix} in frontend time: ${stats}${failureText}`;
+  return {
+    text: `${prefix} in frontend time: ${statsText}${failureText}`,
+    engineLabel,
+    totalPages,
+    processedPages,
+    successfulPages,
+    failedPages: failures.length,
+    failures,
+    stats
+  };
 }
 
 function pageLabel(count: number): string {

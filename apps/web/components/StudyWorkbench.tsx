@@ -18,7 +18,7 @@ import {
   compareOcr,
   dedupePages,
   deletePage,
-  exportTsv,
+  exportCsv,
   getOcrRuntime,
   imageUrl,
   parseDocument,
@@ -28,7 +28,7 @@ import {
   updatePage,
   uploadImages
 } from "../lib/api";
-import { batchTimingSummary, durationMs, formatDuration, type PageTiming } from "../lib/batchTiming";
+import { batchTimingReport, durationMs, formatDuration, type BatchTimingReport, type PageTiming } from "../lib/batchTiming";
 import {
   type ReviewFilter,
   applyFieldOcrPreview,
@@ -82,6 +82,8 @@ const PAGE_TYPE_LABELS: Record<string, string> = {
 };
 
 const SCRIPT_LABELS = ["paddleocr", "paddleocr_korean", "hiragana", "katakana", "kanji", "hangul", "mixed", "number"];
+const BATCH_REPORT_STORAGE_KEY = "anki-maker-latest-batch-report";
+const INITIAL_STATUS_MESSAGE = "Upload a study-book photo to begin.";
 
 function scrollTargetElement(
   target: CardScrollTarget,
@@ -108,6 +110,41 @@ function keyActivatesCard(event: KeyboardEvent<HTMLElement>): boolean {
   return event.key === "Enter" || event.key === " ";
 }
 
+function loadStoredBatchReport(): BatchTimingReport | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(BATCH_REPORT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    return isBatchTimingReport(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeBatchReport(report: BatchTimingReport): void {
+  try {
+    window.localStorage.setItem(BATCH_REPORT_STORAGE_KEY, JSON.stringify(report));
+  } catch {
+    // A failed persistence write should not interrupt OCR review.
+  }
+}
+
+function isBatchTimingReport(value: unknown): value is BatchTimingReport {
+  if (!value || typeof value !== "object") return false;
+  const report = value as Partial<BatchTimingReport>;
+  return (
+    typeof report.text === "string" &&
+    typeof report.engineLabel === "string" &&
+    typeof report.totalPages === "number" &&
+    typeof report.processedPages === "number" &&
+    typeof report.successfulPages === "number" &&
+    typeof report.failedPages === "number" &&
+    Array.isArray(report.failures) &&
+    Boolean(report.stats)
+  );
+}
+
 export function StudyWorkbench() { // NOSONAR: orchestration root delegates rendering/editing to focused child components below.
   const [pages, setPages] = useState<Page[]>([]);
   const [selectedPage, setSelectedPage] = useState<Page | null>(null);
@@ -123,7 +160,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
   const [selectedField, setSelectedField] = useState<string | null>(null);
   const [regionDraft, setRegionDraft] = useState<FieldRegionDraft | null>(null);
   const [fieldPreview, setFieldPreview] = useState<FieldOcrPreview | null>(null);
-  const [message, setMessage] = useState("Upload a study-book photo to begin.");
+  const [message, setMessage] = useState(INITIAL_STATUS_MESSAGE);
   const [isBatchProcessing, setIsBatchProcessing] = useState(false);
   const [processingPageId, setProcessingPageId] = useState<string | null>(null);
   const [vlScanningPageId, setVlScanningPageId] = useState<string | null>(null);
@@ -131,12 +168,17 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
   const [isComparingOcr, setIsComparingOcr] = useState(false);
   const [isPreviewingField, setIsPreviewingField] = useState(false);
   const [pageTimingById, setPageTimingById] = useState<Record<string, PageTimingStatus>>({});
+  const [latestBatchReport, setLatestBatchReport] = useState<BatchTimingReport | null>(null);
   const evidenceRef = useRef<HTMLElement | null>(null);
   const cardRefs = useRef<Record<string, HTMLElement | null>>({});
   const ocrActionInFlightRef = useRef(false);
 
   useEffect(() => {
     void refreshPages();
+  }, []);
+
+  useEffect(() => {
+    setLatestBatchReport(loadStoredBatchReport());
   }, []);
 
   const selectedCard = selectedCardId ? cards.find((card) => card.id === selectedCardId) ?? null : null;
@@ -169,6 +211,13 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
         nextPages[0];
       if (nextSelected) {
         await selectPage(nextSelected, false);
+        setMessage((current) =>
+          current === INITIAL_STATUS_MESSAGE
+            ? `Loaded ${pageCountLabel(nextPages.length)}. Process pages or review existing candidates.`
+            : current
+        );
+      } else {
+        setMessage(INITIAL_STATUS_MESSAGE);
       }
     } catch (error) {
       setPages([]);
@@ -232,7 +281,9 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
           timings.push(timing);
           recordPageTiming(timing, engineLabel);
           applyProcessResult(result, true);
-          setMessage(batchTimingSummary(timings, pages.length, failures, engineLabel, index + 1));
+          const report = batchTimingReport(timings, pages.length, failures, engineLabel, index + 1);
+          rememberBatchReport(report);
+          setMessage(batchProgressMessage(report));
           await yieldToBrowser();
         } catch (error) {
           const elapsedMs = durationMs(startedAt, performance.now());
@@ -241,14 +292,18 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
           recordPageTiming(timing, engineLabel);
           const failedPage = `${pageTitle(page)} (${apiErrorMessage(error, "Processing failed.")})`;
           failures.push(failedPage);
-          setMessage(batchTimingSummary(timings, pages.length, failures, engineLabel, index + 1));
+          const report = batchTimingReport(timings, pages.length, failures, engineLabel, index + 1);
+          rememberBatchReport(report);
+          setMessage(batchProgressMessage(report));
           await yieldToBrowser();
         } finally {
           if (engine === "paddleocr_vl") setVlProcessingPageId(null);
           else setProcessingPageId(null);
         }
       }
-      setMessage(batchTimingSummary(timings, pages.length, failures, engineLabel));
+      const report = batchTimingReport(timings, pages.length, failures, engineLabel);
+      rememberBatchReport(report);
+      setMessage(batchFinishedMessage(report));
     } finally {
       setIsBatchProcessing(false);
       finishOcrAction();
@@ -376,7 +431,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
   async function onExport() {
     if (!selectedPage) return;
     try {
-      const result = await exportTsv([selectedPage.id], { approved_only: true, include_yellow: true, include_red: false });
+      const result = await exportCsv([selectedPage.id], { approved_only: true, include_yellow: true, include_red: false });
       setMessage(`Exported ${result.card_count} approved cards.`);
       globalThis.open(`${API_BASE}${result.download_url}`, "_blank");
     } catch (error) {
@@ -530,6 +585,11 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
     }));
   }
 
+  function rememberBatchReport(report: BatchTimingReport) {
+    setLatestBatchReport(report);
+    storeBatchReport(report);
+  }
+
   function applyProcessResult(result: ProcessResult, selectResult: boolean) {
     const summary = summarizeCards(result.cards);
     setPages((current) =>
@@ -569,7 +629,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
           <p className="eyebrow">Local-first Japanese OCR review</p>
           <h1>Turn workbook photos into Anki candidates you can actually trust.</h1>
           <p className="lede">
-            Upload, process, inspect the exact evidence for each card, approve only what looks right, then export TSV.
+            Upload, process, inspect the exact evidence for each card, approve only what looks right, then export Anki CSV.
           </p>
         </div>
         <label className="upload-card">
@@ -598,7 +658,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
 
       <section className="command-bar">
         <p>{message}</p>
-        <div>
+        <div className="command-actions">
           {pages.length ? (
             <button
               onClick={() => void onProcessAllPages("paddleocr")}
@@ -618,16 +678,6 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
               Process pages with OCR-VL
             </button>
           ) : null}
-          {selectedPage ? (
-            <button
-              className="vl-scan"
-              onClick={() => void onProcessPage(selectedPage, "paddleocr_vl")}
-              disabled={anyOcrJobRunning}
-              title="Create Anki review candidates from the selected page using PaddleOCR-VL. This is heavier and scored separately from the default PaddleOCR path."
-            >
-              {vlProcessingPageId === selectedPage.id ? "Processing OCR-VL" : "Process selected with OCR-VL"}
-            </button>
-          ) : null}
           {pages.length > 1 ? (
             <button
               className="secondary"
@@ -642,9 +692,9 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
             <button
               onClick={onExport}
               disabled={exportableCount === 0}
-              title={`Export ${exportableCount} approved ${exportableCount === 1 ? "entity" : "entities"} to Anki.`}
+              title={`Export ${exportableCount} approved ${exportableCount === 1 ? "entity" : "entities"} to Anki CSV.`}
             >
-              Export to Anki
+              Export to Anki CSV
             </button>
           ) : null}
         </div>
@@ -656,6 +706,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
             <h2>Pages</h2>
             <span>{pages.length}</span>
           </div>
+          <BatchSummaryCard report={latestBatchReport} />
           {pages.length === 0 ? <p className="muted">No uploads yet.</p> : null}
           {pages.map((page) => (
             <PageCard
@@ -871,6 +922,53 @@ function PageCard({
       )}
     </article>
   );
+}
+
+function BatchSummaryCard({ report }: Readonly<{ report: BatchTimingReport | null }>) {
+  if (!report) return null;
+  const statItems = [
+    ["Total", report.stats.total],
+    ["Avg", report.stats.average],
+    ["Min", report.stats.min],
+    ["P25", report.stats.p25],
+    ["P75", report.stats.p75],
+    ["Max", report.stats.max]
+  ];
+  return (
+    <section className="batch-summary-card" aria-label="Latest batch timing summary">
+      <div>
+        <p className="eyebrow">Latest batch</p>
+        <strong>{report.engineLabel}</strong>
+        <span>
+          {report.successfulPages}/{report.totalPages} processed
+          {report.failedPages ? ` · ${report.failedPages} failed` : ""}
+        </span>
+      </div>
+      <dl>
+        {statItems.map(([label, value]) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+      {report.failures.length ? <p className="batch-failures">{report.failures.join(", ")}</p> : null}
+    </section>
+  );
+}
+
+function batchProgressMessage(report: BatchTimingReport): string {
+  const issueText = report.failedPages ? `, ${report.failedPages} failed` : "";
+  return `${report.engineLabel} batch: ${report.processedPages}/${report.totalPages} pages checked${issueText}.`;
+}
+
+function batchFinishedMessage(report: BatchTimingReport): string {
+  const issueText = report.failedPages ? ` with ${pageCountLabel(report.failedPages)} failed` : "";
+  return `Finished ${report.engineLabel} batch${issueText}. See Latest batch for timing details.`;
+}
+
+function pageCountLabel(count: number): string {
+  return `${count} ${count === 1 ? "page" : "pages"}`;
 }
 
 function PageRenameForm({

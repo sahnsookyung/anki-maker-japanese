@@ -2,7 +2,7 @@
 
 Local-first web app for turning Japanese study-book photos into reviewable Anki card candidates.
 
-The app intentionally creates candidates, not trusted final decks. OCR output is shown with focused visual evidence, confidence, warnings, and edit/approve controls before TSV export.
+The app intentionally creates candidates, not trusted final decks. OCR output is shown with focused visual evidence, confidence, warnings, and edit/approve controls before CSV export.
 
 ## Quick Start
 
@@ -108,10 +108,10 @@ The app accepts uploads from the browser. Uploaded pages can be renamed in the U
 
 ## Export
 
-Approved cards export as UTF-8 TSV with columns:
+Approved cards export as UTF-8 CSV for Anki text import. The file includes Anki import headers for comma separation, HTML fields, note type, and tags, followed by these columns:
 
-```tsv
-note_type	front	back	source_page	source_bbox	confidence	tags
+```csv
+notetype,front,back,source_page,source_bbox,confidence,tags
 ```
 
 Only approved cards are exported by default, and red/blocked cards stay excluded.

@@ -234,11 +234,11 @@ export type ExportOptions = {
   include_red?: boolean;
 };
 
-export async function exportTsv(
+export async function exportCsv(
   pageIds: string[],
   options: ExportOptions = {}
 ): Promise<{ card_count: number; download_url: string }> {
-  return requestJson<{ card_count: number; download_url: string }>("/api/exports/tsv", {
+  return requestJson<{ card_count: number; download_url: string }>("/api/exports/csv", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -249,6 +249,8 @@ export async function exportTsv(
     })
   });
 }
+
+export const exportTsv = exportCsv;
 
 export async function compareOcr(pageId: string, provider = "google_vision"): Promise<OcrComparison> {
   return apiGet<OcrComparison>(`/api/pages/${pageId}/ocr/compare?provider=${encodeURIComponent(provider)}`);
