@@ -111,9 +111,9 @@ function keyActivatesCard(event: KeyboardEvent<HTMLElement>): boolean {
 }
 
 function loadStoredBatchReport(): BatchTimingReport | null {
-  if (typeof window === "undefined") return null;
+  if (typeof globalThis.window === "undefined") return null;
   try {
-    const raw = window.localStorage.getItem(BATCH_REPORT_STORAGE_KEY);
+    const raw = globalThis.localStorage.getItem(BATCH_REPORT_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as unknown;
     return isBatchTimingReport(parsed) ? parsed : null;
@@ -124,7 +124,7 @@ function loadStoredBatchReport(): BatchTimingReport | null {
 
 function storeBatchReport(report: BatchTimingReport): void {
   try {
-    window.localStorage.setItem(BATCH_REPORT_STORAGE_KEY, JSON.stringify(report));
+    globalThis.localStorage.setItem(BATCH_REPORT_STORAGE_KEY, JSON.stringify(report));
   } catch {
     // A failed persistence write should not interrupt OCR review.
   }
