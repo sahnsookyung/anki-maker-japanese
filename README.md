@@ -44,6 +44,15 @@ docker compose up
 
 Docker is the recommended path for machines where local PaddlePaddle wheels are unavailable, especially macOS Intel laptops.
 
+## Workflow
+
+1. Upload one or more workbook photos from the browser.
+2. Process pages with the default PaddleOCR button. This runs sequentially to avoid overrunning local memory.
+3. Review candidates with the visual evidence panel. Edit fields, approve good cards, and leave red/blocked cards excluded.
+4. Export approved cards to Anki CSV.
+
+Page names can be renamed in the UI without renaming files on disk. Re-uploading the same filename replaces the existing page record instead of piling up duplicates.
+
 ## Optional Local OCR / VLM
 
 The backend now uses `uv` instead of handwritten `requirements.txt` files or manual virtualenv setup.
@@ -65,6 +74,8 @@ uv sync --python 3.12 --group dev --extra ocr --extra ocr-vl
 ```
 
 The backend exposes it at `POST /api/pages/{page_id}/document/parse`. Keep it opt-in while testing memory and output quality.
+
+The UI also has a visually distinct OCR-VL processing path. It is memory-guarded and useful for comparison, but the default production workflow remains base PaddleOCR until OCR-VL performs better on the benchmark set.
 
 Install Google Cloud Vision comparison support only if you want the optional comparator endpoint:
 
@@ -115,3 +126,51 @@ notetype,front,back,source_page,source_bbox,confidence,tags
 ```
 
 Only approved cards are exported by default, and red/blocked cards stay excluded.
+
+The CSV is designed for Anki's text import flow. The app does not generate `.apkg` deck packages, and the target Anki collection must have matching note types such as `jp_vocab_reading` or `jp_spelling_mcq_recall` before import.
+
+Optional local verification against Anki's Python importer:
+
+```bash
+cd backend
+uv sync --python 3.12 --group dev --extra anki-import
+uv run python scripts/verify_anki_csv_import.py exports/example.csv
+```
+
+## Verification
+
+Run the fast regression suite after code changes:
+
+```bash
+cd backend
+uv run pytest -q
+uv run python scripts/evaluate_golden.py
+uv run python scripts/evaluate_golden.py --from-db --json
+uv run python -m compileall app scripts
+
+cd ../apps/web
+npx playwright install chromium
+npm run test:coverage
+npm run test:e2e
+npm run lint
+npm run build
+```
+
+Run OCR mode benchmarks locally when comparing extraction quality or resource usage:
+
+```bash
+cd backend
+uv run python scripts/benchmark_ocr_modes.py --json
+uv run python scripts/benchmark_ocr_modes.py --engine all --vl-limit 1 --worker-max-rss-mb 4096 --json
+```
+
+The Playwright e2e smoke test fails on app-owned browser runtime errors, while ignoring external browser-extension noise such as `Extension context invalidated` from injected `content.js`.
+
+## Runtime Cleanup
+
+Generated uploads, processed images, crops, exports, and SQLite databases are disposable local state:
+
+```bash
+find backend/uploads backend/processed backend/crops backend/exports -type f ! -name .gitkeep -delete
+find backend -maxdepth 1 -type f -name "*.db" -delete
+```
