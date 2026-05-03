@@ -115,6 +115,7 @@ def test_paddle_ocr_vl_processing_uses_base_word_geometry(monkeypatch, tmp_path)
     aligned_token = next(token for token in result.tokens if "underline" in token.text)
     assert aligned_token.source == "paddleocr_vl"
     assert aligned_token.bbox == base_token.bbox
+    assert result.evidence_tokens == result.tokens
     assert result.document_parse == parsed
     assert any("visual evidence uses PaddleOCR word boxes" in warning for warning in result.warnings)
     assert any("tokens keep VL text" in warning for warning in result.warnings)
@@ -141,6 +142,7 @@ def test_paddle_ocr_vl_processing_falls_back_to_vl_boxes_when_base_geometry_miss
 
     assert [token.text for token in result.tokens] == ["学校"]
     assert result.tokens[0].source == "paddleocr_vl"
+    assert result.evidence_tokens == result.tokens
     assert "base unavailable" in result.warnings
     assert any("using PaddleOCR-VL block-derived boxes" in warning for warning in result.warnings)
 
@@ -172,10 +174,12 @@ def test_paddle_ocr_vl_processing_keeps_visual_boxes_on_real_geometry(monkeypatc
 
     assert all(token.bbox in [geometry.bbox for geometry in geometry_tokens] for token in result.tokens)
     assert "$" not in [token.text for token in result.tokens]
+    assert result.evidence_tokens is not None
+    assert len(result.evidence_tokens) >= len(result.tokens)
     assert any(token.text == "\\underline{\\text{あたらしい}}" and token.bbox == [30, 100, 140, 120] for token in result.tokens)
 
 
-def test_paddle_ocr_vl_processing_excludes_unmatched_base_ocr_tokens(monkeypatch, tmp_path) -> None:
+def test_paddle_ocr_vl_processing_retains_unmatched_geometry_as_visual_evidence(monkeypatch, tmp_path) -> None:
     parsed = DocumentParseResult(
         page_id="page-vl",
         provider="paddleocr_vl",
@@ -200,6 +204,37 @@ def test_paddle_ocr_vl_processing_excludes_unmatched_base_ocr_tokens(monkeypatch
 
     assert [token.text for token in result.tokens] == ["学校"]
     assert all(token.source == "paddleocr_vl" for token in result.tokens)
+    assert result.evidence_tokens is not None
+    assert [token.text for token in result.evidence_tokens] == ["学校", "base-only"]
+    assert result.evidence_tokens[1].source == "paddleocr"
+    assert any("unmatched PaddleOCR geometry tokens are retained" in warning for warning in result.warnings)
+
+
+def test_paddle_ocr_vl_processing_keeps_vl_text_without_base_geometry_match(monkeypatch, tmp_path) -> None:
+    parsed = DocumentParseResult(
+        page_id="page-vl",
+        provider="paddleocr_vl",
+        source_image_path=str(tmp_path / "page.png"),
+        backend="fake",
+        block_count=1,
+        blocks=[DocumentParseBlock(label="text", content="学校 VLだけ", bbox=[10, 20, 160, 50], order=1)],
+    )
+    geometry_tokens = [make_token("page-vl", "学校", [10, 20, 70, 45], 0.98, "paddleocr")]
+
+    class FakeParser:
+        def parse(self, image_path, page_id):
+            return parsed
+
+    monkeypatch.setattr(engines, "get_paddle_ocr_vl_parser", lambda: FakeParser())
+    monkeypatch.setattr(engines, "recognize_with_warnings", lambda image_path, page_id: (geometry_tokens, []))
+
+    result = run_ocr_engine(tmp_path / "page.png", "page-vl", "paddleocr_vl")
+
+    assert [token.text for token in result.tokens] == ["学校", "VLだけ"]
+    assert result.tokens[0].bbox == geometry_tokens[0].bbox
+    assert result.tokens[1].source == "paddleocr_vl"
+    assert result.evidence_tokens is not None
+    assert "VLだけ" in [token.text for token in result.evidence_tokens]
 
 
 def test_normalize_ocr_engine_aliases() -> None:

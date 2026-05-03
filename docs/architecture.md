@@ -100,6 +100,7 @@ Why this matters:
 │ backend/app.db               │
 │                              │
 │ pages                        │
+│ ocr_runs                     │
 │ ocr_tokens                   │
 │ cards                        │
 └───────────────┬──────────────┘
@@ -140,6 +141,7 @@ Why this matters:
    Browser calls POST /api/pages/{page_id}/process.
    The default engine is `paddleocr`; passing `engine=paddleocr_vl` runs the heavier OCR-VL candidate-generation path.
    Backend preprocesses the image into backend/processed.
+   Backend creates a new OCR run with engine, image hash, preprocessing metadata, provider config, metrics, warnings, and lifecycle status.
    The selected OCR engine emits normalized OCR tokens with text, bbox, confidence, script_class, and source.
    Vocab-table pages can run a second Korean PaddleOCR pass for gloss columns.
    The classifier decides whether the page is vocab_table, reading_mcq, spelling_mcq, or unknown_review_required.
@@ -148,7 +150,7 @@ Why this matters:
    For vocabulary pages, the pipeline extracts surface, reading, Korean meaning, source_bbox, and evidence_tokens.
    For MCQ pages, the pipeline extracts question_no, sentence, target, choices, correct_answer, correct_choice_no, answer_source, source_bbox, evidence_tokens, and token_roles.
    The Korean glossary can normalize known vocab/answers where OCR is noisy, with warnings when normalization affects the result.
-   The card generator turns each extracted item into reviewable CardCandidate rows.
+   The card generator turns each extracted item into reviewable CardCandidate rows scoped to the OCR run.
 
 4. Review
    Browser fetches Page, OCR tokens, and CardCandidate rows.
@@ -187,7 +189,11 @@ Ignored disposable runtime state:
 
 The benchmark fixtures are the regression set. Runtime files are recreated by upload, process, benchmark, and export commands and can be safely deleted when resetting local state.
 
-OCR review persistence treats SQLite as the source of truth for pages, OCR tokens, and card candidates. Processed images are a derived cache for display alignment: on `/api/pages/{page_id}/ocr`, the backend can lazily regenerate a missing processed image from the original upload and hydrate missing image dimensions so old OCR evidence can render after a server restart without rerunning OCR. If regenerated image geometry no longer matches the stored OCR geometry, the backend hides stale evidence boxes and asks for reprocessing rather than showing misleading overlays.
+OCR review persistence treats SQLite as the source of truth for pages, OCR runs, OCR tokens, and card candidates. Processed images are a derived cache for display alignment: on `/api/pages/{page_id}/ocr`, the backend can lazily regenerate a missing processed image from the original upload and hydrate missing image dimensions so old OCR evidence can render after a server restart without rerunning OCR. If regenerated image geometry no longer matches the stored OCR geometry, the backend hides stale evidence boxes and asks for reprocessing rather than showing misleading overlays.
+
+Each processing attempt creates a new `ocr_runs` row. Tokens and generated cards are run-scoped, and `pages.active_ocr_run_id` chooses which successful run the UI shows and exports. This makes reruns safe: a new PaddleOCR or OCR-VL run no longer destroys prior OCR evidence or approved candidates from an older run.
+
+SQLite remains the preferred database for this repo because the workflow is local, single-user, and artifact-heavy. A Postgres migration should wait until there is a real multi-user/server deployment need, such as shared review queues, accounts, remote storage, or concurrent writers.
 
 ## Important Modules
 
@@ -202,7 +208,7 @@ backend/app/api/routes.py
   FastAPI routes for pages, cards, OCR comparison, optional document parse, and export.
 
 backend/app/db/database.py
-  SQLite schema, compatibility migration, persistence helpers, page card-count summaries.
+  SQLite schema, compatibility migration, OCR run history, indexes, foreign-key enforcement, persistence helpers, page card-count summaries.
 
 backend/app/extraction/pipeline.py
   Orchestrates preprocessing, OCR, classification, extraction, card generation, and persistence.
@@ -306,6 +312,8 @@ Other optional tools are intentionally separate:
 Google Cloud Vision
   Used through /api/pages/{page_id}/ocr/compare.
   Compares cloud OCR tokens against stored local OCR tokens.
+  Cloud calls are disabled unless GOOGLE_VISION_ALLOW_CLOUD=true.
+  Cached image-hash results do not consume the local monthly quota ledger.
 
 Ollama / llama.cpp
   Used only when VLM_CLEANUP_ENABLED=true.

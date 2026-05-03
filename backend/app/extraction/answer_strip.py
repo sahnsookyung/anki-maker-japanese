@@ -14,6 +14,16 @@ _CIRCLED = {
     "⑧": 8,
     "⑨": 9,
     "⑩": 10,
+    "⑪": 11,
+    "⑫": 12,
+    "⑬": 13,
+    "⑭": 14,
+    "⑮": 15,
+    "⑯": 16,
+    "⑰": 17,
+    "⑱": 18,
+    "⑲": 19,
+    "⑳": 20,
 }
 
 
@@ -23,7 +33,7 @@ def parse_answer_strip_text(text: str) -> dict[int, int]:
     numbers = [int(part) for part in normalized.split() if part.isdigit()]
     pairs: dict[int, int] = {}
     for question, answer in zip(numbers[::2], numbers[1::2]):
-        if 1 <= question <= 10 and 1 <= answer <= 4:
+        if question >= 1 and 1 <= answer <= 4:
             pairs[question] = answer
     return pairs
 

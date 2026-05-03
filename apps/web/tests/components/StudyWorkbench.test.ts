@@ -16,7 +16,10 @@ import {
   clamp,
   confidenceClass,
   editableFieldBbox,
+  evidenceOverlayModeForLoad,
+  evidenceSourceLabel,
   evidenceSummary,
+  evidenceTokensForSource,
   evidenceViewBox,
   fieldEvidence,
   fieldBbox,
@@ -27,6 +30,7 @@ import {
   focusedTokenIdsForField,
   initialReviewCardId,
   isAnswerSupportToken,
+  comparisonEvidenceAvailable,
   isHighConfidenceCard,
   normalizeBbox,
   nextReviewCardId,
@@ -43,6 +47,7 @@ import {
   textValue,
   tokenConfidenceClass,
   tokenDisplayClass,
+  tokenOnlyEvidenceClass,
   tokenInside,
   tokenTitle,
   unionBoxes,
@@ -50,7 +55,7 @@ import {
   warningKey,
   workflowClass
 } from "../../lib/review";
-import type { CardCandidate, OcrToken, Page } from "../../lib/api";
+import type { CardCandidate, OcrComparison, OcrToken, Page } from "../../lib/api";
 
 describe("StudyWorkbench evidence helpers", () => {
   it("treats 92% candidate confidence as high-confidence visual evidence", () => {
@@ -168,6 +173,10 @@ describe("StudyWorkbench evidence helpers", () => {
     expect(tokenDisplayClass(ocrToken({ text: "abc", confidence: 0.5 }), appPage(), null, null, false)).toBe(
       "scanned-unused token-confidence-low"
     );
+    expect(evidenceOverlayModeForLoad([], [token])).toBe("all");
+    expect(evidenceOverlayModeForLoad([selected], [token])).toBe("focused");
+    expect(evidenceOverlayModeForLoad([], [])).toBe("focused");
+    expect(tokenOnlyEvidenceClass(token)).toBe("token-review token-confidence-low");
     expect(tokenConfidenceClass(0.95)).toBe("high");
     expect(tokenConfidenceClass(0.8)).toBe("medium");
     expect(tokenConfidenceClass(0.2)).toBe("low");
@@ -179,6 +188,29 @@ describe("StudyWorkbench evidence helpers", () => {
     expect(isAnswerSupportToken(token, appPage({ image_height: 0, page_type: "reading_mcq" }))).toBe(false);
     expect(isAnswerSupportToken(token, appPage({ page_type: "vocab_table" }))).toBe(false);
     expect(isAnswerSupportToken(ocrToken({ text: "1①", bbox: [10, 100, 20, 120] }), page)).toBe(false);
+  });
+
+  it("switches visual evidence tokens to Google Vision when comparison boxes exist", () => {
+    const local = [ocrToken({ id: "local-token", source: "paddleocr" })];
+    const google = [ocrToken({ id: "google-token", source: "google_vision" })];
+    const comparison: OcrComparison = {
+      primary_provider: "paddleocr",
+      compare_provider: "google_vision",
+      primary_token_count: 1,
+      compare_token_count: 1,
+      agreement: 0.5,
+      missing_from_primary: [],
+      missing_from_comparison: [],
+      compare_tokens: google,
+      warnings: []
+    };
+
+    expect(comparisonEvidenceAvailable(comparison)).toBe(true);
+    expect(evidenceTokensForSource("comparison", local, comparison)).toBe(google);
+    expect(evidenceSourceLabel("comparison", comparison)).toBe("Google Vision");
+    expect(evidenceTokensForSource("comparison", local, { ...comparison, compare_tokens: [] })).toBe(local);
+    expect(evidenceSourceLabel("comparison", { ...comparison, compare_tokens: [] })).toBe("Local OCR");
+    expect(comparisonEvidenceAvailable(null)).toBe(false);
   });
 
   it("computes focused evidence geometry", () => {

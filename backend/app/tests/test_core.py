@@ -13,12 +13,13 @@ from app.main import app
 from app.core.script import classify_script
 from app.api import routes
 from app.db import database
+from app.extraction import pipeline
 from app.extraction.answer_strip import parse_answer_strip_text
 from app.extraction.cards import mcq_cards
 from app.extraction.mcq import extract_mcq_items
 from app.extraction.sentence_order import repair_predicate_first_sentence
-from app.export.tsv import clean_tsv_field
-from app.models.schemas import CardCandidate, DocumentParseResult, FieldOcrPreviewResponse, OcrToken, Page, ProcessResult
+from app.models.schemas import CardCandidate, DocumentParseResult, FieldOcrPreviewResponse, OcrComparison, OcrToken, Page, ProcessResult
+from app.ocr.engines import OcrEngineResult
 from fastapi import HTTPException
 
 
@@ -32,6 +33,7 @@ def test_script_classifier() -> None:
 def test_answer_strip_parser() -> None:
     assert parse_answer_strip_text("1 2 2 3 3 1 10 4") == {1: 2, 2: 3, 3: 1, 10: 4}
     assert parse_answer_strip_text("① 2 ② 3") == {1: 2, 2: 3}
+    assert parse_answer_strip_text("11 2 12 4 ⑬ 1") == {11: 2, 12: 4, 13: 1}
 
 
 def test_mcq_extraction_keeps_printed_question_numbers_when_previous_blocks_are_absent() -> None:
@@ -53,6 +55,29 @@ def test_mcq_extraction_keeps_printed_question_numbers_when_previous_blocks_are_
     items = extract_mcq_items(tokens, {5: 1, 8: 4}, "spelling_mcq")
 
     assert [item["question_no"] for item in items] == [5, 8]
+
+
+def test_mcq_extraction_accepts_questions_above_ten() -> None:
+    tokens = [
+        _token("q11-no", "11", 10, 100, "number"),
+        _token("q11-sentence", "きのうこうえんでともだちにあいました。", 40, 100, "hiragana"),
+        _token("q11-c1", "1会いました", 40, 130, "mixed"),
+        _token("q11-c2", "2合いました", 150, 130, "mixed"),
+        _token("q11-c3", "3買いました", 260, 130, "mixed"),
+        _token("q11-c4", "4開いました", 370, 130, "mixed"),
+        _token("q12-no", "⑫", 10, 210, "number"),
+        _token("q12-sentence", "あした学校へいきます。", 40, 210, "mixed"),
+        _token("q12-c1", "1学校", 40, 240, "mixed"),
+        _token("q12-c2", "2学枚", 150, 240, "mixed"),
+        _token("q12-c3", "3学枝", 260, 240, "mixed"),
+        _token("q12-c4", "4字校", 370, 240, "mixed"),
+    ]
+
+    items = extract_mcq_items(tokens, {11: 1, 12: 1}, "spelling_mcq")
+
+    assert [item["question_no"] for item in items] == [11, 12]
+    assert items[0]["choices"] == ["会いました", "合いました", "買いました", "開いました"]
+    assert items[1]["correct_answer"] == "学校"
 
 
 def test_mcq_extraction_sorts_items_by_printed_question_number() -> None:
@@ -272,10 +297,6 @@ def test_mcq_cards_generate_one_semantic_card_per_question() -> None:
     assert not cards[0].note_type.endswith("_exam")
 
 
-def test_tsv_cleaning() -> None:
-    assert clean_tsv_field("a\tb\nc") == "a b<br>c"
-
-
 def test_page_display_name_migrates_and_persists(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "legacy.db"
     monkeypatch.setattr(database, "DB_PATH", db_path)
@@ -345,6 +366,258 @@ def test_page_display_name_migrates_and_persists(tmp_path, monkeypatch) -> None:
     assert cleared.display_name == "new upload (category 1 page)"
 
 
+def test_database_enforces_foreign_keys_and_creates_lookup_indexes(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "schema.db"
+    monkeypatch.setattr(database, "DB_PATH", db_path)
+    database.init_db()
+
+    with sqlite3.connect(db_path) as conn:
+        indexes = {row[1] for row in conn.execute("PRAGMA index_list(cards)").fetchall()}
+        token_indexes = {row[1] for row in conn.execute("PRAGMA index_list(ocr_tokens)").fetchall()}
+
+    assert {"idx_cards_page_id", "idx_cards_page_status_review", "idx_cards_source"} <= indexes
+    assert "idx_ocr_tokens_page_id" in token_indexes
+    assert "idx_cards_run_id" in indexes
+    assert "idx_ocr_tokens_run_id" in token_indexes
+
+    with pytest.raises(sqlite3.IntegrityError):
+        database.replace_cards("missing-page", [_card("orphan", status="approved", review_state="green")])
+
+
+def test_replace_helpers_attach_rows_to_the_target_page(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "replace-normalizes.db")
+    database.init_db()
+    database.upsert_page(
+        Page(
+            id="target-page",
+            original_image_path=str(tmp_path / "target.jpg"),
+            display_name="Target page",
+            page_type="vocab_table",
+            page_type_confidence=1.0,
+            warnings=[],
+            created_at="2026-04-27T00:00:00+00:00",
+        )
+    )
+
+    database.replace_tokens("target-page", [_token("token-other", "学校", 1, 1, "kanji")])
+    database.replace_cards("target-page", [_card("card-other", status="approved", review_state="green")])
+
+    assert database.get_tokens("target-page")[0].page_id == "target-page"
+    assert database.get_cards("target-page")[0].page_id == "target-page"
+
+
+def test_ocr_runs_scope_tokens_cards_and_active_export_view(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "runs.db")
+    database.init_db()
+    database.upsert_page(
+        Page(
+            id="page-runs",
+            original_image_path=str(tmp_path / "page.jpg"),
+            display_name="Run page",
+            page_type="uploaded",
+            page_type_confidence=0.0,
+            warnings=[],
+            created_at="2026-04-27T00:00:00+00:00",
+        )
+    )
+    first = database.start_ocr_run("page-runs", "paddleocr")
+    database.replace_tokens("page-runs", [_token("token-first", "古い", 1, 1, "kanji")], first.id)
+    database.replace_cards("page-runs", [_card("card-first", status="approved", review_state="green")], first.id)
+    first_processed = tmp_path / "first.png"
+    database.complete_ocr_run(
+        first.id,
+        warnings=["first"],
+        metrics={"token_count": 1, "page_type": "reading_mcq", "page_type_confidence": 0.61},
+        processed_image_path=str(first_processed),
+        image_width=100,
+        image_height=200,
+    )
+    second = database.start_ocr_run("page-runs", "paddleocr_vl")
+    database.replace_tokens("page-runs", [_token("token-second", "新しい", 1, 1, "kanji")], second.id)
+    database.replace_cards("page-runs", [_card("card-second", status="pending_review", review_state="yellow")], second.id)
+    database.complete_ocr_run(
+        second.id,
+        warnings=["second"],
+        metrics={"token_count": 1, "page_type": "spelling_mcq", "page_type_confidence": 0.84},
+        processed_image_path=str(tmp_path / "second.png"),
+        image_width=300,
+        image_height=400,
+    )
+
+    assert [token.id for token in database.get_tokens("page-runs")] == ["token-second"]
+    assert [card.id for card in database.get_cards("page-runs")] == ["card-second"]
+    assert [card.id for card in database.get_cards()] == ["card-second"]
+    assert [run.engine for run in database.list_ocr_runs("page-runs")] == ["paddleocr_vl", "paddleocr"]
+
+    database.activate_ocr_run("page-runs", first.id)
+
+    assert [token.id for token in database.get_tokens("page-runs")] == ["token-first"]
+    assert database.get_active_ocr_run("page-runs").id == first.id
+    activated_page = database.get_page("page-runs")
+    assert activated_page is not None
+    assert activated_page.processed_image_path == str(first_processed)
+    assert activated_page.image_width == 100
+    assert activated_page.image_height == 200
+    assert activated_page.page_type == "reading_mcq"
+    assert activated_page.page_type_confidence == 0.61
+    assert activated_page.warnings == ["first"]
+
+
+def test_cards_are_returned_in_workbook_semantic_order(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "ordered-cards.db")
+    database.init_db()
+    database.upsert_page(
+        Page(
+            id="page-ordered",
+            original_image_path=str(tmp_path / "page.jpg"),
+            display_name="Ordered page",
+            page_type="reading_mcq",
+            page_type_confidence=0.9,
+            warnings=[],
+            created_at="2026-04-27T00:00:00+00:00",
+        )
+    )
+    run = database.start_ocr_run("page-ordered", "paddleocr")
+    cards = [
+        _question_card("card-q10", 10, 300),
+        _question_card("card-q2", 2, 100),
+        _question_card("card-q1", 1, 50),
+        _vocab_card("card-vocab-writing", "row-1", "jp_vocab_writing", 400),
+        _vocab_card("card-vocab-reading", "row-1", "jp_vocab_reading", 400),
+        _vocab_card("card-vocab-meaning", "row-1", "jp_vocab_meaning", 400),
+    ]
+
+    database.replace_cards("page-ordered", cards, run.id)
+    database.complete_ocr_run(run.id)
+
+    assert [card.id for card in database.get_cards("page-ordered")] == [
+        "card-q1",
+        "card-q2",
+        "card-q10",
+        "card-vocab-reading",
+        "card-vocab-meaning",
+        "card-vocab-writing",
+    ]
+
+
+def test_failed_rerun_does_not_replace_active_successful_run(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "failed-rerun.db")
+    database.init_db()
+    page = Page(
+        id="page-failed-rerun",
+        original_image_path=str(tmp_path / "page.jpg"),
+        display_name="Failed rerun",
+        page_type="uploaded",
+        page_type_confidence=0.0,
+        warnings=[],
+        created_at="2026-04-27T00:00:00+00:00",
+    )
+    database.upsert_page(page)
+    successful = database.start_ocr_run(page.id, "paddleocr")
+    database.replace_tokens(page.id, [_token("token-good", "学校", 1, 1, "kanji")], successful.id)
+    database.replace_cards(page.id, [_card("card-good", status="approved", review_state="green")], successful.id)
+    database.complete_ocr_run(successful.id)
+    page = database.get_page(page.id)
+    assert page is not None
+
+    monkeypatch.setattr(pipeline, "preprocess_image", lambda *args: SimpleNamespace(width=100, height=100, warnings=[]))
+    monkeypatch.setattr(
+        pipeline,
+        "run_ocr_engine",
+        lambda *args, **kwargs: OcrEngineResult(
+            engine="paddleocr",
+            tokens=[_token("token-new", "失敗", 1, 1, "kanji")],
+            warnings=[],
+        ),
+    )
+    monkeypatch.setattr(pipeline, "classify_page", lambda *args: ("unknown_review_required", 0.25, {}))
+    monkeypatch.setattr(pipeline, "parse_answer_strip", lambda *args: {})
+    monkeypatch.setattr(pipeline.database, "replace_tokens", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("disk full")))
+
+    with pytest.raises(RuntimeError, match="disk full"):
+        pipeline.process_page(page, engine="paddleocr")
+
+    assert database.get_page(page.id).active_ocr_run_id == successful.id
+    assert [token.id for token in database.get_tokens(page.id)] == ["token-good"]
+
+
+def test_ocr_run_api_lists_and_activates_successful_runs(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "run-api.db")
+    database.init_db()
+    database.upsert_page(
+        Page(
+            id="page-run-api",
+            original_image_path=str(tmp_path / "page.jpg"),
+            display_name="Run API",
+            page_type="uploaded",
+            page_type_confidence=0.0,
+            warnings=[],
+            created_at="2026-04-27T00:00:00+00:00",
+        )
+    )
+    first = database.start_ocr_run("page-run-api", "paddleocr")
+    database.complete_ocr_run(first.id)
+    second = database.start_ocr_run("page-run-api", "paddleocr_vl")
+    database.complete_ocr_run(second.id)
+    client = TestClient(app)
+
+    runs = client.get("/api/pages/page-run-api/ocr/runs")
+    activate = client.post(f"/api/pages/page-run-api/ocr/runs/{first.id}/activate")
+
+    assert runs.status_code == 200
+    assert [run["id"] for run in runs.json()] == [second.id, first.id]
+    assert activate.status_code == 200
+    assert database.get_page("page-run-api").active_ocr_run_id == first.id
+
+
+def test_compare_ocr_route_returns_google_vision_tokens_for_visual_overlay(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "compare.db")
+    database.init_db()
+    processed_path = tmp_path / "processed.png"
+    processed_path.write_bytes(b"image")
+    database.upsert_page(
+        Page(
+            id="page-compare",
+            original_image_path=str(tmp_path / "page.jpg"),
+            processed_image_path=str(processed_path),
+            display_name="Compare page",
+            page_type="reading_mcq",
+            page_type_confidence=0.9,
+            image_width=100,
+            image_height=100,
+            warnings=[],
+            created_at="2026-04-27T00:00:00+00:00",
+        )
+    )
+    database.replace_tokens("page-compare", [_token("local-token", "学校", 10, 10, "kanji")])
+
+    def fake_compare(image_path, page_id, primary_tokens, provider):
+        assert image_path == processed_path
+        assert page_id == "page-compare"
+        assert [token.id for token in primary_tokens] == ["local-token"]
+        assert provider == "google_vision"
+        return OcrComparison(
+            primary_provider="paddleocr",
+            compare_provider="google_vision",
+            primary_token_count=1,
+            compare_token_count=1,
+            agreement=0.5,
+            compare_tokens=[_token("google-token", "学校", 20, 20, "kanji")],
+            warnings=[],
+        )
+
+    monkeypatch.setattr(routes, "compare_ocr_tokens", fake_compare)
+    client = TestClient(app)
+
+    response = client.get("/api/pages/page-compare/ocr/compare?provider=google_vision")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["compare_provider"] == "google_vision"
+    assert payload["compare_tokens"][0]["id"] == "google-token"
+    assert payload["compare_tokens"][0]["bbox"] == [20.0, 20.0, 90.0, 40.0]
+
+
 def test_export_download_rejects_path_traversal(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(routes, "EXPORT_DIR", tmp_path)
 
@@ -355,11 +628,7 @@ def test_export_download_rejects_path_traversal(tmp_path, monkeypatch) -> None:
     assert response.path == safe_file
     assert response.media_type == "text/csv; charset=utf-8"
 
-    legacy_file = tmp_path / "export_legacy.tsv"
-    legacy_file.write_text("note_type\tfront\n", encoding="utf-8")
-    assert routes.download_export("export_legacy.tsv").media_type == "text/tab-separated-values; charset=utf-8"
-
-    for filename in ("../secret.csv", "nested/export.csv", "export_123.txt"):
+    for filename in ("../secret.csv", "nested/export.csv", "export_123.txt", "export_legacy.tsv"):
         try:
             routes.download_export(filename)
         except HTTPException as exc:
@@ -372,6 +641,17 @@ def test_export_csv_route_filters_and_writes_anki_csv(tmp_path, monkeypatch) -> 
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "exports.db")
     monkeypatch.setattr(routes, "EXPORT_DIR", tmp_path / "exports")
     database.init_db()
+    database.upsert_page(
+        Page(
+            id="page-export",
+            original_image_path=str(tmp_path / "page-export.jpg"),
+            display_name="Export page",
+            page_type="vocab_table",
+            page_type_confidence=1.0,
+            warnings=[],
+            created_at="2026-04-27T00:00:00+00:00",
+        )
+    )
     database.replace_cards(
         "page-export",
         [
@@ -1076,6 +1356,17 @@ def test_delete_page_removes_database_rows_and_runtime_files(tmp_path, monkeypat
 def test_card_patch_persists_field_evidence_and_review_metadata(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "patch.db")
     database.init_db()
+    database.upsert_page(
+        Page(
+            id="counted-page",
+            original_image_path=str(tmp_path / "counted-page.jpg"),
+            display_name="Counted page",
+            page_type="vocab_table",
+            page_type_confidence=1.0,
+            warnings=[],
+            created_at="2026-04-27T00:00:00+00:00",
+        )
+    )
     database.replace_cards(
         "counted-page",
         [_card("card-patch", status="pending_review", review_state="yellow")],
@@ -1176,6 +1467,42 @@ def _card(card_id: str, *, status: str, review_state: str) -> CardCandidate:
         confidence=0.9,
         status=status,
         review_state=review_state,
+        warnings=[],
+    )
+
+
+def _question_card(card_id: str, question_no: int, y: float) -> CardCandidate:
+    return CardCandidate(
+        id=card_id,
+        page_id="page-ordered",
+        source_type="question_item",
+        source_id=f"q-{question_no}",
+        source={"question_no": question_no},
+        note_type="jp_reading_mcq_recall",
+        front=f"front {question_no}",
+        back=f"back {question_no}",
+        confidence=0.9,
+        status="pending_review",
+        review_state="green",
+        source_bbox=[10, y, 200, y + 30],
+        warnings=[],
+    )
+
+
+def _vocab_card(card_id: str, source_id: str, note_type: str, y: float) -> CardCandidate:
+    return CardCandidate(
+        id=card_id,
+        page_id="page-ordered",
+        source_type="vocab_item",
+        source_id=source_id,
+        source={"bbox": [20, y, 220, y + 30]},
+        note_type=note_type,
+        front=f"front {card_id}",
+        back=f"back {card_id}",
+        confidence=0.9,
+        status="pending_review",
+        review_state="green",
+        source_bbox=[20, y, 220, y + 30],
         warnings=[],
     )
 

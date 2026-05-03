@@ -23,16 +23,17 @@ def _build_ocr_provider_cached(provider_name: str) -> OcrProvider:
 
 def _build_ocr_provider_uncached(provider_name: str) -> OcrProvider:
     provider_name = provider_name or OCR_PROVIDER
+    if provider_name == "auto":
+        provider_name = "paddle"
     errors: list[str] = []
-    if provider_name in ("auto", "paddle"):
+    if provider_name == "paddle":
         try:
             from app.ocr.paddle_provider import PaddleOcrProvider
 
             return PaddleOcrProvider()
         except Exception as exc:
             errors.append(f"PaddleOCR unavailable: {exc}")
-            if provider_name == "paddle":
-                raise RuntimeError("; ".join(errors))
+            raise RuntimeError("; ".join(errors))
 
     if provider_name == "paddle_korean":
         try:
@@ -43,15 +44,14 @@ def _build_ocr_provider_uncached(provider_name: str) -> OcrProvider:
             errors.append(f"PaddleOCR Korean unavailable: {exc}")
             raise RuntimeError("; ".join(errors))
 
-    if provider_name in ("auto", "tesseract"):
+    if provider_name == "tesseract":
         try:
             from app.ocr.tesseract_provider import TesseractOcrProvider
 
             return TesseractOcrProvider()
         except Exception as exc:
             errors.append(f"Tesseract unavailable: {exc}")
-            if provider_name == "tesseract":
-                raise RuntimeError("; ".join(errors))
+            raise RuntimeError("; ".join(errors))
 
     if provider_name == "google_vision":
         try:

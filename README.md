@@ -53,6 +53,8 @@ Docker is the recommended path for machines where local PaddlePaddle wheels are 
 
 Page names can be renamed in the UI without renaming files on disk. Re-uploading the same filename replaces the existing page record instead of piling up duplicates.
 
+Each processing attempt is saved as an OCR run. Tokens and generated candidates are scoped to that run, and the page shows one active successful run for review/export. Use the Advanced OCR diagnostics drawer to inspect recent runs or reactivate an older successful run if a rerun performs worse.
+
 ## Optional Local OCR / VLM
 
 The backend now uses `uv` instead of handwritten `requirements.txt` files or manual virtualenv setup.
@@ -85,6 +87,18 @@ uv sync --python 3.12 --group dev --extra ocr --extra cloud
 ```
 
 Create a repo-level `.env` and place your Google service-account JSON at the path referenced by `GOOGLE_APPLICATION_CREDENTIALS`. This app uses the Google Cloud SDK credential-file flow rather than a raw `GOOGLE_API_KEY`.
+
+Google Vision cloud calls are disabled by default even when credentials are installed. To use the no-cost free-tier comparison path intentionally, set:
+
+```bash
+export GOOGLE_VISION_ALLOW_CLOUD=true
+export GOOGLE_VISION_CACHE_ENABLED=true
+export GOOGLE_VISION_MONTHLY_CAP=1000
+# Optional regional endpoint: us-vision.googleapis.com or eu-vision.googleapis.com
+export GOOGLE_VISION_API_ENDPOINT=
+```
+
+Uncached successful Google Vision requests are tracked in `backend/usage/google_vision_usage.json`; cached image-hash results under `backend/ocr_cache/google_vision` do not increment the local ledger.
 
 For local VLM cleanup, install the optional Ollama model:
 
@@ -146,6 +160,8 @@ cd backend
 uv run pytest -q
 uv run python scripts/evaluate_golden.py
 uv run python scripts/evaluate_golden.py --from-db --json
+uv run python scripts/evaluate_golden.py --from-db --run-id run_... --json
+uv run python scripts/benchmark_ocr_modes.py --include-vl --include-google-vision --json
 uv run python -m compileall app scripts
 
 cd ../apps/web

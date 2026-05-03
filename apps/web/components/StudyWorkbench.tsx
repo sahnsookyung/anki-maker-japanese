@@ -8,12 +8,14 @@ import {
   type FieldOcrPreview,
   type OcrComparison,
   type OcrEngine,
+  type OcrRun,
   type OcrRuntimeStatus,
   type OcrToken,
   type Page,
   type ProcessResult,
   apiGet,
   apiErrorMessage,
+  activateOcrRun,
   approveCard,
   compareOcr,
   dedupePages,
@@ -21,6 +23,7 @@ import {
   exportCsv,
   getOcrRuntime,
   imageUrl,
+  listOcrRuns,
   parseDocument,
   previewFieldOcr,
   processPage,
@@ -31,6 +34,8 @@ import {
 import { batchTimingReport, durationMs, formatDuration, type BatchTimingReport, type PageTiming } from "../lib/batchTiming";
 import {
   type ReviewFilter,
+  type EvidenceOverlayMode,
+  type EvidenceTokenSource,
   applyFieldOcrPreview,
   applyQuestionChoicesEdit,
   applyQuestionSourceEdit,
@@ -41,7 +46,10 @@ import {
   candidateTitle,
   choicesText,
   editableFieldBbox,
+  evidenceOverlayModeForLoad,
+  evidenceSourceLabel,
   evidenceSummary,
+  evidenceTokensForSource,
   evidenceViewBox,
   fieldBbox,
   fieldLabel,
@@ -53,11 +61,13 @@ import {
   normalizeBbox,
   nextReviewCardId,
   provenanceLabel,
+  comparisonEvidenceAvailable,
   reviewReasonBadges,
   reviewQualityClass,
   sourceBbox,
   summarizeCards,
   textValue,
+  tokenOnlyEvidenceClass,
   tokenDisplayClass,
   tokenInside,
   tokenTitle,
@@ -66,7 +76,7 @@ import {
   workflowClass
 } from "../lib/review";
 
-type OverlayMode = "focused" | "region" | "all" | "off";
+type OverlayMode = EvidenceOverlayMode;
 type CardScrollTarget = "evidence" | "card" | "none";
 type FieldRegionDraft = { cardId: string; field: string; bbox: number[] };
 type CardRefs = RefObject<Record<string, HTMLElement | null>>;
@@ -81,7 +91,18 @@ const PAGE_TYPE_LABELS: Record<string, string> = {
   unknown_review_required: "Needs manual review"
 };
 
-const SCRIPT_LABELS = ["paddleocr", "paddleocr_korean", "hiragana", "katakana", "kanji", "hangul", "mixed", "number"];
+const SCRIPT_LABELS = [
+  "paddleocr",
+  "paddleocr_vl",
+  "paddleocr_korean",
+  "google_vision",
+  "hiragana",
+  "katakana",
+  "kanji",
+  "hangul",
+  "mixed",
+  "number"
+];
 const BATCH_REPORT_STORAGE_KEY = "anki-maker-latest-batch-report";
 const INITIAL_STATUS_MESSAGE = "Upload a study-book photo to begin.";
 
@@ -155,6 +176,8 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
   const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("all");
   const [activeTokenFilters, setActiveTokenFilters] = useState<Set<string>>(new Set());
   const [comparison, setComparison] = useState<OcrComparison | null>(null);
+  const [evidenceTokenSource, setEvidenceTokenSource] = useState<EvidenceTokenSource>("local");
+  const [ocrRuns, setOcrRuns] = useState<OcrRun[]>([]);
   const [documentParse, setDocumentParse] = useState<DocumentParseResult | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<OcrRuntimeStatus | null>(null);
   const [selectedField, setSelectedField] = useState<string | null>(null);
@@ -183,6 +206,9 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
 
   const selectedCard = selectedCardId ? cards.find((card) => card.id === selectedCardId) ?? null : null;
   const cardStats = summarizeCards(cards);
+  const comparisonAvailable = comparisonEvidenceAvailable(comparison);
+  const evidenceTokens = evidenceTokensForSource(evidenceTokenSource, tokens, comparison);
+  const activeEvidenceSource = evidenceTokenSource === "comparison" && comparisonAvailable ? "comparison" : "local";
   const filteredCards = cards.filter((card) => cardMatchesFilter(card, reviewFilter));
   const exportableCount = cards.filter((card) => card.status === "approved" && card.review_state !== "red").length;
   const anyOcrJobRunning =
@@ -224,6 +250,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
       setSelectedPage(null);
       setTokens([]);
       setCards([]);
+      setOcrRuns([]);
       setSelectedCardId(null);
       setMessage(apiErrorMessage(error, "Could not load pages."));
     }
@@ -231,16 +258,21 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
 
   async function selectPage(page: Page, clearMessage = true) {
     setSelectedPage(page);
-    const [ocr, pageCards] = await Promise.all([
+    const [ocr, pageCards, runs] = await Promise.all([
       apiGet<{ page: Page; tokens: OcrToken[] }>(`/api/pages/${page.id}/ocr`).catch(() => ({ page, tokens: [] })),
-      apiGet<CardCandidate[]>(`/api/pages/${page.id}/cards`).catch(() => [])
+      apiGet<CardCandidate[]>(`/api/pages/${page.id}/cards`).catch(() => []),
+      listOcrRuns(page.id).catch(() => [])
     ]);
     setSelectedPage(ocr.page);
     setTokens(ocr.tokens);
     setCards(pageCards);
+    setOcrRuns(runs);
     syncPageCardSummary(page.id, pageCards);
     setSelectedCardId(initialReviewCardId(pageCards));
+    setOverlayMode(evidenceOverlayModeForLoad(pageCards, ocr.tokens));
+    setActiveTokenFilters(new Set());
     setComparison(null);
+    setEvidenceTokenSource("local");
     setDocumentParse(null);
     if (clearMessage) setMessage(`Selected ${pageTitle(ocr.page)}.`);
   }
@@ -346,6 +378,17 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
     }
   }
 
+  async function activateRun(run: OcrRun) {
+    if (!selectedPage) return;
+    try {
+      await activateOcrRun(selectedPage.id, run.id);
+      await selectPage(selectedPage, false);
+      setMessage(`Activated ${engineLabel(run.engine)} run from ${formatRunTime(run)}.`);
+    } catch (error) {
+      setMessage(apiErrorMessage(error, "Could not activate OCR run."));
+    }
+  }
+
   async function renamePage(page: Page, displayName: string) {
     try {
       const updated = await updatePage(page.id, displayName);
@@ -370,8 +413,10 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
         setSelectedPage(null);
         setTokens([]);
         setCards([]);
+        setOcrRuns([]);
         setSelectedCardId(null);
         setComparison(null);
+        setEvidenceTokenSource("local");
         setDocumentParse(null);
         if (nextPage) {
           await selectPage(nextPage, false);
@@ -447,7 +492,15 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
     try {
       const result = await compareOcr(selectedPage.id);
       setComparison(result);
-      setMessage(`OCR comparison complete: ${Math.round(result.agreement * 100)}% token agreement.`);
+      if (!result.compare_token_count && result.warnings.length) {
+        setEvidenceTokenSource("local");
+        setMessage(`Google Vision comparison unavailable: ${result.warnings[0]}`);
+      } else {
+        setEvidenceTokenSource("comparison");
+        setActiveTokenFilters(new Set());
+        setOverlayMode((current) => (current === "off" ? "all" : current));
+        setMessage(`Google Vision comparison complete: ${Math.round(result.agreement * 100)}% token agreement.`);
+      }
     } catch (error) {
       setMessage(apiErrorMessage(error, "OCR comparison failed."));
     } finally {
@@ -613,14 +666,20 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
     });
     setTokens(result.tokens);
     setCards(result.cards);
+    if (result.ocr_run) {
+      setOcrRuns((current) => [result.ocr_run as OcrRun, ...current.filter((run) => run.id !== result.ocr_run?.id)]);
+    }
     setSelectedCardId(initialReviewCardId(result.cards));
+    setOverlayMode(evidenceOverlayModeForLoad(result.cards, result.tokens));
+    setActiveTokenFilters(new Set());
     setComparison(null);
+    setEvidenceTokenSource("local");
     setDocumentParse(null);
   }
 
   const processedUrl = imageUrl(selectedPage?.processed_image_path);
   const originalUrl = imageUrl(selectedPage?.original_image_path);
-  const visibleUrl = versionedImageUrl(processedUrl ?? originalUrl, selectedPage, tokens.length, cards.length);
+  const visibleUrl = versionedImageUrl(processedUrl ?? originalUrl, selectedPage, evidenceTokens.length, cards.length);
 
   return (
     <main className="app-shell">
@@ -657,7 +716,10 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
       </section>
 
       <section className="command-bar">
-        <p>{message}</p>
+        <div className="command-status">
+          <p>{message}</p>
+          <BatchStatusStrip report={latestBatchReport} />
+        </div>
         <div className="command-actions">
           {pages.length ? (
             <button
@@ -731,16 +793,22 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
           <section className="panel evidence-panel" ref={evidenceRef}>
             <EvidenceHeader
               page={selectedPage}
-              tokenCount={tokens.length}
+              tokenCount={evidenceTokens.length}
+              candidateCount={cards.length}
               selectedCard={selectedCard}
               overlayMode={overlayMode}
               setOverlayMode={setOverlayMode}
+              evidenceSource={activeEvidenceSource}
+              evidenceSourceLabel={evidenceSourceLabel(activeEvidenceSource, comparison)}
+              comparisonProviderLabel={evidenceSourceLabel("comparison", comparison)}
+              comparisonAvailable={comparisonAvailable}
+              onEvidenceSourceChange={setEvidenceTokenSource}
             />
             {visibleUrl ? (
               <EvidenceStage
                 imageUrl={visibleUrl}
                 page={selectedPage}
-                tokens={tokens}
+                tokens={evidenceTokens}
                 cards={cards}
                 card={selectedCard}
                 selectedField={selectedField}
@@ -797,7 +865,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
                     className="secondary"
                     onClick={onCompareOcr}
                     disabled={anyOcrJobRunning}
-                    title="Compare stored local OCR tokens with Google Cloud Vision. Requires Google credentials and does not change cards."
+                    title="Compare stored local OCR tokens with cached or explicitly enabled Google Cloud Vision. Requires GOOGLE_VISION_ALLOW_CLOUD=true for uncached cloud calls and does not change cards."
                   >
                     {isComparingOcr ? "Comparing Google Vision" : "Compare Google Vision"}
                   </button>
@@ -817,9 +885,22 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
                   {runtimeStatus.loaded_provider ? ` · ${runtimeStatus.loaded_provider}` : ""}
                 </p>
               ) : null}
+              <OcrRunHistory
+                page={selectedPage}
+                runs={ocrRuns}
+                disabled={anyOcrJobRunning}
+                onActivate={(run) => void activateRun(run)}
+              />
             </details>
             {selectedPage?.warnings.length ? <WarningList warnings={selectedPage.warnings} /> : null}
-            {comparison ? <OcrComparisonPanel comparison={comparison} /> : null}
+            {comparison ? (
+              <OcrComparisonPanel
+                comparison={comparison}
+                activeEvidenceSource={activeEvidenceSource}
+                onShowComparison={() => setEvidenceTokenSource("comparison")}
+                onShowLocal={() => setEvidenceTokenSource("local")}
+              />
+            ) : null}
             {documentParse ? <DocumentParsePanel result={documentParse} /> : null}
           </section>
 
@@ -957,6 +1038,64 @@ function BatchSummaryCard({ report }: Readonly<{ report: BatchTimingReport | nul
   );
 }
 
+function BatchStatusStrip({ report }: Readonly<{ report: BatchTimingReport | null }>) {
+  if (!report) return null;
+  return (
+    <div className="batch-status-strip" aria-label="Persistent batch timing summary">
+      <strong>{report.engineLabel}</strong>
+      <span>
+        {report.successfulPages}/{report.totalPages}
+        {report.failedPages ? ` · ${report.failedPages} failed` : ""}
+      </span>
+      <span>Total {report.stats.total}</span>
+      <span>Avg {report.stats.average}</span>
+      <span>Min {report.stats.min}</span>
+      <span>P25 {report.stats.p25}</span>
+      <span>P75 {report.stats.p75}</span>
+      <span>Max {report.stats.max}</span>
+    </div>
+  );
+}
+
+function OcrRunHistory({
+  page,
+  runs,
+  disabled,
+  onActivate
+}: Readonly<{
+  page: Page | null;
+  runs: OcrRun[];
+  disabled: boolean;
+  onActivate: (run: OcrRun) => void;
+}>) {
+  if (!page) return null;
+  if (!runs.length) return <p className="muted">No OCR run history yet. Processing a page will create a run record.</p>;
+  return (
+    <div className="ocr-run-history">
+      <h3>OCR run history</h3>
+      <p className="muted">Runs are saved so reruns do not erase prior OCR evidence. The active run is what you review and export.</p>
+      {runs.slice(0, 5).map((run) => {
+        const active = run.id === page.active_ocr_run_id;
+        return (
+          <div className={active ? "ocr-run active" : "ocr-run"} key={run.id}>
+            <div>
+              <strong>{engineLabel(run.engine)}</strong>
+              <span>{run.status} · {formatRunTime(run)}{run.duration_ms ? ` · ${formatDuration(run.duration_ms)}` : ""}</span>
+            </div>
+            {active ? (
+              <span className="badge green">Active</span>
+            ) : (
+              <button className="secondary" disabled={disabled || run.status !== "succeeded"} onClick={() => onActivate(run)}>
+                Review this run
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function batchProgressMessage(report: BatchTimingReport): string {
   const issueText = report.failedPages ? `, ${report.failedPages} failed` : "";
   return `${report.engineLabel} batch: ${report.processedPages}/${report.totalPages} pages checked${issueText}.`;
@@ -1013,6 +1152,12 @@ function PageSelectButton({
     <button className="page-select" onClick={onSelect}>
       <strong>{pageTitle(page)}</strong>
       <span>{pageTypeLabel(page.page_type)} · {Math.round(page.page_type_confidence * 100)}%</span>
+      {page.active_ocr_engine ? (
+        <small>
+          Active run: {engineLabel(page.active_ocr_engine)}
+          {page.active_ocr_duration_ms ? ` · ${formatDuration(page.active_ocr_duration_ms)}` : ""}
+        </small>
+      ) : null}
       <small>{page.warnings.length} warnings · {pageCardSummary(page, candidateCount)}</small>
       {timing ? <PageTimingLine timing={timing} /> : null}
     </button>
@@ -1085,15 +1230,27 @@ function pageTimingStatus(timing: PageTimingStatus): string {
 function EvidenceHeader({
   page,
   tokenCount,
+  candidateCount,
   selectedCard,
   overlayMode,
-  setOverlayMode
+  setOverlayMode,
+  evidenceSource,
+  evidenceSourceLabel,
+  comparisonProviderLabel,
+  comparisonAvailable,
+  onEvidenceSourceChange
 }: Readonly<{
   page: Page | null;
   tokenCount: number;
+  candidateCount: number;
   selectedCard: CardCandidate | null;
   overlayMode: OverlayMode;
   setOverlayMode: (mode: OverlayMode) => void;
+  evidenceSource: EvidenceTokenSource;
+  evidenceSourceLabel: string;
+  comparisonProviderLabel: string;
+  comparisonAvailable: boolean;
+  onEvidenceSourceChange: (source: EvidenceTokenSource) => void;
 }>) {
   const overlayLabels: Record<OverlayMode, string> = {
     focused: "Focused",
@@ -1107,8 +1264,11 @@ function EvidenceHeader({
         <p className="eyebrow">Visual evidence</p>
         <h2>{page ? pageTitle(page) : "No page selected"}</h2>
         <p className="muted">
-          {selectedCard ? evidenceSummary(selectedCard) : `${tokenCount} OCR tokens available after processing.`}
+          {selectedCard
+            ? evidenceSummary(selectedCard)
+            : tokenOnlySummary(tokenCount, candidateCount)}
         </p>
+        <p className="muted evidence-source-note">Showing {evidenceSourceLabel} evidence boxes.</p>
       </div>
       <div className="segmented">
         {(["focused", "region", "all", "off"] as OverlayMode[]).map((mode) => (
@@ -1116,6 +1276,24 @@ function EvidenceHeader({
             {overlayLabels[mode]}
           </button>
         ))}
+        {comparisonAvailable ? (
+          <div className="evidence-source-toggle" aria-label="Visual evidence OCR source">
+            <button
+              className={evidenceSource === "local" ? "active" : ""}
+              onClick={() => onEvidenceSourceChange("local")}
+              title="Show the OCR tokens that were used to create review candidates."
+            >
+              Local OCR boxes
+            </button>
+            <button
+              className={evidenceSource === "comparison" ? "active" : ""}
+              onClick={() => onEvidenceSourceChange("comparison")}
+              title="Show Google Vision comparison boxes in the same processed-image coordinate space."
+            >
+              {comparisonProviderLabel} boxes
+            </button>
+          </div>
+        ) : null}
         <div className="overlay-legend" aria-label="OCR evidence color legend">
           <span><i className="legend-dot selected-high" /> high confidence</span>
           <span><i className="legend-dot selected-medium" /> review confidence</span>
@@ -1126,6 +1304,12 @@ function EvidenceHeader({
       </div>
     </div>
   );
+}
+
+function tokenOnlySummary(tokenCount: number, candidateCount: number): string {
+  if (!tokenCount) return "No OCR evidence is available yet.";
+  if (!candidateCount) return `${tokenCount} OCR tokens are shown because no card candidates were generated.`;
+  return `${tokenCount} OCR tokens available after processing.`;
 }
 
 function EvidenceStage({
@@ -1238,6 +1422,7 @@ function TokenOverlay({
     ? tokens.filter((token) => activeFilters.has(token.script_class) || activeFilters.has(token.source))
     : tokens;
   const shouldRenderTokens = mode === "all" || mode === "focused";
+  const tokenOnlyReview = cards.length === 0 && tokens.length > 0;
   return (
     <g className="overlay">
       {mode === "all"
@@ -1267,7 +1452,7 @@ function TokenOverlay({
             if (!bbox) return null;
             const [x1, y1, x2, y2] = bbox;
             const linkedCard = cardForToken(cards, token);
-            const displayClass = tokenDisplayClass(token, page, card, linkedCard, relevant);
+            const displayClass = tokenOnlyReview ? tokenOnlyEvidenceClass(token) : tokenDisplayClass(token, page, card, linkedCard, relevant);
             return (
               <g key={token.id}>
                 <rect
@@ -2195,7 +2380,18 @@ function DocumentParsePanel({ result }: Readonly<{ result: DocumentParseResult }
   );
 }
 
-function OcrComparisonPanel({ comparison }: Readonly<{ comparison: OcrComparison }>) {
+function OcrComparisonPanel({
+  comparison,
+  activeEvidenceSource,
+  onShowComparison,
+  onShowLocal
+}: Readonly<{
+  comparison: OcrComparison;
+  activeEvidenceSource: EvidenceTokenSource;
+  onShowComparison: () => void;
+  onShowLocal: () => void;
+}>) {
+  const hasComparisonBoxes = comparison.compare_tokens.length > 0;
   return (
     <div className="comparison">
       <h3>OCR comparison</h3>
@@ -2203,6 +2399,16 @@ function OcrComparisonPanel({ comparison }: Readonly<{ comparison: OcrComparison
         {comparison.primary_token_count} local tokens, {comparison.compare_token_count} comparison tokens,{" "}
         {Math.round(comparison.agreement * 100)}% overlap.
       </p>
+      {hasComparisonBoxes ? (
+        <div className="comparison-actions">
+          <button className={activeEvidenceSource === "comparison" ? "active" : ""} onClick={onShowComparison}>
+            Show {engineLabel(comparison.compare_provider)} boxes
+          </button>
+          <button className={activeEvidenceSource === "local" ? "active" : ""} onClick={onShowLocal}>
+            Show local boxes
+          </button>
+        </div>
+      ) : null}
       {comparison.warnings.length ? <WarningList warnings={comparison.warnings} compact /> : null}
     </div>
   );
@@ -2210,6 +2416,21 @@ function OcrComparisonPanel({ comparison }: Readonly<{ comparison: OcrComparison
 
 function pageTitle(page: Page): string {
   return page.display_name?.trim() || page.original_image_path.split("/").pop()?.replace(/\.[^.]+$/, "") || page.id;
+}
+
+function engineLabel(engine: string): string {
+  if (engine === "paddleocr_vl") return "PaddleOCR-VL";
+  if (engine === "paddleocr") return "PaddleOCR";
+  if (engine === "google_vision") return "Google Vision";
+  if (engine === "legacy") return "Legacy run";
+  return engine;
+}
+
+function formatRunTime(run: OcrRun): string {
+  const value = run.completed_at ?? run.started_at;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return run.status;
+  return date.toLocaleString();
 }
 
 function versionedImageUrl(url: string | null, page: Page | null, tokenCount: number, cardCount: number): string | null {

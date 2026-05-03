@@ -25,6 +25,10 @@ export type Page = {
   upload_name?: string | null;
   display_name?: string | null;
   processed_image_path?: string | null;
+  active_ocr_run_id?: string | null;
+  active_ocr_engine?: string | null;
+  active_ocr_completed_at?: string | null;
+  active_ocr_duration_ms?: number | null;
   page_type: string;
   page_type_confidence: number;
   image_width?: number | null;
@@ -49,6 +53,7 @@ export type OcrToken = {
 export type CardCandidate = {
   id: string;
   page_id: string;
+  run_id?: string | null;
   source_type: string;
   source_id: string;
   source: Record<string, unknown>;
@@ -94,9 +99,29 @@ export type ProcessResult = {
   cards: CardCandidate[];
   script_summary: Record<string, number>;
   answer_map: Record<string, number>;
+  ocr_run?: OcrRun | null;
 };
 
 export type OcrEngine = "paddleocr" | "paddleocr_vl";
+
+export type OcrRun = {
+  id: string;
+  page_id: string;
+  engine: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  image_sha256?: string | null;
+  processed_image_path?: string | null;
+  image_width?: number | null;
+  image_height?: number | null;
+  preprocessing: Record<string, unknown>;
+  provider_config: Record<string, unknown>;
+  metrics: Record<string, unknown>;
+  warnings: string[];
+  error?: string | null;
+  started_at: string;
+  completed_at?: string | null;
+  duration_ms?: number | null;
+};
 
 export type OcrComparison = {
   primary_provider: string;
@@ -289,10 +314,16 @@ export async function exportCsv(
   });
 }
 
-export const exportTsv = exportCsv;
-
 export async function compareOcr(pageId: string, provider = "google_vision"): Promise<OcrComparison> {
   return apiGet<OcrComparison>(`/api/pages/${pageId}/ocr/compare?provider=${encodeURIComponent(provider)}`);
+}
+
+export async function listOcrRuns(pageId: string): Promise<OcrRun[]> {
+  return apiGet<OcrRun[]>(`/api/pages/${pageId}/ocr/runs`);
+}
+
+export async function activateOcrRun(pageId: string, runId: string): Promise<OcrRun> {
+  return requestJson<OcrRun>(`/api/pages/${pageId}/ocr/runs/${runId}/activate`, { method: "POST" });
 }
 
 export async function parseDocument(pageId: string): Promise<DocumentParseResult> {

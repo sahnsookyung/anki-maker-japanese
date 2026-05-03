@@ -7,7 +7,6 @@ from io import StringIO
 from app.core.script import char_script, classify_script, script_summary
 from app.evaluation.golden import load_golden_pages, meaning_matches
 from app.export.anki_csv import ANKI_FILE_HEADERS, cards_to_csv, write_csv
-from app.export.tsv import cards_to_tsv, write_tsv
 from app.models.schemas import CardCandidate
 from app.validation.dictionary import DictionaryValidator
 
@@ -31,33 +30,6 @@ def test_script_detection_covers_all_supported_buckets() -> None:
         "hangul": 1,
         "number": 1,
     }
-
-
-def test_cards_to_tsv_and_write_tsv_escape_review_fields(tmp_path) -> None:
-    card = CardCandidate(
-        id="card-1",
-        page_id="page-1",
-        source_type="vocab_item",
-        source_id="vocab-1",
-        note_type="jp_vocab_reading",
-        front="学校\tがっこう",
-        back="school\n학교",
-        tags=["jlpt", "review"],
-        confidence=0.87654,
-        source_bbox=[1, 2, 3, 4],
-        warnings=[],
-    )
-
-    tsv = cards_to_tsv([card])
-
-    assert "学校 がっこう" in tsv
-    assert "school<br>학교" in tsv
-    assert "[1.0, 2.0, 3.0, 4.0]" in tsv
-    assert "0.877" in tsv
-
-    output = tmp_path / "exports" / "cards.tsv"
-    write_tsv(output, [card])
-    assert output.read_text(encoding="utf-8") == tsv
 
 
 def test_cards_to_csv_writes_anki_headers_and_round_trips_fields(tmp_path) -> None:

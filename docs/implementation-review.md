@@ -7,7 +7,7 @@ This is a living checklist for `japanese_study_image_to_anki_plan.md`.
 - Monorepo skeleton with `apps/web` Next.js frontend and `backend` FastAPI backend.
 - SQLite-backed uploads, pages, OCR tokens, and card candidates.
 - Image upload, original/processed image serving, basic preprocessing, page contour crop, perspective correction, contrast normalization, and warnings.
-- OCR provider interface with PaddleOCR, Tesseract fallback, and optional Google Cloud Vision provider.
+- OCR provider interface with PaddleOCR as the default provider and explicit Tesseract / Google Cloud Vision diagnostics.
 - OCR comparison endpoint for comparing stored local OCR against Google Cloud Vision or another configured provider.
 - OCR token bounding boxes, script classification, token storage, and frontend SVG overlay.
 - Content-based page classifier with script/question/choice/checkbox features.

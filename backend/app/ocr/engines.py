@@ -22,6 +22,7 @@ class OcrEngineResult:
     tokens: list[OcrToken]
     warnings: list[str]
     document_parse: DocumentParseResult | None = None
+    evidence_tokens: list[OcrToken] | None = None
 
 
 def run_ocr_engine(image_path: Path, page_id: str, engine: str = PADDLEOCR_ENGINE) -> OcrEngineResult:
@@ -32,7 +33,12 @@ def run_ocr_engine(image_path: Path, page_id: str, engine: str = PADDLEOCR_ENGIN
     parsed = get_paddle_ocr_vl_parser().parse(image_path, page_id)
     vl_tokens, conversion_warnings = tokens_from_document_parse(parsed)
     geometry_tokens, geometry_warnings = recognize_with_warnings(image_path, page_id)
-    tokens = _align_tokens_to_geometry(vl_tokens, geometry_tokens) if geometry_tokens else vl_tokens
+    if geometry_tokens:
+        tokens, used_geometry_ids = _align_tokens_to_geometry(vl_tokens, geometry_tokens)
+        evidence_tokens = _merge_visual_evidence_tokens(tokens, geometry_tokens, used_geometry_ids)
+    else:
+        tokens = vl_tokens
+        evidence_tokens = vl_tokens
     warnings = [
         *parsed.warnings,
         *conversion_warnings,
@@ -44,22 +50,35 @@ def run_ocr_engine(image_path: Path, page_id: str, engine: str = PADDLEOCR_ENGIN
     ]
     if geometry_tokens and vl_tokens:
         warnings.append("PaddleOCR-VL tokens keep VL text with PaddleOCR-aligned evidence boxes when text matches.")
+        unmatched_count = len(evidence_tokens) - len(tokens)
+        if unmatched_count > 0:
+            warnings.append(
+                f"{unmatched_count} unmatched PaddleOCR geometry tokens are retained as unused OCR evidence for visual review."
+            )
     elif not geometry_tokens and vl_tokens:
         warnings.append("PaddleOCR word geometry was unavailable; using PaddleOCR-VL block-derived boxes for review only.")
     if not tokens:
         warnings.append("PaddleOCR-VL produced no normalized OCR tokens; review page manually.")
-    return OcrEngineResult(engine=normalized, tokens=tokens, warnings=warnings, document_parse=parsed)
+    return OcrEngineResult(
+        engine=normalized,
+        tokens=tokens,
+        warnings=warnings,
+        document_parse=parsed,
+        evidence_tokens=evidence_tokens,
+    )
 
 
-def _align_tokens_to_geometry(vl_tokens: list[OcrToken], geometry_tokens: list[OcrToken]) -> list[OcrToken]:
+def _align_tokens_to_geometry(vl_tokens: list[OcrToken], geometry_tokens: list[OcrToken]) -> tuple[list[OcrToken], set[str]]:
     if not vl_tokens or not geometry_tokens:
-        return vl_tokens
+        return vl_tokens, set()
     used_geometry_ids: set[str] = set()
     aligned: list[OcrToken] = []
     cursor = 0
     for token in vl_tokens:
         match, match_index = _best_geometry_match(token, geometry_tokens, used_geometry_ids, cursor)
         if match is None:
+            if _should_keep_unmatched_vl_token(token):
+                aligned.append(token)
             continue
         used_geometry_ids.add(match.id)
         cursor = match_index + 1
@@ -71,7 +90,23 @@ def _align_tokens_to_geometry(vl_tokens: list[OcrToken], geometry_tokens: list[O
                 }
             )
         )
-    return sorted(aligned, key=lambda token: (token.bbox[1], token.bbox[0], token.id))
+    return sorted(aligned, key=_visual_order_key), used_geometry_ids
+
+
+def _merge_visual_evidence_tokens(
+    aligned_tokens: list[OcrToken],
+    geometry_tokens: list[OcrToken],
+    used_geometry_ids: set[str],
+) -> list[OcrToken]:
+    evidence_tokens = [
+        *aligned_tokens,
+        *(token for token in geometry_tokens if token.id not in used_geometry_ids),
+    ]
+    return sorted(evidence_tokens, key=_visual_order_key)
+
+
+def _visual_order_key(token: OcrToken) -> tuple[float, float, str]:
+    return token.bbox[1], token.bbox[0], token.id
 
 
 def _best_geometry_match(
@@ -100,6 +135,15 @@ def _normalize_match_text(text: str) -> str:
     normalized = re.sub(r"\\[A-Za-z]+", "", normalized)
     normalized = normalized.replace("{", "").replace("}", "")
     return re.sub(r"\s+", "", normalized)
+
+
+def _should_keep_unmatched_vl_token(token: OcrToken) -> bool:
+    normalized = _normalize_match_text(token.text)
+    if not normalized:
+        return False
+    if re.fullmatch(r"[0-9０-９①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]+", normalized):
+        return False
+    return not re.fullmatch(r"[$¥￥\\.,，。:;!?・/|_-]+", normalized)
 
 
 def normalize_ocr_engine(engine: str | None) -> str:

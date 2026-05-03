@@ -11,17 +11,42 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT_DIR / ".env")
 load_dotenv(BACKEND_DIR / ".env")
 
+
+def _normalize_google_credentials_env() -> None:
+    credentials = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    if not credentials:
+        return
+    credentials_path = Path(credentials).expanduser()
+    if credentials_path.is_absolute():
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(credentials_path)
+        return
+    for base_dir in (ROOT_DIR, BACKEND_DIR):
+        candidate = (base_dir / credentials_path).resolve()
+        if candidate.exists():
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(candidate)
+            return
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str((ROOT_DIR / credentials_path).resolve())
+
+
+_normalize_google_credentials_env()
+
 UPLOAD_DIR = BACKEND_DIR / "uploads"
-PROCESSED_DIR = BACKEND_DIR / "processed"
+PROCESSED_DIR = BACKEND_DIR / os.getenv("ANKI_MAKER_PROCESSED_DIR", "processed")
 CROP_DIR = BACKEND_DIR / "crops"
 EXPORT_DIR = BACKEND_DIR / "exports"
 GOOGLE_CREDENTIALS_DIR = BACKEND_DIR / "credentials"
+OCR_CACHE_DIR = BACKEND_DIR / "ocr_cache"
+USAGE_DIR = BACKEND_DIR / "usage"
 DB_PATH = BACKEND_DIR / os.getenv("ANKI_MAKER_DB", "app.db")
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
-OCR_PROVIDER = os.getenv("OCR_PROVIDER", "auto")
+OCR_PROVIDER = os.getenv("OCR_PROVIDER", "paddle")
 OCR_PROVIDER_CACHE_ENABLED = os.getenv("OCR_PROVIDER_CACHE_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 OCR_COMPARE_PROVIDER = os.getenv("OCR_COMPARE_PROVIDER", "google_vision")
+GOOGLE_VISION_ALLOW_CLOUD = os.getenv("GOOGLE_VISION_ALLOW_CLOUD", "false").lower() in {"1", "true", "yes", "on"}
+GOOGLE_VISION_MONTHLY_CAP = int(os.getenv("GOOGLE_VISION_MONTHLY_CAP", "1000"))
+GOOGLE_VISION_CACHE_ENABLED = os.getenv("GOOGLE_VISION_CACHE_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+GOOGLE_VISION_API_ENDPOINT = os.getenv("GOOGLE_VISION_API_ENDPOINT", "").strip()
 OCR_CROP_WORKER_IDLE_SECONDS = float(os.getenv("OCR_CROP_WORKER_IDLE_SECONDS", "120"))
 OCR_CROP_WORKER_MAX_RSS_MB = float(os.getenv("OCR_CROP_WORKER_MAX_RSS_MB", "6144"))
 OCR_CROP_JOB_TIMEOUT_SECONDS = float(os.getenv("OCR_CROP_JOB_TIMEOUT_SECONDS", "45"))
@@ -77,5 +102,5 @@ VLM_CLEANUP_ENABLED = os.getenv("VLM_CLEANUP_ENABLED", "false").lower() in {"1",
 
 
 def ensure_dirs() -> None:
-    for path in (UPLOAD_DIR, PROCESSED_DIR, CROP_DIR, EXPORT_DIR, GOOGLE_CREDENTIALS_DIR):
+    for path in (UPLOAD_DIR, PROCESSED_DIR, CROP_DIR, EXPORT_DIR, GOOGLE_CREDENTIALS_DIR, OCR_CACHE_DIR, USAGE_DIR):
         path.mkdir(parents=True, exist_ok=True)

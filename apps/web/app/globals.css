@@ -195,6 +195,9 @@ button:disabled:hover {
 }
 
 .command-bar {
+  position: sticky;
+  top: 0.75rem;
+  z-index: 20;
   grid-template-columns: minmax(0, 1fr) minmax(260px, auto);
   align-items: center;
   border: 1px solid var(--line);
@@ -202,6 +205,7 @@ button:disabled:hover {
   background: rgba(255, 255, 255, 0.52);
   padding: 0.75rem;
   margin-bottom: 1rem;
+  backdrop-filter: blur(18px);
 }
 
 .command-bar p {
@@ -209,6 +213,12 @@ button:disabled:hover {
   color: var(--muted);
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.command-status {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
 }
 
 .command-actions,
@@ -226,6 +236,27 @@ button:disabled:hover {
 .command-actions {
   justify-content: flex-end;
   min-width: 0;
+}
+
+.batch-status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.batch-status-strip strong,
+.batch-status-strip span {
+  border: 1px solid rgba(56, 45, 31, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.55);
+  padding: 0.18rem 0.5rem;
+}
+
+.batch-status-strip strong {
+  color: var(--ink);
 }
 
 .batch-summary-card {
@@ -462,6 +493,21 @@ button:disabled:hover {
   opacity: 0.22;
 }
 
+.box.token-review {
+  stroke: var(--green);
+  opacity: 0.9;
+  stroke-width: 3;
+}
+
+.box.token-review.token-confidence-medium {
+  stroke: #f0b33d;
+}
+
+.box.token-review.token-confidence-low {
+  stroke: var(--red);
+  stroke-dasharray: 7 5;
+}
+
 .box.used-context {
   stroke: rgba(111, 61, 155, 0.86);
   opacity: 0.72;
@@ -553,6 +599,40 @@ button:disabled:hover {
   gap: 0.28rem;
 }
 
+.evidence-source-note {
+  margin-top: 0.35rem;
+}
+
+.evidence-source-toggle,
+.comparison-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.evidence-source-toggle {
+  flex-basis: 100%;
+  justify-content: flex-end;
+}
+
+.comparison-actions {
+  margin-top: 0.55rem;
+}
+
+.comparison-actions button {
+  border-color: var(--line);
+  background: white;
+  color: var(--muted);
+  padding: 0.42rem 0.7rem;
+  font-size: 0.84rem;
+}
+
+.comparison-actions button.active {
+  color: white;
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+}
+
 .legend-dot {
   display: inline-block;
   width: 0.75rem;
@@ -609,6 +689,43 @@ button:disabled:hover {
   cursor: pointer;
   color: var(--accent);
   font-weight: 700;
+}
+
+.ocr-run-history {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+
+.ocr-run-history h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.ocr-run {
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  padding: 0.65rem 0.75rem;
+}
+
+.ocr-run.active {
+  border-color: var(--green);
+  background: rgba(46, 128, 92, 0.08);
+}
+
+.ocr-run div {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.ocr-run span {
+  color: var(--muted);
+  font-size: 0.9rem;
 }
 
 .cards-panel {

@@ -110,6 +110,70 @@ def test_process_page_preserves_upload_name_in_result(tmp_path, monkeypatch) -> 
     assert database.get_page("page-upload-name").upload_name == "Original upload.jpg"
 
 
+def test_process_page_persists_visual_evidence_tokens_separately_from_extraction(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "pipeline.db")
+    monkeypatch.setattr(pipeline, "PROCESSED_DIR", tmp_path / "processed")
+    database.init_db()
+    page = Page(
+        id="page-vl-evidence",
+        original_image_path=str(tmp_path / "uploaded.jpg"),
+        upload_name="vl-page.jpg",
+        display_name="VL page",
+        page_type="uploaded",
+        page_type_confidence=0.0,
+        warnings=[],
+        created_at="2026-04-28T00:00:00+00:00",
+    )
+    extraction_token = OcrToken(
+        id="vl-token",
+        page_id=page.id,
+        text="学校",
+        bbox=[10, 20, 60, 40],
+        confidence=0.8,
+        script_class="kanji",
+        source="paddleocr_vl",
+    )
+    unused_geometry_token = OcrToken(
+        id="base-extra",
+        page_id=page.id,
+        text="unused",
+        bbox=[70, 20, 120, 40],
+        confidence=0.99,
+        script_class="latin",
+        source="paddleocr",
+    )
+    classified_token_counts: list[int] = []
+
+    monkeypatch.setattr(
+        pipeline,
+        "preprocess_image",
+        lambda original, processed: SimpleNamespace(width=200, height=100, warnings=[]),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "run_ocr_engine",
+        lambda image_path, page_id, engine: OcrEngineResult(
+            engine="paddleocr_vl",
+            tokens=[extraction_token],
+            evidence_tokens=[extraction_token, unused_geometry_token],
+            warnings=[],
+        ),
+    )
+
+    def fake_classify_page(tokens, height):
+        classified_token_counts.append(len(tokens))
+        return "unknown_review_required", 0.0, {}
+
+    monkeypatch.setattr(pipeline, "classify_page", fake_classify_page)
+    monkeypatch.setattr(pipeline, "parse_answer_strip", lambda tokens, height: {})
+
+    result = pipeline.process_page(page, engine="paddleocr_vl")
+
+    assert classified_token_counts == [1]
+    assert [token.id for token in result.tokens] == ["vl-token", "base-extra"]
+    assert [token.id for token in database.get_tokens(page.id)] == ["vl-token", "base-extra"]
+
+
 def test_benchmark_default_runner_uses_per_page_subprocesses(tmp_path, monkeypatch) -> None:
     commands: list[list[str]] = []
     golden = GoldenPage(
@@ -198,6 +262,30 @@ def test_page_worker_command_enforces_rss_limit(monkeypatch) -> None:
     assert completed.returncode != 0
     assert process.terminated is True
     assert "RSS limit" in completed.stderr
+
+
+def test_page_worker_command_passes_runtime_environment_overrides(monkeypatch) -> None:
+    process = FakeProcess()
+    process.terminated = True
+    captured: dict[str, object] = {}
+
+    def fake_popen(*args, **kwargs):
+        captured["env"] = kwargs["env"]
+        return process
+
+    monkeypatch.setattr(page_worker.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(page_worker, "_process_tree_rss_mb", lambda pid: 1.0)
+
+    completed = page_worker._run_worker_command(
+        ["python", "-m", "worker"],
+        timeout_seconds=30,
+        max_rss_mb=500,
+        env_overrides={"ANKI_MAKER_DB": "/tmp/eval.db"},
+    )
+
+    assert completed.returncode == 0
+    assert isinstance(captured["env"], dict)
+    assert captured["env"]["ANKI_MAKER_DB"] == "/tmp/eval.db"
 
 
 def test_page_worker_failure_detail_prefers_guardrail_message() -> None:

@@ -28,6 +28,7 @@ def run_page_process_worker(
     *,
     timeout_seconds: float = OCR_PAGE_JOB_TIMEOUT_SECONDS,
     max_rss_mb: float = OCR_PAGE_WORKER_MAX_RSS_MB,
+    env_overrides: dict[str, str] | None = None,
 ) -> ProcessResult:
     normalized_engine = normalize_ocr_engine(engine)
     output_fd, output_name = tempfile.mkstemp(prefix=f"anki-page-{page_id}-", suffix=".json")
@@ -45,7 +46,7 @@ def run_page_process_worker(
             "--output-json",
             str(output_path),
         ]
-        completed = _run_worker_command(cmd, timeout_seconds=timeout_seconds, max_rss_mb=max_rss_mb)
+        completed = _run_worker_command(cmd, timeout_seconds=timeout_seconds, max_rss_mb=max_rss_mb, env_overrides=env_overrides)
         if completed.returncode != 0 or not output_path.exists():
             detail = _worker_failure_detail(completed, "Page OCR worker")
             raise RuntimeError(detail)
@@ -91,13 +92,18 @@ def _run_worker_command(
     *,
     timeout_seconds: float,
     max_rss_mb: float,
+    env_overrides: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    if env_overrides:
+        env.update(env_overrides)
     process = subprocess.Popen(  # NOSONAR
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         cwd=str(BACKEND_DIR),
+        env=env,
         start_new_session=True,
     )
     start = time.monotonic()

@@ -21,7 +21,6 @@ from app.core.images import preprocess_image
 from app.core.ids import new_id
 from app.db import database
 from app.export.anki_csv import write_csv
-from app.export.tsv import write_tsv
 from app.extraction.pipeline import process_page
 from app.models.schemas import (
     CardUpdate,
@@ -31,6 +30,7 @@ from app.models.schemas import (
     FieldOcrPreviewRequest,
     FieldOcrPreviewResponse,
     OcrComparison,
+    OcrRun,
     OcrRuntimeStatus,
     Page,
     PageUpdate,
@@ -82,8 +82,7 @@ async def upload_page(file: Annotated[UploadFile, File(...)]) -> dict[str, str]:
         _delete_runtime_file(existing_page.original_image_path, UPLOAD_DIR)
         _delete_runtime_file(existing_page.processed_image_path, PROCESSED_DIR)
         _delete_page_crops(page_id)
-        database.replace_tokens(page_id, [])
-        database.replace_cards(page_id, [])
+        database.clear_page_runs(page_id)
     with destination.open("wb") as out:
         shutil.copyfileobj(file.file, out)
     page = Page(
@@ -126,7 +125,10 @@ def delete_page(page_id: str) -> dict[str, str]:
     return {"page_id": page_id, "status": "deleted"}
 
 
-@router.post("/pages/{page_id}/process", responses={400: RESPONSES[400], 404: RESPONSES[404], 409: RESPONSES[409], 503: RESPONSES[503]})
+@router.post(
+    "/pages/{page_id}/process",
+    responses={400: RESPONSES[400], 404: RESPONSES[404], 409: RESPONSES[409], 503: RESPONSES[503]},
+)
 def process(
     page_id: str,
     engine: Annotated[
@@ -188,6 +190,21 @@ def page_ocr(page_id: str):
         "page": page,
         "tokens": tokens,
     }
+
+
+@router.get("/pages/{page_id}/ocr/runs", responses={404: RESPONSES[404]})
+def page_ocr_runs(page_id: str) -> list[OcrRun]:
+    if not database.get_page(page_id):
+        raise HTTPException(status_code=404, detail=PAGE_NOT_FOUND)
+    return database.list_ocr_runs(page_id)
+
+
+@router.post("/pages/{page_id}/ocr/runs/{run_id}/activate", responses={404: RESPONSES[404]})
+def activate_page_ocr_run(page_id: str, run_id: str) -> OcrRun:
+    run = database.activate_ocr_run(page_id, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="OCR run was not found or is not successful.")
+    return run
 
 
 @router.get("/pages/{page_id}/ocr/compare", responses={404: RESPONSES[404], 409: RESPONSES[409]})
@@ -298,20 +315,6 @@ def approve_card(card_id: str):
     return card
 
 
-@router.post("/exports/tsv")
-def export_tsv(request: ExportRequest) -> ExportResponse:
-    cards = _exportable_cards(request)
-    export_id = new_id("export")
-    path = EXPORT_DIR / f"{export_id}.tsv"
-    write_tsv(path, cards)
-    return ExportResponse(
-        export_id=export_id,
-        path=str(path),
-        card_count=len(cards),
-        download_url=f"/api/exports/{export_id}.tsv",
-    )
-
-
 @router.post("/exports/csv")
 def export_csv(request: ExportRequest) -> ExportResponse:
     cards = _exportable_cards(request)
@@ -328,13 +331,12 @@ def export_csv(request: ExportRequest) -> ExportResponse:
 
 @router.get("/exports/{filename}", responses={404: RESPONSES[404]})
 def download_export(filename: str):
-    if Path(filename).name != filename or Path(filename).suffix not in {".csv", ".tsv"}:
+    if Path(filename).name != filename or Path(filename).suffix != ".csv":
         raise HTTPException(status_code=404, detail=EXPORT_NOT_FOUND)
     path = EXPORT_DIR / filename
     if not path.exists():
         raise HTTPException(status_code=404, detail=EXPORT_NOT_FOUND)
-    media_type = "text/csv; charset=utf-8" if filename.endswith(".csv") else "text/tab-separated-values; charset=utf-8"
-    return FileResponse(path, media_type=media_type, filename=filename)
+    return FileResponse(path, media_type="text/csv; charset=utf-8", filename=filename)
 
 
 def _exportable_cards(request: ExportRequest) -> list:

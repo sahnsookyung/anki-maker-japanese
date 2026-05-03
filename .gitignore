@@ -20,6 +20,8 @@ backend/uploads/*
 backend/processed/*
 backend/exports/*
 backend/crops/*
+backend/ocr_cache/*
+backend/usage/*
 backend/credentials/*.json
 backend/app.db
 backend/*.db
@@ -27,4 +29,6 @@ backend/*.db
 !backend/processed/.gitkeep
 !backend/exports/.gitkeep
 !backend/crops/.gitkeep
+!backend/ocr_cache/.gitkeep
+!backend/usage/.gitkeep
 !backend/credentials/.gitkeep

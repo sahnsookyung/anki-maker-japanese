@@ -23,6 +23,10 @@ class Page(BaseModel):
     upload_name: str | None = None
     display_name: str | None = None
     processed_image_path: str | None = None
+    active_ocr_run_id: str | None = None
+    active_ocr_engine: str | None = None
+    active_ocr_completed_at: str | None = None
+    active_ocr_duration_ms: int | None = None
     page_type: str = "unprocessed"
     page_type_confidence: float = 0.0
     image_width: int | None = None
@@ -37,6 +41,7 @@ class Page(BaseModel):
 class CardCandidate(BaseModel):
     id: str
     page_id: str
+    run_id: str | None = None
     source_type: str
     source_id: str
     source: dict[str, Any] = Field(default_factory=dict)
@@ -57,6 +62,26 @@ class ProcessResult(BaseModel):
     cards: list[CardCandidate]
     script_summary: dict[str, int]
     answer_map: dict[int, int] = Field(default_factory=dict)
+    ocr_run: "OcrRun | None" = None
+
+
+class OcrRun(BaseModel):
+    id: str
+    page_id: str
+    engine: str
+    status: Literal["queued", "running", "succeeded", "failed", "cancelled"] = "queued"
+    image_sha256: str | None = None
+    processed_image_path: str | None = None
+    image_width: int | None = None
+    image_height: int | None = None
+    preprocessing: dict[str, Any] = Field(default_factory=dict)
+    provider_config: dict[str, Any] = Field(default_factory=dict)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    error: str | None = None
+    started_at: str
+    completed_at: str | None = None
+    duration_ms: int | None = None
 
 
 class OcrComparison(BaseModel):

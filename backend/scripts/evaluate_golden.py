@@ -1,22 +1,28 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager, redirect_stdout
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import shutil
 import sys
+import tempfile
+from typing import Iterator
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+from app.core.config import OCR_PAGE_WORKER_MAX_RSS_MB, OCR_VL_PAGE_WORKER_MAX_RSS_MB
 from app.core.ids import new_id
 from app.db import database
 from app.evaluation.golden import load_golden_pages
 from app.evaluation.mcq_eval import McqEvalResult, evaluate_mcq_page
 from app.evaluation.vocab_eval import VocabEvalResult, evaluate_vocab_page
-from app.extraction.pipeline import process_page
+from app.extraction import pipeline
 from app.ocr.engines import PADDLEOCR_ENGINE, PADDLEOCR_VL_ENGINE, normalize_ocr_engine
+from app.ocr.page_worker import run_page_process_worker
 from app.models.schemas import Page, ProcessResult
 
 
@@ -34,6 +40,9 @@ def main() -> int:
     )
     parser.add_argument("--from-db", action="store_true", help="Evaluate already persisted cards instead of processing images.")
     parser.add_argument("--db-path", default="", help="SQLite DB path to use with --from-db.")
+    parser.add_argument("--run-id", default="", help="Evaluate a specific persisted OCR run id with --from-db.")
+    parser.add_argument("--work-dir", default="", help="Optional isolated runtime directory for fresh processing.")
+    parser.add_argument("--keep-work-dir", action="store_true", help="Keep isolated runtime files for debugging.")
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of a human-readable summary.")
     args = parser.parse_args()
 
@@ -44,19 +53,32 @@ def main() -> int:
         golden_path = backend_dir / golden_path
     pages = load_golden_pages(golden_path.resolve(), repo_root)
     if not pages:
-        print("No supported golden pages found. This evaluator currently supports category=vocab_table.", file=sys.stderr)
+        print("No supported golden pages found.", file=sys.stderr)
         return 2
 
-    if args.db_path:
-        database.DB_PATH = Path(args.db_path).resolve()
-    database.init_db()
     results: list[tuple[str, VocabEvalResult | McqEvalResult]] = []
     if args.from_db:
+        if args.db_path:
+            database.DB_PATH = Path(args.db_path).resolve()
+        database.init_db()
+        if args.run_id:
+            run = database.get_ocr_run(args.run_id)
+            if not run:
+                print(f"No persisted OCR run matched {args.run_id}.", file=sys.stderr)
+                return 2
+            run_page = database.get_page(run.page_id)
+            if not run_page:
+                print(f"No persisted page matched OCR run {args.run_id}.", file=sys.stderr)
+                return 2
+            pages = [golden for golden in pages if _page_matches_golden(run_page, golden)]
+            if not pages:
+                print(f"OCR run {args.run_id} does not match any page in {golden_path.name}.", file=sys.stderr)
+                return 2
         for golden in pages:
             if not golden.image_path.exists():
                 print(f"Missing image: {golden.image_path}", file=sys.stderr)
                 return 2
-            process_result = _process_result_from_db(golden)
+            process_result = _process_result_from_db(golden, args.run_id or None)
             if process_result is None:
                 print(f"No persisted DB page matched {golden.image_path.name}.", file=sys.stderr)
                 return 2
@@ -66,28 +88,30 @@ def main() -> int:
             elif golden.expected_questions:
                 results.append((engine_label, evaluate_mcq_page(golden, process_result)))
     else:
-        engines = [PADDLEOCR_ENGINE, PADDLEOCR_VL_ENGINE] if args.engine == "all" else [normalize_ocr_engine(args.engine)]
-        for golden in pages:
-            if not golden.image_path.exists():
-                print(f"Missing image: {golden.image_path}", file=sys.stderr)
-                return 2
-            for engine in engines:
-                page = Page(
-                    id=new_id("eval"),
-                    original_image_path=str(golden.image_path),
-                    upload_name=golden.image_path.name,
-                    display_name=golden.image_path.stem,
-                    processed_image_path=None,
-                    page_type="uploaded",
-                    page_type_confidence=0.0,
-                    created_at=datetime.now(timezone.utc).isoformat(),
-                )
-                database.upsert_page(page)
-                process_result = process_page(page, engine=engine)
-                if golden.expected_rows:
-                    results.append((engine, evaluate_vocab_page(golden, process_result)))
-                elif golden.expected_questions:
-                    results.append((engine, evaluate_mcq_page(golden, process_result)))
+        with _evaluation_runtime(args.work_dir, args.keep_work_dir):
+            database.init_db()
+            engines = [PADDLEOCR_ENGINE, PADDLEOCR_VL_ENGINE] if args.engine == "all" else [normalize_ocr_engine(args.engine)]
+            for golden in pages:
+                if not golden.image_path.exists():
+                    print(f"Missing image: {golden.image_path}", file=sys.stderr)
+                    return 2
+                for engine in engines:
+                    page = Page(
+                        id=new_id("eval"),
+                        original_image_path=str(golden.image_path),
+                        upload_name=golden.image_path.name,
+                        display_name=golden.image_path.stem,
+                        processed_image_path=None,
+                        page_type="uploaded",
+                        page_type_confidence=0.0,
+                        created_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                    database.upsert_page(page)
+                    process_result = _process_page_for_evaluation(page, engine, redirect_logs=args.json)
+                    if golden.expected_rows:
+                        results.append((engine, evaluate_vocab_page(golden, process_result)))
+                    elif golden.expected_questions:
+                        results.append((engine, evaluate_mcq_page(golden, process_result)))
 
     if args.json:
         print(json.dumps([_result_dict(result, engine) for engine, result in results], ensure_ascii=False, indent=2))
@@ -97,7 +121,64 @@ def main() -> int:
     return 0
 
 
-def _process_result_from_db(golden) -> ProcessResult | None:
+@contextmanager
+def _evaluation_runtime(work_dir_arg: str, keep_work_dir: bool) -> Iterator[Path]:
+    previous_db_path = database.DB_PATH
+    previous_processed_dir = pipeline.PROCESSED_DIR
+    created_temp = False
+    if work_dir_arg:
+        work_dir = Path(work_dir_arg).resolve()
+        work_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        work_dir = Path(tempfile.mkdtemp(prefix="anki_eval_")).resolve()
+        created_temp = True
+    processed_dir = work_dir / "processed"
+    processed_dir.mkdir(parents=True, exist_ok=True)
+    database.DB_PATH = work_dir / "evaluation.db"
+    pipeline.PROCESSED_DIR = processed_dir
+    try:
+        yield work_dir
+    finally:
+        database.DB_PATH = previous_db_path
+        pipeline.PROCESSED_DIR = previous_processed_dir
+        if created_temp and not keep_work_dir:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def _process_page_for_evaluation(page: Page, engine: str, *, redirect_logs: bool = False) -> ProcessResult:
+    if redirect_logs:
+        with redirect_stdout(sys.stderr):
+            return _process_page_for_evaluation(page, engine)
+    max_rss_mb = OCR_VL_PAGE_WORKER_MAX_RSS_MB if engine == PADDLEOCR_VL_ENGINE else OCR_PAGE_WORKER_MAX_RSS_MB
+    return run_page_process_worker(
+        page.id,
+        engine,
+        max_rss_mb=max_rss_mb,
+        env_overrides={
+            "ANKI_MAKER_DB": str(database.DB_PATH),
+            "ANKI_MAKER_PROCESSED_DIR": str(pipeline.PROCESSED_DIR),
+        },
+    )
+
+
+def _process_result_from_db(golden, run_id: str | None = None) -> ProcessResult | None:
+    if run_id:
+        run = database.get_ocr_run(run_id)
+        if not run:
+            return None
+        page = database.get_page(run.page_id)
+        if not page:
+            return None
+        if not _page_matches_golden(page, golden):
+            return None
+        return ProcessResult(
+            page=page,
+            tokens=database.get_tokens(page.id, run.id),
+            cards=database.get_cards(page.id, run.id),
+            script_summary={},
+            answer_map={},
+            ocr_run=run,
+        )
     candidates = database.list_pages()
     expected_name = golden.image_path.name
     expected_stem = golden.image_path.stem
@@ -119,10 +200,23 @@ def _process_result_from_db(golden) -> ProcessResult | None:
         cards=database.get_cards(page.id),
         script_summary={},
         answer_map={},
+        ocr_run=database.get_active_ocr_run(page.id),
+    )
+
+
+def _page_matches_golden(page: Page, golden) -> bool:
+    expected_name = golden.image_path.name
+    expected_stem = golden.image_path.stem
+    return (
+        page.upload_name == expected_name
+        or page.display_name == expected_stem
+        or Path(page.original_image_path).name == expected_name
     )
 
 
 def _persisted_engine_label(process_result: ProcessResult) -> str:
+    if process_result.ocr_run:
+        return f"persisted_{process_result.ocr_run.engine}"
     sources = {token.source for token in process_result.tokens}
     warnings = " ".join(process_result.page.warnings)
     if PADDLEOCR_VL_ENGINE in sources or "PaddleOCR-VL" in warnings:

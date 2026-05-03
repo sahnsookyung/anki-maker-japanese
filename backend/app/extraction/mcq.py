@@ -14,10 +14,32 @@ from app.extraction.sentence_order import repair_predicate_first_sentence
 from app.models.schemas import OcrToken
 
 
-QUESTION_NO_RE = re.compile(r"^(10|[1-9]|①|②|③|④|⑤|⑥|⑦|⑧|⑨|⑩)$")
+QUESTION_NO_PATTERN = r"(?:[1-9]\d{0,2}|[①-⑳])"
+QUESTION_NO_RE = re.compile(rf"^{QUESTION_NO_PATTERN}$")
 CHOICE_NO_RE = re.compile(r"^[1-4①-④]$")
 CHOICE_CHUNK_RE = re.compile(r"([1-4①-④])([^1-4①-④]+)")
-CIRCLED = {"①": 1, "②": 2, "③": 3, "④": 4, "⑤": 5, "⑥": 6, "⑦": 7, "⑧": 8, "⑨": 9, "⑩": 10}
+CIRCLED = {
+    "①": 1,
+    "②": 2,
+    "③": 3,
+    "④": 4,
+    "⑤": 5,
+    "⑥": 6,
+    "⑦": 7,
+    "⑧": 8,
+    "⑨": 9,
+    "⑩": 10,
+    "⑪": 11,
+    "⑫": 12,
+    "⑬": 13,
+    "⑭": 14,
+    "⑮": 15,
+    "⑯": 16,
+    "⑰": 17,
+    "⑱": 18,
+    "⑲": 19,
+    "⑳": 20,
+}
 FULLWIDTH_DIGITS = str.maketrans("１２３４５６７８９０", "1234567890")
 
 
@@ -170,16 +192,18 @@ def _augment_block_with_nearby_choices(block: list[OcrToken], lines: list[list[O
 
 
 def _question_no(tokens: list[OcrToken]) -> int | None:
-    for token in tokens[:5]:
+    for index, token in enumerate(tokens[:5]):
         text = _normalize_digits(token.text)
+        if text in CIRCLED and (CIRCLED[text] >= 5 or index == 0):
+            return CIRCLED[text]
+        if text.isdigit() and int(text) >= 5:
+            return int(text)
+        if index == 0 and text.isdigit() and int(text) >= 1:
+            return int(text)
         if _choice_text_after_marker(text) or _choice_chunks(text):
             continue
-        if text in CIRCLED:
-            return CIRCLED[text]
-        if text.isdigit() and 1 <= int(text) <= 10:
-            return int(text)
-        match = re.match(r"^(10|[1-9])\D+", text)
-        if match:
+        match = re.match(r"^([1-9]\d{0,2})\D+", text)
+        if match and (index == 0 or int(match.group(1)) <= 10):
             return int(match.group(1))
     return None
 
@@ -471,7 +495,7 @@ def _choice_marker_no(text: str) -> int | None:
     stripped = text.strip().translate(FULLWIDTH_DIGITS).lstrip("「『【[(（ \t")
     if _looks_like_prefixed_question_text(stripped):
         return None
-    if stripped.startswith("10"):
+    if re.match(r"^[1-9]\d+", stripped):
         return None
     if stripped in CIRCLED:
         return CIRCLED[stripped]
@@ -520,7 +544,7 @@ def _is_choice_token(text: str) -> bool:
 
 def _looks_like_prefixed_question_text(text: str) -> bool:
     stripped = text.strip()
-    match = re.match(r"^(10|[1-9])(.+)", stripped)
+    match = re.match(r"^([1-9]\d{0,2})(.+)", stripped)
     if not match:
         return False
     body = match.group(2).strip()
@@ -563,7 +587,7 @@ def _looks_like_question_line(line: list[OcrToken]) -> bool:
 
 def _looks_like_question_with_inline_choices(line: list[OcrToken]) -> bool:
     text = text_of(line, "")
-    return bool(re.match(r"^(10|[1-9])", _normalize_digits(text))) and _has_japanese(text)
+    return bool(re.match(r"^[1-9]\d{0,2}", _normalize_digits(text))) and _has_japanese(text)
 
 
 def _set_choice(
@@ -620,7 +644,7 @@ def _clean_sentence(text: str) -> str:
 
 
 def _strip_question_prefix(text: str) -> str:
-    return re.sub(r"^(10|[1-9])", "", _normalize_digits(text).strip())
+    return re.sub(r"^[1-9]\d{0,2}", "", _normalize_digits(text).strip())
 
 
 def _resolve_from_glossary(sentence: str, choices: list[str], page_type: str) -> tuple[str, str, int | None]:

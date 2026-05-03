@@ -1,6 +1,8 @@
-import type { CardCandidate, FieldOcrPreview, OcrToken, Page } from "./api";
+import type { CardCandidate, FieldOcrPreview, OcrComparison, OcrToken, Page } from "./api";
 
 export type ReviewFilter = "all" | "needs_review" | "approved" | "green" | "yellow" | "red";
+export type EvidenceOverlayMode = "focused" | "region" | "all" | "off";
+export type EvidenceTokenSource = "local" | "comparison";
 
 export const HIGH_CONFIDENCE_THRESHOLD = 0.9;
 export const REVIEW_CONFIDENCE_THRESHOLD = 0.75;
@@ -82,6 +84,34 @@ export function tokenDisplayClass(
   if (linkedCard) return `candidate-evidence ${reviewQualityClass(linkedCard)}`;
   if (isAnswerSupportToken(token, page)) return "used-context answer-support";
   return `scanned-unused token-confidence-${tokenConfidenceClass(token.confidence)}`;
+}
+
+export function evidenceOverlayModeForLoad(cards: CardCandidate[], tokens: OcrToken[]): EvidenceOverlayMode {
+  return cards.length === 0 && tokens.length > 0 ? "all" : "focused";
+}
+
+export function tokenOnlyEvidenceClass(token: OcrToken): string {
+  return `token-review token-confidence-${tokenConfidenceClass(token.confidence)}`;
+}
+
+export function comparisonEvidenceAvailable(comparison: OcrComparison | null | undefined): boolean {
+  return Boolean(comparison?.compare_tokens.length);
+}
+
+export function evidenceTokensForSource(
+  source: EvidenceTokenSource,
+  localTokens: OcrToken[],
+  comparison: OcrComparison | null | undefined
+): OcrToken[] {
+  if (source === "comparison" && comparisonEvidenceAvailable(comparison)) return comparison?.compare_tokens ?? [];
+  return localTokens;
+}
+
+export function evidenceSourceLabel(source: EvidenceTokenSource, comparison: OcrComparison | null | undefined): string {
+  if (source === "comparison" && comparisonEvidenceAvailable(comparison)) {
+    return comparison?.compare_provider === "google_vision" ? "Google Vision" : comparison?.compare_provider ?? "Comparison OCR";
+  }
+  return "Local OCR";
 }
 
 export function confidenceClass(card: CardCandidate | null): string {

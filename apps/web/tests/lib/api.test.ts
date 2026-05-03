@@ -3,14 +3,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   apiErrorMessage,
   apiGet,
+  activateOcrRun,
   approveCard,
   compareOcr,
   dedupePages,
   deletePage,
   exportCsv,
-  exportTsv,
   getOcrRuntime,
   imageUrl,
+  listOcrRuns,
   parseDocument,
   previewFieldOcr,
   processPage,
@@ -164,11 +165,12 @@ describe("API helpers", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ ...card, status: "approved" })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ ...card, front: "updated" })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ card_count: 1, download_url: "/api/exports/export.csv" })))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ card_count: 1, download_url: "/api/exports/default.csv" })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ agreement: 0.75 })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ block_count: 2 })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ text: "うえ", field: "target" })))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ state: "running", jobs_handled: 1 })));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ state: "running", jobs_handled: 1 })))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: "run-1", engine: "paddleocr" }])))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "run-1", status: "succeeded" })));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(processPage("page-1")).resolves.toEqual({ page_type: "uploaded" });
@@ -182,11 +184,12 @@ describe("API helpers", () => {
       card_count: 1,
       download_url: "/api/exports/export.csv"
     });
-    await expect(exportTsv(["page-1"])).resolves.toEqual({ card_count: 1, download_url: "/api/exports/default.csv" });
     await expect(compareOcr("page-1", "google vision")).resolves.toEqual({ agreement: 0.75 });
     await expect(parseDocument("page-1")).resolves.toEqual({ block_count: 2 });
     await expect(previewFieldOcr("card-1", "target", [1, 2, 3, 4])).resolves.toEqual({ text: "うえ", field: "target" });
     await expect(getOcrRuntime()).resolves.toEqual({ state: "running", jobs_handled: 1 });
+    await expect(listOcrRuns("page-1")).resolves.toEqual([{ id: "run-1", engine: "paddleocr" }]);
+    await expect(activateOcrRun("page-1", "run-1")).resolves.toEqual({ id: "run-1", status: "succeeded" });
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "http://127.0.0.1:8000/api/pages/page-1/process",
@@ -197,11 +200,12 @@ describe("API helpers", () => {
       "http://127.0.0.1:8000/api/cards/card-1/approve",
       "http://127.0.0.1:8000/api/cards/card-1",
       "http://127.0.0.1:8000/api/exports/csv",
-      "http://127.0.0.1:8000/api/exports/csv",
       "http://127.0.0.1:8000/api/pages/page-1/ocr/compare?provider=google%20vision",
       "http://127.0.0.1:8000/api/pages/page-1/document/parse",
       "http://127.0.0.1:8000/api/cards/card-1/field-ocr/preview",
-      "http://127.0.0.1:8000/api/ocr/runtime"
+      "http://127.0.0.1:8000/api/ocr/runtime",
+      "http://127.0.0.1:8000/api/pages/page-1/ocr/runs",
+      "http://127.0.0.1:8000/api/pages/page-1/ocr/runs/run-1/activate"
     ]);
     expect(fetchMock.mock.calls[3]?.[1]).toMatchObject({ method: "DELETE" });
     expect(JSON.parse(String(fetchMock.mock.calls[6]?.[1]?.body))).toMatchObject({
@@ -209,7 +213,7 @@ describe("API helpers", () => {
       source_bbox: [0, 0, 10, 10],
       warnings: []
     });
-    expect(JSON.parse(String(fetchMock.mock.calls[11]?.[1]?.body))).toEqual({ field: "target", bbox: [1, 2, 3, 4] });
+    expect(JSON.parse(String(fetchMock.mock.calls[10]?.[1]?.body))).toEqual({ field: "target", bbox: [1, 2, 3, 4] });
   });
 
   it("retries page processing while the OCR runtime is busy", async () => {

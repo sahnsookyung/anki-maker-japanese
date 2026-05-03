@@ -84,9 +84,26 @@ cd backend
 uv run python scripts/evaluate_golden.py --engine paddleocr --json
 uv run python scripts/evaluate_golden.py --engine paddleocr_vl --json
 uv run python scripts/evaluate_golden.py --from-db --json
+uv run python scripts/evaluate_golden.py --from-db --run-id run_... --json
+uv run python scripts/benchmark_ocr_modes.py --include-vl --include-google-vision --json
 ```
 
-Use `--from-db` after processing pages from the browser to verify that UI-generated candidates score the same way as CLI-generated candidates. Because `--from-db` evaluates whatever is currently persisted, it labels results as `persisted_paddleocr`, `persisted_paddleocr_vl`, or `persisted_unknown` instead of pretending a fresh engine run happened.
+Fresh evaluation now uses the same isolated per-page worker path for every engine, so PaddleOCR and OCR-VL are scored under the same subprocess/DB/processed-image isolation rules. Use `--from-db` after processing pages from the browser to verify that UI-generated candidates score the same way as CLI-generated candidates. Because `--from-db` evaluates whatever OCR run is currently active for a page, it labels results as `persisted_paddleocr`, `persisted_paddleocr_vl`, or `persisted_unknown` instead of pretending a fresh engine run happened. Use `--run-id` when you need to score a specific persisted run.
+
+## Google Vision Guardrails
+
+Google Vision comparison is available only as an explicit diagnostic. It does not create, approve, or export cards. Cloud calls are disabled by default:
+
+```env
+GOOGLE_VISION_ALLOW_CLOUD=false
+GOOGLE_VISION_CACHE_ENABLED=true
+GOOGLE_VISION_MONTHLY_CAP=1000
+GOOGLE_VISION_API_ENDPOINT=
+```
+
+Set `GOOGLE_VISION_ALLOW_CLOUD=true` only when you have configured `GOOGLE_APPLICATION_CREDENTIALS` and intentionally want to spend a free-tier request. Leave `GOOGLE_VISION_API_ENDPOINT` empty for Google's default endpoint, or set it to a regional endpoint such as `us-vision.googleapis.com` / `eu-vision.googleapis.com` when data-location controls matter. Results are cached by processed-image hash under `backend/ocr_cache/google_vision`, and uncached successful requests are recorded in `backend/usage/google_vision_usage.json` so the app can enforce the local monthly cap.
+
+`benchmark_ocr_modes.py --include-google-vision` reports Google Vision text coverage and resource timing alongside PaddleOCR/PaddleOCR-VL. It remains diagnostic-only: it does not generate Anki candidates, and with the default guardrail settings it returns a configuration warning instead of making an uncached cloud call.
 
 For memory debugging in the app server, temporarily set:
 

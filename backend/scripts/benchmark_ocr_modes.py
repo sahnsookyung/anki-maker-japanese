@@ -25,6 +25,7 @@ from app.evaluation.mcq_eval import McqEvalResult, evaluate_mcq_page
 from app.evaluation.vocab_eval import VocabEvalResult, evaluate_vocab_page
 from app.extraction import pipeline
 from app.ocr.engines import PADDLEOCR_ENGINE, PADDLEOCR_VL_ENGINE, normalize_ocr_engine
+from app.ocr.service import recognize_with_provider
 from app.models.schemas import Page, ProcessResult
 from app.vision.paddle_ocr_vl import get_paddle_ocr_vl_parser
 
@@ -57,6 +58,7 @@ class PageBenchmark:
     memory_samples: list[dict[str, Any]]
     resource_metrics: dict[str, Any]
     errors: list[str]
+    google_vision: dict[str, Any] | None = None
 
 
 def main() -> int:
@@ -64,6 +66,11 @@ def main() -> int:
     parser.add_argument("--golden", default="../data/evaluation/golden_pages.example.json")
     parser.add_argument("--engine", default=PADDLEOCR_ENGINE, help="Primary extraction engine: paddleocr, paddleocr_vl, or all.")
     parser.add_argument("--include-vl", action="store_true", help="Run PaddleOCR-VL extraction sequentially after base OCR.")
+    parser.add_argument(
+        "--include-google-vision",
+        action="store_true",
+        help="Run Google Vision OCR text coverage after local processing. Uncached calls require GOOGLE_VISION_ALLOW_CLOUD=true.",
+    )
     parser.add_argument("--vl-limit", type=int, default=1, help="Maximum pages to send through PaddleOCR-VL in one run.")
     parser.add_argument("--work-dir", default="", help="Optional benchmark runtime directory. Defaults to a temp dir.")
     parser.add_argument("--keep-work-dir", action="store_true", help="Keep benchmark DB and processed images for debugging.")
@@ -110,12 +117,18 @@ def main() -> int:
                 vl_eval = _run_engine_evaluation(golden, memory_samples, PADDLEOCR_VL_ENGINE)
                 memory_samples.append(_memory_sample("after_vl"))
                 vl_pages_run += 1
+            google_eval = (
+                _run_google_vision_evaluation(golden, process_result, memory_samples)
+                if getattr(args, "include_google_vision", False)
+                else None
+            )
             results.append(
                 PageBenchmark(
                     page_id=golden.page_id,
                     image_path=str(golden.image_path),
                     base=base_payload,
                     vl=vl_eval,
+                    google_vision=google_eval,
                     memory_samples=memory_samples,
                     resource_metrics=_resource_metrics(run_start, _resource_snapshot(), memory_samples),
                     errors=[],
@@ -153,6 +166,8 @@ def _run_pages_in_subprocesses(args: argparse.Namespace, golden_path: Path, page
                 "--engine",
                 primary_engine,
             ]
+            if getattr(args, "include_google_vision", False):
+                cmd.append("--include-google-vision")
             completed = _run_worker_command(cmd, args)
             if completed.returncode != 0 or not output_json.exists():
                 results.append(_failed_page_result(golden, completed))
@@ -212,6 +227,7 @@ def _with_vl_worker_result(
             image_path=base_result.image_path,
             base=base_result.base,
             vl=vl_payload,
+            google_vision=base_result.google_vision,
             memory_samples=base_result.memory_samples,
             resource_metrics=base_result.resource_metrics,
             errors=base_result.errors,
@@ -228,6 +244,7 @@ def _with_vl_worker_result(
         image_path=base_result.image_path,
         base=base_result.base,
         vl=vl_payload,
+        google_vision=base_result.google_vision,
         memory_samples=base_result.memory_samples,
         resource_metrics=base_result.resource_metrics,
         errors=base_result.errors,
@@ -320,11 +337,17 @@ def _run_worker_page(args: argparse.Namespace, pages: list[GoldenPage]) -> PageB
             memory_samples.append(_memory_sample("before_vl"))
             vl_eval = _run_engine_evaluation(selected, memory_samples, PADDLEOCR_VL_ENGINE)
             memory_samples.append(_memory_sample("after_vl"))
+        google_eval = (
+            _run_google_vision_evaluation(selected, process_result, memory_samples)
+            if getattr(args, "include_google_vision", False)
+            else None
+        )
         return PageBenchmark(
             page_id=selected.page_id,
             image_path=str(selected.image_path),
             base=base_payload,
             vl=vl_eval,
+            google_vision=google_eval,
             memory_samples=memory_samples,
             resource_metrics=_resource_metrics(run_start, _resource_snapshot(), memory_samples),
             errors=[],
@@ -379,6 +402,8 @@ def _run_base_pipeline(golden: GoldenPage, memory_samples: list[dict[str, Any]],
     page = Page(
         id=new_id("bench"),
         original_image_path=str(golden.image_path),
+        upload_name=golden.image_path.name,
+        display_name=golden.image_path.stem,
         processed_image_path=None,
         page_type="uploaded",
         page_type_confidence=0.0,
@@ -415,6 +440,30 @@ def _run_engine_evaluation(golden: GoldenPage, memory_samples: list[dict[str, An
             "warnings": [str(exc)],
             "ocr_text_coverage": None,
         }
+
+
+def _run_google_vision_evaluation(
+    golden: GoldenPage,
+    process_result: ProcessResult,
+    memory_samples: list[dict[str, Any]],
+) -> dict[str, Any]:
+    run_start = _resource_snapshot()
+    local_samples = [_memory_sample("before_google_vision")]
+    memory_samples.extend(local_samples)
+    image_path = Path(process_result.page.processed_image_path or golden.image_path)
+    tokens, warnings = recognize_with_provider(image_path, process_result.page.id, "google_vision")
+    google_result = ProcessResult(page=process_result.page, tokens=tokens, cards=[], script_summary={}, answer_map={})
+    coverage = _token_text_coverage(golden, google_result, "google_vision")
+    local_samples.append(_memory_sample("after_google_vision"))
+    memory_samples.append(local_samples[-1])
+    return {
+        "mode": "google_vision_ocr_text",
+        "token_count": len(tokens),
+        "ocr_text_coverage": _coverage_dict(coverage),
+        "warnings": warnings,
+        "resource_metrics": _resource_metrics(run_start, _resource_snapshot(), local_samples),
+        "memory_samples": local_samples,
+    }
 
 
 def _token_text_coverage(golden: GoldenPage, process_result: ProcessResult, engine: str) -> TextCoverageResult:
@@ -646,6 +695,7 @@ def _failed_page_result(golden: GoldenPage, completed: subprocess.CompletedProce
             "missing_ids": [],
         },
         vl=None,
+        google_vision=None,
         memory_samples=[],
         resource_metrics={
             "wall_seconds": 0.0,
@@ -692,6 +742,16 @@ def _format_page(result: PageBenchmark) -> str:
         )
         if result.vl.get("warnings"):
             lines.append(f"  vl warnings: {'; '.join(result.vl['warnings'])}")
+    if result.google_vision:
+        coverage = result.google_vision.get("ocr_text_coverage") or {}
+        lines.append(
+            "  google_vision_ocr_text: "
+            f"fields={coverage.get('fields_matched', 0)}/{coverage.get('fields_expected', 0)} "
+            f"accuracy={coverage.get('field_accuracy', 0):.1%} "
+            f"tokens={result.google_vision.get('token_count', 0)}"
+        )
+        if result.google_vision.get("warnings"):
+            lines.append(f"  google warnings: {'; '.join(result.google_vision['warnings'])}")
     if result.errors:
         lines.append(f"  errors: {'; '.join(result.errors)}")
     return "\n".join(lines)
