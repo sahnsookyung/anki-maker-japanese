@@ -187,6 +187,8 @@ Ignored disposable runtime state:
 
 The benchmark fixtures are the regression set. Runtime files are recreated by upload, process, benchmark, and export commands and can be safely deleted when resetting local state.
 
+OCR review persistence treats SQLite as the source of truth for pages, OCR tokens, and card candidates. Processed images are a derived cache for display alignment: on `/api/pages/{page_id}/ocr`, the backend can lazily regenerate a missing processed image from the original upload and hydrate missing image dimensions so old OCR evidence can render after a server restart without rerunning OCR. If regenerated image geometry no longer matches the stored OCR geometry, the backend hides stale evidence boxes and asks for reprocessing rather than showing misleading overlays.
+
 ## Important Modules
 
 ```text

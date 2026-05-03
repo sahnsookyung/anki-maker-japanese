@@ -17,6 +17,7 @@ from app.core.config import (
     PROCESSED_DIR,
     UPLOAD_DIR,
 )
+from app.core.images import preprocess_image
 from app.core.ids import new_id
 from app.db import database
 from app.export.anki_csv import write_csv
@@ -181,9 +182,11 @@ def page_ocr(page_id: str):
     page = database.get_page(page_id)
     if not page:
         raise HTTPException(status_code=404, detail=PAGE_NOT_FOUND)
+    tokens = database.get_tokens(page_id)
+    page, tokens = _ensure_review_artifacts(page, tokens, database.get_cards(page_id))
     return {
         "page": page,
-        "tokens": database.get_tokens(page_id),
+        "tokens": tokens,
     }
 
 
@@ -365,6 +368,86 @@ def _delete_page_crops(page_id: str) -> None:
                 crop_path.unlink()
         except OSError:
             continue
+
+
+def _ensure_review_artifacts(page: Page, tokens: list, cards: list) -> tuple[Page, list]:
+    has_persisted_evidence = bool(tokens) or any(card.source_bbox for card in cards)
+    processed_path = Path(page.processed_image_path) if page.processed_image_path else None
+    original_path = Path(page.original_image_path)
+    if processed_path and not processed_path.exists() and original_path.exists():
+        regenerated, evidence_safe = _regenerate_processed_image(page, original_path, has_persisted_evidence)
+        if regenerated:
+            return regenerated, tokens if evidence_safe else []
+
+    if has_persisted_evidence and _has_stale_evidence_warning(page):
+        return page, []
+
+    image_path = Path(page.processed_image_path or page.original_image_path)
+    if (not page.image_width or not page.image_height) and image_path.exists():
+        try:
+            width, height = _read_image_size(image_path)
+        except OSError:
+            return page, tokens
+        updated = page.model_copy(update={"image_width": width, "image_height": height})
+        database.upsert_page(updated)
+        return updated, tokens
+    return page, tokens
+
+
+def _regenerate_processed_image(page: Page, original_path: Path, has_persisted_evidence: bool) -> tuple[Page | None, bool]:
+    target = PROCESSED_DIR / f"{page.id}.png"
+    try:
+        preprocess = preprocess_image(original_path, target)
+    except OSError:
+        return None, False
+    evidence_safe = _regenerated_geometry_matches(page, preprocess.width, preprocess.height, has_persisted_evidence)
+    warnings = _merge_warnings(
+        page.warnings,
+        [
+            *preprocess.warnings,
+            "Regenerated processed image cache from the original upload.",
+            *([] if evidence_safe else ["Existing OCR evidence needs reprocessing before boxes can be shown safely."]),
+        ],
+    )
+    updated = page.model_copy(
+        update={
+            "processed_image_path": str(target),
+            "image_width": preprocess.width if evidence_safe else None,
+            "image_height": preprocess.height if evidence_safe else None,
+            "warnings": warnings,
+        }
+    )
+    database.upsert_page(updated)
+    return updated, evidence_safe
+
+
+def _regenerated_geometry_matches(
+    page: Page,
+    width: int | None,
+    height: int | None,
+    has_persisted_evidence: bool,
+) -> bool:
+    if not has_persisted_evidence:
+        return True
+    return bool(page.image_width and page.image_height and page.image_width == width and page.image_height == height)
+
+
+def _read_image_size(image_path: Path) -> tuple[int, int]:
+    with Image.open(image_path) as image:
+        image = ImageOps.exif_transpose(image)
+        return image.size
+
+
+def _merge_warnings(existing: list[str], additions: list[str]) -> list[str]:
+    merged = list(existing)
+    for warning in additions:
+        if warning and warning not in merged:
+            merged.append(warning)
+    return merged
+
+
+def _has_stale_evidence_warning(page: Page) -> bool:
+    return "Existing OCR evidence needs reprocessing before boxes can be shown safely." in page.warnings
 
 
 def _page_cleanup_key(page: Page) -> str | None:

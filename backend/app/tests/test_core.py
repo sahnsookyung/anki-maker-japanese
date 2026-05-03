@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -604,7 +606,7 @@ def test_process_page_accepts_explicit_ocr_engine(tmp_path, monkeypatch) -> None
         created_at="2026-04-28T00:00:00+00:00",
     )
     database.upsert_page(page)
-    captured: dict[str, str | float] = {}
+    captured: dict[str, object] = {}
 
     def fake_process_page(page_arg: Page, engine: str = "paddleocr") -> ProcessResult:
         captured["page_id"] = page_arg.id
@@ -617,8 +619,14 @@ def test_process_page_accepts_explicit_ocr_engine(tmp_path, monkeypatch) -> None
         captured["max_rss_mb"] = kwargs["max_rss_mb"]
         return ProcessResult(page=page, tokens=[], cards=[], script_summary={}, answer_map={})
 
+    @contextmanager
+    def fake_runtime_job(blocking: bool = False):
+        captured["runtime_blocking"] = blocking
+        yield True
+
     monkeypatch.setattr(routes, "process_page", fake_process_page)
     monkeypatch.setattr(routes, "run_page_process_worker", fake_worker)
+    monkeypatch.setattr(routes, "ocr_runtime_job", fake_runtime_job)
     client = TestClient(app)
 
     response = client.post("/api/pages/page-engine/process?engine=paddleocr_vl")
@@ -628,6 +636,7 @@ def test_process_page_accepts_explicit_ocr_engine(tmp_path, monkeypatch) -> None
         "page_id": "page-engine",
         "engine": "paddleocr_vl",
         "max_rss_mb": routes.OCR_VL_PAGE_WORKER_MAX_RSS_MB,
+        "runtime_blocking": False,
     }
 
 
@@ -675,6 +684,161 @@ def test_document_parse_route_uses_bounded_worker(tmp_path, monkeypatch) -> None
         "max_rss_mb": routes.OCR_VL_PAGE_WORKER_MAX_RSS_MB,
     }
     assert response.json()["block_count"] == 1
+
+
+def test_page_ocr_regenerates_missing_processed_cache_and_keeps_tokens(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "ocr-cache.db")
+    processed_dir = tmp_path / "processed"
+    processed_dir.mkdir()
+    monkeypatch.setattr(routes, "PROCESSED_DIR", processed_dir)
+    database.init_db()
+    original_path = tmp_path / "uploads" / "page.jpg"
+    original_path.parent.mkdir()
+    original_path.write_bytes(b"original")
+    missing_processed = processed_dir / "missing.png"
+    database.upsert_page(
+        Page(
+            id="page-cache",
+            original_image_path=str(original_path),
+            display_name="Cached page",
+            processed_image_path=str(missing_processed),
+            page_type="reading_mcq",
+            page_type_confidence=0.9,
+            image_width=320,
+            image_height=240,
+            warnings=[],
+            created_at="2026-05-03T00:00:00+00:00",
+        )
+    )
+    database.replace_tokens(
+        "page-cache",
+        [
+            OcrToken(
+                id="cached-token",
+                page_id="page-cache",
+                text="学校",
+                bbox=[10, 20, 80, 40],
+                confidence=0.95,
+                script_class="kanji",
+                source="paddleocr",
+            )
+        ],
+    )
+
+    def fake_preprocess(original, output):
+        output.write_bytes(b"processed")
+        return SimpleNamespace(width=320, height=240, warnings=["preprocess warning"])
+
+    monkeypatch.setattr(routes, "preprocess_image", fake_preprocess)
+    client = TestClient(app)
+
+    response = client.get("/api/pages/page-cache/ocr")
+
+    assert response.status_code == 200
+    payload = response.json()
+    expected_processed = processed_dir / "page-cache.png"
+    assert payload["page"]["processed_image_path"] == str(expected_processed)
+    assert payload["page"]["image_width"] == 320
+    assert payload["page"]["image_height"] == 240
+    assert payload["page"]["warnings"] == ["preprocess warning", "Regenerated processed image cache from the original upload."]
+    assert payload["tokens"][0]["id"] == "cached-token"
+    assert expected_processed.read_bytes() == b"processed"
+    assert database.get_tokens("page-cache")[0].id == "cached-token"
+
+
+def test_page_ocr_hides_stale_evidence_when_regenerated_geometry_differs(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "ocr-cache-mismatch.db")
+    processed_dir = tmp_path / "processed"
+    processed_dir.mkdir()
+    monkeypatch.setattr(routes, "PROCESSED_DIR", processed_dir)
+    database.init_db()
+    original_path = tmp_path / "uploads" / "page.jpg"
+    original_path.parent.mkdir()
+    original_path.write_bytes(b"original")
+    database.upsert_page(
+        Page(
+            id="page-cache-mismatch",
+            original_image_path=str(original_path),
+            display_name="Cached page mismatch",
+            processed_image_path=str(processed_dir / "missing.png"),
+            page_type="reading_mcq",
+            page_type_confidence=0.9,
+            image_width=320,
+            image_height=240,
+            warnings=[],
+            created_at="2026-05-03T00:00:00+00:00",
+        )
+    )
+    database.replace_tokens(
+        "page-cache-mismatch",
+        [
+            OcrToken(
+                id="cached-token",
+                page_id="page-cache-mismatch",
+                text="学校",
+                bbox=[10, 20, 80, 40],
+                confidence=0.95,
+                script_class="kanji",
+                source="paddleocr",
+            )
+        ],
+    )
+
+    def fake_preprocess(original, output):
+        output.write_bytes(b"processed")
+        return SimpleNamespace(width=640, height=480, warnings=[])
+
+    monkeypatch.setattr(routes, "preprocess_image", fake_preprocess)
+    client = TestClient(app)
+
+    response = client.get("/api/pages/page-cache-mismatch/ocr")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tokens"] == []
+    assert payload["page"]["image_width"] is None
+    assert payload["page"]["image_height"] is None
+    assert "Existing OCR evidence needs reprocessing before boxes can be shown safely." in payload["page"]["warnings"]
+    assert database.get_tokens("page-cache-mismatch")[0].id == "cached-token"
+
+    second_response = client.get("/api/pages/page-cache-mismatch/ocr")
+
+    assert second_response.status_code == 200
+    second_payload = second_response.json()
+    assert second_payload["tokens"] == []
+    assert second_payload["page"]["image_width"] is None
+    assert second_payload["page"]["image_height"] is None
+
+
+def test_page_ocr_hydrates_missing_image_dimensions_from_existing_processed_image(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "ocr-dimensions.db")
+    database.init_db()
+    processed_path = tmp_path / "processed.png"
+    from PIL import Image
+
+    Image.new("RGB", (123, 456), "white").save(processed_path)
+    database.upsert_page(
+        Page(
+            id="page-dimensions",
+            original_image_path=str(tmp_path / "page.jpg"),
+            display_name="Dimension page",
+            processed_image_path=str(processed_path),
+            page_type="vocab_table",
+            page_type_confidence=0.9,
+            warnings=[],
+            created_at="2026-05-03T00:00:00+00:00",
+        )
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/pages/page-dimensions/ocr")
+
+    assert response.status_code == 200
+    assert response.json()["page"]["image_width"] == 123
+    assert response.json()["page"]["image_height"] == 456
+    persisted = database.get_page("page-dimensions")
+    assert persisted.image_width == 123
+    assert persisted.image_height == 456
 
 
 def test_dedupe_pages_keeps_newest_upload_and_removes_artifacts(tmp_path, monkeypatch) -> None:

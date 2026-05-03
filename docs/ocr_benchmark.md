@@ -46,6 +46,7 @@ The benchmark therefore measures:
 - PaddleOCR-VL extraction accuracy against the same golden rows/questions when the model can run within local resource limits.
 - MCQ semantic accuracy for generated Anki cards.
 - MCQ source-field accuracy for sentence, target, all four choices, answer, and answer number.
+- Normalized OCR-token text coverage, which checks whether OCR text contains expected transcript fields before answer-strip or glossary heuristics can rescue the card.
 - Wall time, user/system CPU time, CPU percent relative to one core, peak RSS, RSS samples, and worker failures.
 - NPU/GPU fields are included in the JSON output; they are marked unavailable unless a local collector is configured.
 
@@ -85,7 +86,7 @@ uv run python scripts/evaluate_golden.py --engine paddleocr_vl --json
 uv run python scripts/evaluate_golden.py --from-db --json
 ```
 
-Use `--from-db` after processing pages from the browser to verify that UI-generated candidates score the same way as CLI-generated candidates.
+Use `--from-db` after processing pages from the browser to verify that UI-generated candidates score the same way as CLI-generated candidates. Because `--from-db` evaluates whatever is currently persisted, it labels results as `persisted_paddleocr`, `persisted_paddleocr_vl`, or `persisted_unknown` instead of pretending a fresh engine run happened.
 
 For memory debugging in the app server, temporarily set:
 
@@ -97,11 +98,12 @@ Leave caching enabled during normal UI use; disabling it trades memory observabi
 
 ## Latest Local Benchmark Notes
 
-On April 28, 2026, guarded subprocess-isolated local runs showed:
+On May 3, 2026, guarded subprocess-isolated local runs showed:
 
 - The measured default, Japanese PP-OCRv3 mobile + Korean PP-OCRv5, reached 100% vocab row accuracy and 100% MCQ semantic accuracy on all four golden pages.
-- MCQ source-field accuracy is stricter than card accuracy and currently exposes remaining OCR/layout roughness on the MCQ pages.
+- MCQ source-field accuracy is stricter than card accuracy and currently exposes remaining OCR/layout roughness on the MCQ pages; the two MCQ pages scored 84% source-field accuracy.
+- Normalized OCR-token text coverage for PaddleOCR was 278/320 expected fields (86.9%), which is the clearest signal that 100% card accuracy is not raw OCR accuracy.
 - Base PaddleOCR page workers peaked around 2.8 GB RSS per page on the current machine.
-- PaddleOCR-VL model loading exceeded a cautious 4096 MB worker cap during the local one-page comparison, later loaded successfully far enough to trip the old 6144 MB app cap at roughly 8171 MB RSS, and a bounded one-page document parse sampled around 11.8 GB RSS. The app now uses a separate `OCR_VL_PAGE_WORKER_MAX_RSS_MB` default of 14336 MB so VL can run with a bounded but realistic guardrail.
+- PaddleOCR-VL generated no cards on the four golden pages through the current shared extraction path, with 24/320 normalized token-text fields matched (7.5%). It peaked around 12.1 GB RSS per page under the 14336 MB guardrail.
 
 Interpret those notes as a local hardware/resource snapshot, not a universal model limit. If you raise `--worker-max-rss-mb`, run one page at a time and keep the JSON metrics so the result is comparable.

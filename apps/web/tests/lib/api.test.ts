@@ -212,6 +212,23 @@ describe("API helpers", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[11]?.[1]?.body))).toEqual({ field: "target", bbox: [1, 2, 3, 4] });
   });
 
+  it("retries page processing while the OCR runtime is busy", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("Another OCR job is already running.", { status: 409 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ page_type: "reading_mcq" })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(processPage("page-queued", "paddleocr", { busyRetryAttempts: 1, busyRetryDelayMs: 0 })).resolves.toEqual({
+      page_type: "reading_mcq"
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "http://127.0.0.1:8000/api/pages/page-queued/process",
+      "http://127.0.0.1:8000/api/pages/page-queued/process"
+    ]);
+  });
+
   it("builds image URLs only for known backend image directories", () => {
     expect(imageUrl("/tmp/backend/processed/page.png")).toBe("http://127.0.0.1:8000/files/processed/page.png");
     expect(imageUrl("/tmp/backend/uploads/page.jpg")).toBe("http://127.0.0.1:8000/files/uploads/page.jpg");

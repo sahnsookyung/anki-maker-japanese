@@ -132,6 +132,16 @@ export function apiErrorMessage(error: unknown, fallback = "Request failed."): s
   return error instanceof Error ? error.message : fallback;
 }
 
+class BackendRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number
+  ) {
+    super(message);
+    this.name = "BackendRequestError";
+  }
+}
+
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
@@ -141,7 +151,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
-    throw new Error(detail || `Backend request failed with HTTP ${response.status}.`);
+    throw new BackendRequestError(detail || `Backend request failed with HTTP ${response.status}.`, response.status);
   }
   return response.json() as Promise<T>;
 }
@@ -175,9 +185,38 @@ export async function uploadImages(files: File[]): Promise<BatchUploadResult> {
   return { uploaded, failed };
 }
 
-export async function processPage(pageId: string, engine: OcrEngine = "paddleocr"): Promise<ProcessResult> {
+export type ProcessPageOptions = {
+  busyRetryAttempts?: number;
+  busyRetryDelayMs?: number;
+};
+
+export async function processPage(
+  pageId: string,
+  engine: OcrEngine = "paddleocr",
+  options: ProcessPageOptions = {}
+): Promise<ProcessResult> {
   const engineQuery = engine === "paddleocr" ? "" : `?engine=${encodeURIComponent(engine)}`;
-  return requestJson<ProcessResult>(`/api/pages/${pageId}/process${engineQuery}`, { method: "POST" });
+  const retryAttempts = options.busyRetryAttempts ?? 240;
+  const retryDelayMs = options.busyRetryDelayMs ?? 1000;
+  for (let attempt = 0; attempt <= retryAttempts; attempt += 1) {
+    try {
+      return await requestJson<ProcessResult>(`/api/pages/${pageId}/process${engineQuery}`, { method: "POST" });
+    } catch (error) {
+      if (!isOcrBusyError(error) || attempt === retryAttempts) throw error;
+      await sleep(retryDelayMs);
+    }
+  }
+  throw new Error("Processing page failed.");
+}
+
+function isOcrBusyError(error: unknown): boolean {
+  return error instanceof BackendRequestError && error.status === 409;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    globalThis.setTimeout(resolve, ms);
+  });
 }
 
 export async function updatePage(pageId: string, displayName: string): Promise<Page> {

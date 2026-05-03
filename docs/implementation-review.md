@@ -44,3 +44,8 @@ This is a living checklist for `japanese_study_image_to_anki_plan.md`.
 ## Added Beyond Checked-In Plan
 
 - Optional Google Cloud Vision OCR provider and `/api/pages/{page_id}/ocr/compare` endpoint. The checked-in plan did not mention Google Cloud Vision, but the app now supports using it as a comparator or explicit OCR provider.
+
+## Reliability Tasks
+
+- Page-level OCR re-runs should retry behind the active OCR job from the UI instead of surfacing a 409 conflict, while still preserving single-flight OCR execution for memory safety.
+- Restarted servers should reload persisted OCR tokens and cards from SQLite, and should lazily regenerate missing processed-image cache files from the original upload so existing evidence boxes can render without rerunning OCR.

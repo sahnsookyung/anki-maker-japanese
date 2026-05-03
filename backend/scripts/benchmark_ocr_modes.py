@@ -101,6 +101,8 @@ def main() -> int:
             memory_samples = [_memory_sample("worker_start")]
             process_result = _run_base_pipeline(golden, memory_samples, primary_engine)
             base_eval = _evaluate_base(golden, process_result)
+            base_payload = _result_dict(base_eval, primary_engine)
+            base_payload["ocr_text_coverage"] = _coverage_dict(_token_text_coverage(golden, process_result, primary_engine))
             memory_samples.append(_memory_sample("base_evaluated"))
             vl_eval: dict[str, Any] | None = None
             if _should_run_vl(args) and vl_pages_run < args.vl_limit and primary_engine != PADDLEOCR_VL_ENGINE:
@@ -112,7 +114,7 @@ def main() -> int:
                 PageBenchmark(
                     page_id=golden.page_id,
                     image_path=str(golden.image_path),
-                    base=_result_dict(base_eval, primary_engine),
+                    base=base_payload,
                     vl=vl_eval,
                     memory_samples=memory_samples,
                     resource_metrics=_resource_metrics(run_start, _resource_snapshot(), memory_samples),
@@ -310,6 +312,8 @@ def _run_worker_page(args: argparse.Namespace, pages: list[GoldenPage]) -> PageB
         primary_engine = _primary_engine(args)
         process_result = _run_base_pipeline(selected, memory_samples, primary_engine)
         base_eval = _evaluate_base(selected, process_result)
+        base_payload = _result_dict(base_eval, primary_engine)
+        base_payload["ocr_text_coverage"] = _coverage_dict(_token_text_coverage(selected, process_result, primary_engine))
         memory_samples.append(_memory_sample("base_evaluated"))
         vl_eval = None
         if _should_run_vl(args) and primary_engine != PADDLEOCR_VL_ENGINE:
@@ -319,7 +323,7 @@ def _run_worker_page(args: argparse.Namespace, pages: list[GoldenPage]) -> PageB
         return PageBenchmark(
             page_id=selected.page_id,
             image_path=str(selected.image_path),
-            base=_result_dict(base_eval, primary_engine),
+            base=base_payload,
             vl=vl_eval,
             memory_samples=memory_samples,
             resource_metrics=_resource_metrics(run_start, _resource_snapshot(), memory_samples),
@@ -396,7 +400,9 @@ def _evaluate_base(golden: GoldenPage, process_result: ProcessResult) -> VocabEv
 def _run_engine_evaluation(golden: GoldenPage, memory_samples: list[dict[str, Any]], engine: str) -> dict[str, Any]:
     try:
         result = _run_base_pipeline(golden, memory_samples, engine)
-        return _result_dict(_evaluate_base(golden, result), engine)
+        payload = _result_dict(_evaluate_base(golden, result), engine)
+        payload["ocr_text_coverage"] = _coverage_dict(_token_text_coverage(golden, result, engine))
+        return payload
     except Exception as exc:
         return {
             "mode": f"{engine}_extraction",
@@ -407,7 +413,14 @@ def _run_engine_evaluation(golden: GoldenPage, memory_samples: list[dict[str, An
             "generated_cards": 0,
             "missing_ids": [],
             "warnings": [str(exc)],
+            "ocr_text_coverage": None,
         }
+
+
+def _token_text_coverage(golden: GoldenPage, process_result: ProcessResult, engine: str) -> TextCoverageResult:
+    ordered_tokens = sorted(process_result.tokens, key=lambda token: (token.bbox[1], token.bbox[0], token.id))
+    text = "\n".join(token.text for token in ordered_tokens)
+    return _text_coverage(golden, text, [], mode=f"{engine}_normalized_token_text")
 
 
 def _run_vl_text_coverage(golden: GoldenPage, process_result: ProcessResult) -> TextCoverageResult:
@@ -430,7 +443,13 @@ def _run_vl_text_coverage(golden: GoldenPage, process_result: ProcessResult) -> 
     return _text_coverage(golden, text, warnings)
 
 
-def _text_coverage(golden: GoldenPage, text: str, warnings: list[str]) -> TextCoverageResult:
+def _text_coverage(
+    golden: GoldenPage,
+    text: str,
+    warnings: list[str],
+    *,
+    mode: str = "paddleocr_vl",
+) -> TextCoverageResult:
     fields_expected = 0
     fields_matched = 0
     items_expected = 0
@@ -458,7 +477,7 @@ def _text_coverage(golden: GoldenPage, text: str, warnings: list[str]) -> TextCo
         items_expected += 1
         items_fully_matched += int(all(checks))
     return TextCoverageResult(
-        mode="paddleocr_vl",
+        mode=mode,
         page_id=golden.page_id,
         fields_matched=fields_matched,
         fields_expected=fields_expected,

@@ -50,19 +50,28 @@ def main() -> int:
     if args.db_path:
         database.DB_PATH = Path(args.db_path).resolve()
     database.init_db()
-    engines = [PADDLEOCR_ENGINE, PADDLEOCR_VL_ENGINE] if args.engine == "all" else [normalize_ocr_engine(args.engine)]
     results: list[tuple[str, VocabEvalResult | McqEvalResult]] = []
-    for golden in pages:
-        if not golden.image_path.exists():
-            print(f"Missing image: {golden.image_path}", file=sys.stderr)
-            return 2
-        for engine in engines:
-            if args.from_db:
-                process_result = _process_result_from_db(golden)
-                if process_result is None:
-                    print(f"No persisted DB page matched {golden.image_path.name}.", file=sys.stderr)
-                    return 2
-            else:
+    if args.from_db:
+        for golden in pages:
+            if not golden.image_path.exists():
+                print(f"Missing image: {golden.image_path}", file=sys.stderr)
+                return 2
+            process_result = _process_result_from_db(golden)
+            if process_result is None:
+                print(f"No persisted DB page matched {golden.image_path.name}.", file=sys.stderr)
+                return 2
+            engine_label = _persisted_engine_label(process_result)
+            if golden.expected_rows:
+                results.append((engine_label, evaluate_vocab_page(golden, process_result)))
+            elif golden.expected_questions:
+                results.append((engine_label, evaluate_mcq_page(golden, process_result)))
+    else:
+        engines = [PADDLEOCR_ENGINE, PADDLEOCR_VL_ENGINE] if args.engine == "all" else [normalize_ocr_engine(args.engine)]
+        for golden in pages:
+            if not golden.image_path.exists():
+                print(f"Missing image: {golden.image_path}", file=sys.stderr)
+                return 2
+            for engine in engines:
                 page = Page(
                     id=new_id("eval"),
                     original_image_path=str(golden.image_path),
@@ -75,10 +84,10 @@ def main() -> int:
                 )
                 database.upsert_page(page)
                 process_result = process_page(page, engine=engine)
-            if golden.expected_rows:
-                results.append((engine, evaluate_vocab_page(golden, process_result)))
-            elif golden.expected_questions:
-                results.append((engine, evaluate_mcq_page(golden, process_result)))
+                if golden.expected_rows:
+                    results.append((engine, evaluate_vocab_page(golden, process_result)))
+                elif golden.expected_questions:
+                    results.append((engine, evaluate_mcq_page(golden, process_result)))
 
     if args.json:
         print(json.dumps([_result_dict(result, engine) for engine, result in results], ensure_ascii=False, indent=2))
@@ -111,6 +120,16 @@ def _process_result_from_db(golden) -> ProcessResult | None:
         script_summary={},
         answer_map={},
     )
+
+
+def _persisted_engine_label(process_result: ProcessResult) -> str:
+    sources = {token.source for token in process_result.tokens}
+    warnings = " ".join(process_result.page.warnings)
+    if PADDLEOCR_VL_ENGINE in sources or "PaddleOCR-VL" in warnings:
+        return f"persisted_{PADDLEOCR_VL_ENGINE}"
+    if PADDLEOCR_ENGINE in sources:
+        return f"persisted_{PADDLEOCR_ENGINE}"
+    return "persisted_unknown"
 
 
 def _result_dict(result: VocabEvalResult | McqEvalResult, engine: str) -> dict:
