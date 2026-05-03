@@ -44,7 +44,7 @@ class GoogleVisionOcrProvider:
                 "Google Vision cloud calls are disabled. Set GOOGLE_VISION_ALLOW_CLOUD=true to use the free-tier "
                 "comparison path, and configure GOOGLE_APPLICATION_CREDENTIALS for your service account."
             )
-        _assert_monthly_quota_available(image_sha)
+        _assert_monthly_quota_available()
         vision, client = self._client_and_vision()
         image = vision.Image(content=image_path.read_bytes())
         try:
@@ -167,7 +167,7 @@ def _read_ledger() -> dict:
         return {}
 
 
-def _assert_monthly_quota_available(image_sha: str) -> None:
+def _assert_monthly_quota_available() -> None:
     ledger = _read_ledger()
     month = _current_month()
     month_payload = ledger.get(month, {})
@@ -181,6 +181,7 @@ def _assert_monthly_quota_available(image_sha: str) -> None:
 
 def _record_usage(image_sha: str) -> None:
     path = _ledger_path()
+    _ensure_usage_file_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     ledger = _read_ledger()
     month = _current_month()
@@ -189,4 +190,11 @@ def _record_usage(image_sha: str) -> None:
     if image_sha not in set(month_payload.get("image_sha256", [])):
         month_payload.setdefault("image_sha256", []).append(image_sha)
     month_payload.setdefault("requests", []).append({"image_sha256": image_sha, "at": datetime.now(timezone.utc).isoformat()})
-    path.write_text(json.dumps(ledger, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(ledger, ensure_ascii=False, indent=2), encoding="utf-8")  # NOSONAR: path is validated above.
+
+
+def _ensure_usage_file_path(path: Path) -> None:
+    usage_root = USAGE_DIR.resolve()
+    resolved = path.resolve()
+    if resolved.name != "google_vision_usage.json" or resolved.parent != usage_root:
+        raise RuntimeError("Google Vision usage ledger path must stay under the configured usage directory.")

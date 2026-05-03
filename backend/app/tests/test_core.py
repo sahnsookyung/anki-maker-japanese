@@ -459,7 +459,7 @@ def test_ocr_runs_scope_tokens_cards_and_active_export_view(tmp_path, monkeypatc
     assert activated_page.image_width == 100
     assert activated_page.image_height == 200
     assert activated_page.page_type == "reading_mcq"
-    assert activated_page.page_type_confidence == 0.61
+    assert activated_page.page_type_confidence == pytest.approx(0.61)
     assert activated_page.warnings == ["first"]
 
 
@@ -532,7 +532,10 @@ def test_failed_rerun_does_not_replace_active_successful_run(tmp_path, monkeypat
     )
     monkeypatch.setattr(pipeline, "classify_page", lambda *args: ("unknown_review_required", 0.25, {}))
     monkeypatch.setattr(pipeline, "parse_answer_strip", lambda *args: {})
-    monkeypatch.setattr(pipeline.database, "replace_tokens", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("disk full")))
+    def fail_replace_tokens(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(pipeline.database, "replace_tokens", fail_replace_tokens)
 
     with pytest.raises(RuntimeError, match="disk full"):
         pipeline.process_page(page, engine="paddleocr")

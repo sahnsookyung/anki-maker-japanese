@@ -264,10 +264,11 @@ def test_page_worker_command_enforces_rss_limit(monkeypatch) -> None:
     assert "RSS limit" in completed.stderr
 
 
-def test_page_worker_command_passes_runtime_environment_overrides(monkeypatch) -> None:
+def test_page_worker_command_passes_runtime_environment_overrides(tmp_path, monkeypatch) -> None:
     process = FakeProcess()
     process.terminated = True
     captured: dict[str, object] = {}
+    db_path = str(tmp_path / "eval.db")
 
     def fake_popen(*args, **kwargs):
         captured["env"] = kwargs["env"]
@@ -280,12 +281,12 @@ def test_page_worker_command_passes_runtime_environment_overrides(monkeypatch) -
         ["python", "-m", "worker"],
         timeout_seconds=30,
         max_rss_mb=500,
-        env_overrides={"ANKI_MAKER_DB": "/tmp/eval.db"},
+        env_overrides={"ANKI_MAKER_DB": db_path},
     )
 
     assert completed.returncode == 0
     assert isinstance(captured["env"], dict)
-    assert captured["env"]["ANKI_MAKER_DB"] == "/tmp/eval.db"
+    assert captured["env"]["ANKI_MAKER_DB"] == db_path
 
 
 def test_page_worker_failure_detail_prefers_guardrail_message() -> None:

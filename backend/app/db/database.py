@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -22,6 +23,7 @@ _PAGE_WITH_ACTIVE_RUN_SQL = """
     LEFT JOIN ocr_runs AS active_run
         ON active_run.id = pages.active_ocr_run_id
 """
+_OCR_RUN_BY_ID_SQL = "SELECT * FROM ocr_runs WHERE id = ?"
 
 
 def utc_now() -> str:
@@ -269,7 +271,7 @@ def complete_ocr_run(
 ) -> OcrRun | None:
     completed_at = utc_now()
     with connect() as conn:
-        row = conn.execute("SELECT * FROM ocr_runs WHERE id = ?", (run_id,)).fetchone()
+        row = conn.execute(_OCR_RUN_BY_ID_SQL, (run_id,)).fetchone()
         if not row:
             return None
         started_at = row["started_at"]
@@ -299,7 +301,7 @@ def complete_ocr_run(
                 run_id,
             ),
         )
-        updated = conn.execute("SELECT * FROM ocr_runs WHERE id = ?", (run_id,)).fetchone()
+        updated = conn.execute(_OCR_RUN_BY_ID_SQL, (run_id,)).fetchone()
         if activate:
             conn.execute("UPDATE pages SET active_ocr_run_id = ? WHERE id = ?", (run_id, row["page_id"]))
     return _ocr_run_from_row(updated) if updated else None
@@ -308,7 +310,7 @@ def complete_ocr_run(
 def fail_ocr_run(run_id: str, error: str, *, warnings: list[str] | None = None) -> OcrRun | None:
     completed_at = utc_now()
     with connect() as conn:
-        row = conn.execute("SELECT * FROM ocr_runs WHERE id = ?", (run_id,)).fetchone()
+        row = conn.execute(_OCR_RUN_BY_ID_SQL, (run_id,)).fetchone()
         if not row:
             return None
         conn.execute(
@@ -329,13 +331,13 @@ def fail_ocr_run(run_id: str, error: str, *, warnings: list[str] | None = None) 
                 run_id,
             ),
         )
-        updated = conn.execute("SELECT * FROM ocr_runs WHERE id = ?", (run_id,)).fetchone()
+        updated = conn.execute(_OCR_RUN_BY_ID_SQL, (run_id,)).fetchone()
     return _ocr_run_from_row(updated) if updated else None
 
 
 def get_ocr_run(run_id: str) -> OcrRun | None:
     with connect() as conn:
-        row = conn.execute("SELECT * FROM ocr_runs WHERE id = ?", (run_id,)).fetchone()
+        row = conn.execute(_OCR_RUN_BY_ID_SQL, (run_id,)).fetchone()
     return _ocr_run_from_row(row) if row else None
 
 
@@ -521,6 +523,11 @@ def _card_sort_key(card: CardCandidate) -> tuple[Any, ...]:
     bbox = _sort_bbox(card)
     question_no = _numeric_sort_value(card.source.get("question_no"))
     source_order = _numeric_sort_value(card.source.get("order"))
+    position = question_no
+    if position is None:
+        position = source_order
+    if position is None:
+        position = 1_000_000
     source_rank = 0 if card.source_type == "question_item" else 1
     note_rank = {
         "jp_vocab_reading": 0,
@@ -530,7 +537,7 @@ def _card_sort_key(card: CardCandidate) -> tuple[Any, ...]:
     return (
         card.page_id,
         source_rank,
-        question_no if question_no is not None else source_order if source_order is not None else 1_000_000,
+        position,
         bbox[1],
         bbox[0],
         card.source_id,
@@ -557,7 +564,7 @@ def _numeric_sort_value(value: Any) -> float | None:
         parsed = float(value)
     except (TypeError, ValueError):
         return None
-    return parsed if parsed == parsed else None
+    return parsed if math.isfinite(parsed) else None
 
 
 def _insert_cards(conn: sqlite3.Connection, cards: list[CardCandidate]) -> None:

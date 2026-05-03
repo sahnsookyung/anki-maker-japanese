@@ -18,11 +18,10 @@ def test_google_vision_returns_cached_tokens_without_cloud_call(tmp_path, monkey
     image_sha = google_vision_provider._sha256_file(image_path)
     google_vision_provider._write_cached_tokens(image_sha, [make_token("old-page", "学校", [1, 2, 3, 4], 0.9, "google_vision")])
     provider = GoogleVisionOcrProvider()
-    monkeypatch.setattr(
-        provider,
-        "_client_and_vision",
-        lambda: (_ for _ in ()).throw(AssertionError("cached results must not initialize the Google client")),
-    )
+    def fail_client_initialization():
+        raise AssertionError("cached results must not initialize the Google client")
+
+    monkeypatch.setattr(provider, "_client_and_vision", fail_client_initialization)
 
     tokens = provider.recognize(image_path, "new-page")
 
@@ -50,10 +49,7 @@ def test_google_vision_monthly_ledger_blocks_over_cap(tmp_path, monkeypatch) -> 
     ledger_path.write_text(json.dumps({month: {"units": 1, "image_sha256": ["seen"], "requests": []}}), encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="monthly cap"):
-        google_vision_provider._assert_monthly_quota_available("new-image")
-
-    with pytest.raises(RuntimeError, match="monthly cap"):
-        google_vision_provider._assert_monthly_quota_available("seen")
+        google_vision_provider._assert_monthly_quota_available()
 
 
 def test_google_vision_cloud_call_records_usage_and_cache(tmp_path, monkeypatch) -> None:
@@ -65,11 +61,6 @@ def test_google_vision_cloud_call_records_usage_and_cache(tmp_path, monkeypatch)
     monkeypatch.setattr(google_vision_provider, "GOOGLE_VISION_ALLOW_CLOUD", True)
     monkeypatch.setattr(google_vision_provider, "GOOGLE_VISION_MONTHLY_CAP", 1000)
     calls: list[bytes] = []
-
-    class FakeVision:
-        @staticmethod
-        def Image(content):
-            return SimpleNamespace(content=content)
 
     class FakeClient:
         def document_text_detection(self, image):
@@ -104,7 +95,7 @@ def test_google_vision_cloud_call_records_usage_and_cache(tmp_path, monkeypatch)
             )
 
     provider = GoogleVisionOcrProvider()
-    monkeypatch.setattr(provider, "_client_and_vision", lambda: (FakeVision, FakeClient()))
+    monkeypatch.setattr(provider, "_client_and_vision", lambda: (_fake_vision_module(), FakeClient()))
 
     tokens = provider.recognize(image_path, "page")
     cached_tokens = provider.recognize(image_path, "page-2")
@@ -125,17 +116,12 @@ def test_google_vision_counts_each_uncached_successful_cloud_call(tmp_path, monk
     monkeypatch.setattr(google_vision_provider, "GOOGLE_VISION_ALLOW_CLOUD", True)
     monkeypatch.setattr(google_vision_provider, "GOOGLE_VISION_MONTHLY_CAP", 1000)
 
-    class FakeVision:
-        @staticmethod
-        def Image(content):
-            return SimpleNamespace(content=content)
-
     class FakeClient:
         def document_text_detection(self, image):
             return SimpleNamespace(error=SimpleNamespace(message=""), full_text_annotation=SimpleNamespace(pages=[]))
 
     provider = GoogleVisionOcrProvider()
-    monkeypatch.setattr(provider, "_client_and_vision", lambda: (FakeVision, FakeClient()))
+    monkeypatch.setattr(provider, "_client_and_vision", lambda: (_fake_vision_module(), FakeClient()))
 
     provider.recognize(image_path, "page")
     provider.recognize(image_path, "page")
@@ -153,11 +139,6 @@ def test_google_vision_disabled_api_error_is_actionable(tmp_path, monkeypatch) -
     monkeypatch.setattr(google_vision_provider, "GOOGLE_VISION_CACHE_ENABLED", False)
     monkeypatch.setattr(google_vision_provider, "GOOGLE_VISION_ALLOW_CLOUD", True)
 
-    class FakeVision:
-        @staticmethod
-        def Image(content):
-            return SimpleNamespace(content=content)
-
     class FakeClient:
         def document_text_detection(self, image):
             raise RuntimeError(
@@ -166,7 +147,7 @@ def test_google_vision_disabled_api_error_is_actionable(tmp_path, monkeypatch) -
             )
 
     provider = GoogleVisionOcrProvider()
-    monkeypatch.setattr(provider, "_client_and_vision", lambda: (FakeVision, FakeClient()))
+    monkeypatch.setattr(provider, "_client_and_vision", lambda: (_fake_vision_module(), FakeClient()))
 
     with pytest.raises(RuntimeError, match="Enable the Cloud Vision API"):
         provider.recognize(image_path, "page")
@@ -179,3 +160,10 @@ def test_google_vision_client_options_include_optional_endpoint(monkeypatch) -> 
 
     monkeypatch.setattr(google_vision_provider, "GOOGLE_VISION_API_ENDPOINT", "")
     assert google_vision_provider._client_options() == {}
+
+
+def _fake_vision_module() -> SimpleNamespace:
+    def image(content):
+        return SimpleNamespace(content=content)
+
+    return SimpleNamespace(Image=image)
