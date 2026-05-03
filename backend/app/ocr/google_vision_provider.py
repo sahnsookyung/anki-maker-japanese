@@ -190,7 +190,8 @@ def _record_usage(image_sha: str) -> None:
     if image_sha not in set(month_payload.get("image_sha256", [])):
         month_payload.setdefault("image_sha256", []).append(image_sha)
     month_payload.setdefault("requests", []).append({"image_sha256": image_sha, "at": datetime.now(timezone.utc).isoformat()})
-    path.write_text(json.dumps(ledger, ensure_ascii=False, indent=2), encoding="utf-8")  # NOSONAR: path is validated above.
+    # Ledger path is validated against the fixed usage directory before writing.
+    path.write_text(json.dumps(ledger, ensure_ascii=False, indent=2), encoding="utf-8")  # NOSONAR
 
 
 def _ensure_usage_file_path(path: Path) -> None:
