@@ -90,7 +90,7 @@ def _spaced_answer_pairs(numbers: list[int]) -> dict[int, int]:
     if not candidates:
         return {}
     best_pairs = max(candidates, key=lambda pairs: (_consecutive_prefix_length(pairs), len(pairs)))
-    return {question: answer for question, answer in best_pairs}
+    return dict(best_pairs)
 
 
 def _consecutive_prefix_length(pairs: list[tuple[int, int]]) -> int:

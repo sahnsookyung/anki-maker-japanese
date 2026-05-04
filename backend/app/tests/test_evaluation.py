@@ -106,7 +106,7 @@ def test_vocab_evaluation_requires_ocr_supported_fields_for_accuracy(tmp_path) -
     assert result.extracted_items == 1
     assert result.ocr_supported_items == 0
     assert result.glossary_supported_items == 1
-    assert result.row_accuracy == 0.0
+    assert result.row_accuracy == pytest.approx(0.0)
     assert result.missing_row_ids == ["row-1"]
 
 
@@ -156,7 +156,7 @@ def test_vocab_evaluation_accepts_vl_block_evidence_without_glossary(tmp_path) -
 
     assert result.ocr_supported_items == 1
     assert result.glossary_supported_items == 0
-    assert result.row_accuracy == 1.0
+    assert result.row_accuracy == pytest.approx(1.0)
 
 
 def test_benchmark_token_text_coverage_exposes_source_mismatches(tmp_path) -> None:
@@ -245,8 +245,8 @@ def test_benchmark_uses_vl_document_text_for_text_coverage(tmp_path) -> None:
     coverage = benchmark_ocr_modes._token_text_coverage(golden, process_result, "paddleocr_vl")
 
     assert coverage.mode == "paddleocr_vl_document_text"
-    assert coverage.field_accuracy == 1.0
-    assert coverage.item_accuracy == 1.0
+    assert coverage.field_accuracy == pytest.approx(1.0)
+    assert coverage.item_accuracy == pytest.approx(1.0)
 
 
 def test_benchmark_google_vision_path_reports_text_coverage_and_resources(tmp_path, monkeypatch) -> None:

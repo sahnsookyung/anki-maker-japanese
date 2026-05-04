@@ -13,11 +13,11 @@ from app.models.schemas import DocumentParseBlock, DocumentParseResult
 from app.validation.dictionary import DictionaryValidator
 
 
-_QUESTION_NO_RE = re.compile(r"^\s*(?:□|☐|▢)?\s*(?P<no>[1-9]\d{0,2}|[①-⑳])\s*(?P<body>.*)$")
-_CHOICE_RE = re.compile(r"(?:^|\s)(?P<no>[1-4①-④])\s*(?P<text>.*?)(?=\s+[1-4①-④]\s*|$)")
 _UNDERLINE_RE = re.compile(r"\\underline\{(?:\\text\{)?([^{}]+)\}?\}")
 _TEXT_RE = re.compile(r"\\text\{([^{}]+)\}")
-_ANSWER_MARKER_RE = re.compile(r"(?:답|答)\s*(?=[①-⑳0-9])|\\text\{\s*日\s*\}\s*(?=[①-⑳0-9])|^\s*日\s*(?=[①-⑳0-9])")
+_ANSWER_LABEL_RE = re.compile(r"[答답]\s*(?=[①-⑳0-9])")
+_LATEX_DAY_ANSWER_RE = re.compile(r"\\text\{\s*日\s*\}\s*(?=[①-⑳0-9])")
+_DAY_ANSWER_PREFIX_RE = re.compile(r"^\s*日\s*(?=[①-⑳0-9])")
 _FLAT_QUESTION_BREAK_RE = re.compile(r"(\s[4④]\s*[^0-9①-④答답日]{1,24})(?=\s+(?:[1-9]\d?|[①-⑳])\s+)")
 _CIRCLED = {
     "①": 1,
@@ -42,6 +42,7 @@ _CIRCLED = {
     "⑳": 20,
 }
 _FULLWIDTH_DIGITS = str.maketrans("１２３４５６７８９０", "1234567890")
+_CIRCLED_DIGITS = str.maketrans({key: str(value) for key, value in _CIRCLED.items()})
 
 
 @dataclass(frozen=True)
@@ -104,12 +105,12 @@ def extract_from_document_parse(
 
 def classify_document_parse(text: str) -> tuple[str, float]:
     normalized = _clean_document_text(text)
-    question_count = len(re.findall(r"(?:^|\n)\s*(?:[1-9]\d{0,2}|[①-⑳])\s+", normalized))
+    question_count = _document_question_count(normalized)
     has_choice_markers = len(re.findall(r"\s[1-4①-④]\s*[\u3040-\u30ff\u3400-\u9fff]", normalized)) >= 2
-    has_answer_strip = bool(re.search(r"(?:답|答)\s*[①-⑳0-9]", normalized))
+    has_answer_strip = _find_answer_marker(normalized) is not None
     has_vocab_header = "기출어휘" in normalized or "語彙" in normalized or "어휘" in normalized
     has_hangul = _has_hangul(normalized)
-    has_many_vocab_rows = len(re.findall(r"[ぁ-ゖァ-ヺー]{2,}\s+[\u4e00-\u9fffぁ-ゖァ-ヺー]+\s+[가-힣]", normalized)) >= 3
+    has_many_vocab_rows = len(_vocab_triples(normalized)) >= 3
     if has_vocab_header and (has_hangul or has_many_vocab_rows) and question_count < 3:
         return "vocab_table", 0.68
     if question_count >= 2 or has_answer_strip or (question_count >= 1 and has_choice_markers):
@@ -166,13 +167,13 @@ def extract_vl_mcq_items(
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for question in _question_chunks(lines):
-        no_match = _QUESTION_NO_RE.match(question.text)
-        if not no_match:
+        question_parts = _split_question_prefix(question.text)
+        if not question_parts:
             continue
-        question_no = _question_number(no_match.group("no"))
+        question_token, body = question_parts
+        question_no = _question_number(question_token)
         if not question_no:
             continue
-        body = no_match.group("body")
         choices_by_no = _choices_from_text(body)
         choices = [choices_by_no.get(index, "") for index in range(1, 5)]
         present_choices = [choice for choice in choices if choice]
@@ -287,6 +288,58 @@ def _split_flattened_question_text(text: str) -> list[str]:
     return [part.strip() for part in split_text.splitlines() if part.strip()]
 
 
+def _document_question_count(text: str) -> int:
+    count = 0
+    for line in text.splitlines():
+        count += sum(1 for part in _split_flattened_question_text(line) if _split_question_prefix(part))
+    return count
+
+
+def _split_question_prefix(text: str) -> tuple[str, str] | None:
+    stripped = text.strip()
+    if stripped and stripped[0] in {"□", "☐", "▢"}:
+        stripped = stripped[1:].lstrip()
+    if not stripped:
+        return None
+    for circled in _CIRCLED:
+        if stripped.startswith(circled):
+            return circled, stripped[len(circled) :].lstrip()
+    normalized = stripped.translate(_FULLWIDTH_DIGITS)
+    digit_count = 0
+    while digit_count < min(3, len(normalized)) and normalized[digit_count].isdigit():
+        digit_count += 1
+    if digit_count == 0:
+        return None
+    question = normalized[:digit_count]
+    if question.startswith("0"):
+        return None
+    return question, stripped[digit_count:].lstrip()
+
+
+def _find_answer_marker(text: str) -> re.Match[str] | None:
+    matches = [
+        match
+        for pattern in (_ANSWER_LABEL_RE, _LATEX_DAY_ANSWER_RE, _DAY_ANSWER_PREFIX_RE)
+        if (match := pattern.search(text))
+    ]
+    return min(matches, key=lambda match: match.start()) if matches else None
+
+
+def _choice_markers(text: str) -> list[tuple[int, int]]:
+    normalized = text.translate(_FULLWIDTH_DIGITS)
+    markers: list[tuple[int, int]] = []
+    for index, char in enumerate(normalized):
+        number = _choice_number(char)
+        if not number:
+            continue
+        if index > 0 and not normalized[index - 1].isspace():
+            continue
+        if index + 1 < len(normalized) and normalized[index + 1] in "0123456789①②③④":
+            continue
+        markers.append((index, number))
+    return markers
+
+
 def _question_chunks(lines: list[_Line]) -> list[_Line]:
     chunks: list[_Line] = []
     current: list[_Line] = []
@@ -305,11 +358,11 @@ def _question_chunks(lines: list[_Line]) -> list[_Line]:
         if current and _looks_like_standalone_choice_line(line.text):
             current.append(line)
             continue
-        if _QUESTION_NO_RE.match(line.text):
+        if _split_question_prefix(line.text):
             if current:
                 chunks.append(_merge_lines(current))
             current = [line]
-        elif current and not _QUESTION_NO_RE.match(line.text):
+        elif current and not _split_question_prefix(line.text):
             current.append(line)
     if current:
         chunks.append(_merge_lines(current))
@@ -373,7 +426,7 @@ def _answer_map_from_lines(lines: list[_Line]) -> dict[int, int]:
 
 
 def _split_answer_fragment(text: str) -> tuple[str, str]:
-    match = _ANSWER_MARKER_RE.search(text)
+    match = _find_answer_marker(text)
     if not match:
         return text, ""
     return text[: match.start()].strip(), text[match.end() :].strip()
@@ -382,17 +435,19 @@ def _split_answer_fragment(text: str) -> tuple[str, str]:
 def _choices_from_text(text: str) -> dict[int, str]:
     normalized = text.translate(_FULLWIDTH_DIGITS)
     choices: dict[int, str] = {}
-    for match in _CHOICE_RE.finditer(normalized):
-        number = _choice_number(match.group("no"))
-        choice = _clean_choice(match.group("text"))
+    markers = _choice_markers(normalized)
+    for marker_index, (start, number) in enumerate(markers):
+        end = markers[marker_index + 1][0] if marker_index + 1 < len(markers) else len(normalized)
+        marker_width = 1
+        choice = _clean_choice(normalized[start + marker_width : end])
         if number and choice:
             choices[number] = choice
     return choices
 
 
 def _text_before_choices(text: str) -> str:
-    match = re.search(r"(?:^|\s)[1-4①-④]\s+", text.translate(_FULLWIDTH_DIGITS))
-    return text[: match.start()].strip() if match else text.strip()
+    markers = _choice_markers(text.translate(_FULLWIDTH_DIGITS))
+    return text[: markers[0][0]].strip() if markers else text.strip()
 
 
 def _target_from_text(text: str) -> str:
@@ -404,7 +459,9 @@ def _target_from_text(text: str) -> str:
 
 def _clean_sentence(text: str) -> str:
     cleaned = _clean_document_text(text)
-    cleaned = _QUESTION_NO_RE.sub(r"\g<body>", cleaned).strip()
+    question_parts = _split_question_prefix(cleaned)
+    if question_parts:
+        _question_token, cleaned = question_parts
     cleaned = _clean_latex(cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned)
     repaired, _changed = repair_predicate_first_sentence(cleaned)
@@ -449,7 +506,7 @@ def _reading_distance(left: str, right: str) -> int:
 
 def _clean_choice(text: str) -> str:
     cleaned = _clean_latex(_clean_document_text(text))
-    cleaned = re.sub(r"[^\u3040-\u30ff\u3400-\u9fff々〆〤ーぁ-ゖァ-ヺ一-龯]", "", cleaned)
+    cleaned = re.sub(r"[^\u3040-\u30ff\u3400-\u9fff々〆〤]", "", cleaned)
     return cleaned.strip()
 
 
@@ -470,7 +527,7 @@ def _clean_surface(text: str) -> str:
 
 
 def _clean_reading(text: str) -> str:
-    cleaned = re.sub(r"[^\u3040-\u30ffー]", "", _clean_latex(text))
+    cleaned = re.sub(r"[^\u3040-\u30ff]", "", _clean_latex(text))
     japanese_chars = [ch for ch in _clean_latex(text) if _is_kana(ch) or _is_cjk(ch)]
     if japanese_chars and any(_is_cjk(ch) for ch in japanese_chars):
         return ""
@@ -517,13 +574,13 @@ def _is_noise_segment(text: str) -> bool:
 def _is_answer_line(text: str) -> bool:
     if _is_header_line(text):
         return False
-    if _ANSWER_MARKER_RE.search(text):
+    if _find_answer_marker(text):
         return True
     compact_count = _compact_answer_pair_count(text)
-    compact_text = re.sub(r"\s+", "", text.translate(str.maketrans({key: str(value) for key, value in _CIRCLED.items()})))
+    compact_text = re.sub(r"\s+", "", text.translate(_CIRCLED_DIGITS))
     if not _has_japanese(text) and (compact_count >= 2 or (compact_count == 1 and compact_text.isdigit())):
         return True
-    normalized = text.translate(str.maketrans({key: str(value) for key, value in _CIRCLED.items()}))
+    normalized = text.translate(_CIRCLED_DIGITS)
     return len(re.findall(r"\b(?:[1-9]\d{0,2}|[1-4])\b", normalized)) >= 8
 
 
@@ -548,7 +605,7 @@ def _looks_like_standalone_choice_line(text: str) -> bool:
 
 
 def _compact_answer_pair_count(text: str) -> int:
-    normalized = text.translate(str.maketrans({key: str(value) for key, value in _CIRCLED.items()}))
+    normalized = text.translate(_CIRCLED_DIGITS)
     digit_parts = [part for part in normalized.split() if part.isdigit()]
     if not digit_parts:
         return 0
