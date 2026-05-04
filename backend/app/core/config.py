@@ -28,6 +28,18 @@ def _normalize_google_credentials_env() -> None:
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str((ROOT_DIR / credentials_path).resolve())
 
 
+def _configured_path(name: str, default: Path) -> Path:
+    value = os.getenv(name)
+    path = Path(value).expanduser() if value else default
+    if path.is_absolute():
+        return path
+    for base_dir in (ROOT_DIR, BACKEND_DIR):
+        candidate = (base_dir / path).resolve()
+        if candidate.exists():
+            return candidate
+    return (ROOT_DIR / path).resolve()
+
+
 _normalize_google_credentials_env()
 
 UPLOAD_DIR = BACKEND_DIR / "uploads"
@@ -94,10 +106,8 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
 VLM_PROVIDER = os.getenv("VLM_PROVIDER", "ollama")
 LLAMA_CPP_BASE_URL = os.getenv("LLAMA_CPP_BASE_URL", "http://localhost:8080")
 LLAMA_CPP_MODEL = os.getenv("LLAMA_CPP_MODEL", "Qwen3-VL-8B-Instruct")
-DICTIONARY_PATH = Path(os.getenv("DICTIONARY_PATH", BACKEND_DIR / "data" / "dictionaries" / "jmdict_min.json"))
-KOREAN_GLOSSARY_PATH = Path(
-    os.getenv("KOREAN_GLOSSARY_PATH", BACKEND_DIR / "data" / "dictionaries" / "jlpt_basic_ko.json")
-)
+DICTIONARY_PATH = _configured_path("DICTIONARY_PATH", BACKEND_DIR / "data" / "dictionaries" / "jlpt_basic_ko.json")
+KOREAN_GLOSSARY_PATH = _configured_path("KOREAN_GLOSSARY_PATH", BACKEND_DIR / "data" / "dictionaries" / "jlpt_basic_ko.json")
 VLM_CLEANUP_ENABLED = os.getenv("VLM_CLEANUP_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
 
 

@@ -13,7 +13,7 @@ from PIL import Image
 from app.db import database
 from app.evaluation.golden import GoldenPage
 from app.extraction import pipeline
-from app.models.schemas import OcrToken, Page
+from app.models.schemas import DocumentParseBlock, DocumentParseResult, OcrToken, Page
 from app.ocr import service
 from app.ocr import crop_worker
 from app.ocr import page_worker
@@ -110,7 +110,7 @@ def test_process_page_preserves_upload_name_in_result(tmp_path, monkeypatch) -> 
     assert database.get_page("page-upload-name").upload_name == "Original upload.jpg"
 
 
-def test_process_page_persists_visual_evidence_tokens_separately_from_extraction(tmp_path, monkeypatch) -> None:
+def test_process_page_persists_vl_document_parse_instead_of_visual_tokens(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "pipeline.db")
     monkeypatch.setattr(pipeline, "PROCESSED_DIR", tmp_path / "processed")
     database.init_db()
@@ -124,25 +124,22 @@ def test_process_page_persists_visual_evidence_tokens_separately_from_extraction
         warnings=[],
         created_at="2026-04-28T00:00:00+00:00",
     )
-    extraction_token = OcrToken(
-        id="vl-token",
+    parsed = DocumentParseResult(
         page_id=page.id,
-        text="学校",
-        bbox=[10, 20, 60, 40],
-        confidence=0.8,
-        script_class="kanji",
-        source="paddleocr_vl",
+        provider="paddleocr_vl",
+        source_image_path=str(tmp_path / "processed.png"),
+        backend="fake",
+        block_count=1,
+        blocks=[
+            DocumentParseBlock(
+                id="vl-block-1",
+                label="text",
+                content="学校 がっこう 학교",
+                bbox=[10, 20, 160, 44],
+                order=1,
+            )
+        ],
     )
-    unused_geometry_token = OcrToken(
-        id="base-extra",
-        page_id=page.id,
-        text="unused",
-        bbox=[70, 20, 120, 40],
-        confidence=0.99,
-        script_class="latin",
-        source="paddleocr",
-    )
-    classified_token_counts: list[int] = []
 
     monkeypatch.setattr(
         pipeline,
@@ -154,24 +151,19 @@ def test_process_page_persists_visual_evidence_tokens_separately_from_extraction
         "run_ocr_engine",
         lambda image_path, page_id, engine: OcrEngineResult(
             engine="paddleocr_vl",
-            tokens=[extraction_token],
-            evidence_tokens=[extraction_token, unused_geometry_token],
+            tokens=[],
+            evidence_tokens=[],
+            document_parse=parsed,
             warnings=[],
         ),
     )
 
-    def fake_classify_page(tokens, height):
-        classified_token_counts.append(len(tokens))
-        return "unknown_review_required", 0.0, {}
-
-    monkeypatch.setattr(pipeline, "classify_page", fake_classify_page)
-    monkeypatch.setattr(pipeline, "parse_answer_strip", lambda tokens, height: {})
-
     result = pipeline.process_page(page, engine="paddleocr_vl")
 
-    assert classified_token_counts == [1]
-    assert [token.id for token in result.tokens] == ["vl-token", "base-extra"]
-    assert [token.id for token in database.get_tokens(page.id)] == ["vl-token", "base-extra"]
+    assert result.tokens == []
+    assert database.get_tokens(page.id) == []
+    assert result.document_parse == parsed
+    assert database.get_active_document_parse(page.id) == parsed
 
 
 def test_benchmark_default_runner_uses_per_page_subprocesses(tmp_path, monkeypatch) -> None:

@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-from functools import lru_cache
-import json
-from pathlib import Path
 import re
 
-from app.core.config import KOREAN_GLOSSARY_PATH
 from app.core.ids import new_id
-from app.extraction.field_evidence import static_evidence, token_evidence
+from app.extraction.field_evidence import token_evidence
 from app.extraction.geometry import group_tokens_by_line, text_of, union_bbox
 from app.models.schemas import OcrToken
 from app.validation.dictionary import DictionaryValidator
@@ -96,15 +92,11 @@ def _extract_vocab_items_from_layout(
     split_x: float,
     validator: DictionaryValidator,
 ) -> list[dict]:
-    glossary = _load_korean_glossary()
-    surface_tokens = _surface_candidates(japanese_tokens, split_x, glossary)
+    surface_tokens = _surface_candidates(japanese_tokens, split_x)
     items: list[dict] = []
-    for surface_token, surface, column in surface_tokens:
-        glossary_entry = glossary.get(surface)
-        reading_token = _nearest_reading_token(japanese_tokens, surface_token, split_x, column, glossary_entry)
-        reading = glossary_entry["reading"] if glossary_entry else ""
-        if not reading and reading_token:
-            reading = _clean_reading(reading_token.text)
+    for surface_token, surface, column, embedded_reading in surface_tokens:
+        reading_token = surface_token if embedded_reading else _nearest_reading_token(japanese_tokens, surface_token, split_x, column)
+        reading = embedded_reading or (_clean_reading(reading_token.text) if reading_token else "")
         if not reading:
             continue
 
@@ -113,26 +105,16 @@ def _extract_vocab_items_from_layout(
             row_y_values.append(_cy(reading_token))
         row_y = sum(row_y_values) / len(row_y_values)
         meaning_token = _nearest_korean_meaning_token(korean_tokens, row_y, split_x, column)
-        meaning = glossary_entry["meaning_ko"] if glossary_entry else ""
-        if not meaning and meaning_token:
-            meaning = _clean_korean_meaning(meaning_token.text)
+        meaning = _clean_korean_meaning(meaning_token.text) if meaning_token else ""
         if not meaning:
             continue
 
         evidence = [surface_token]
-        if reading_token:
-            evidence.append(reading_token)
-        if meaning_token:
-            evidence.append(meaning_token)
+        evidence.append(reading_token)
+        evidence.append(meaning_token)
         bbox = union_bbox([token.bbox for token in evidence])
         confidence = min(token.confidence for token in evidence)
         _, warnings = validator.validate_vocab(surface, reading)
-        if glossary_entry and meaning_token:
-            observed_meaning = _clean_korean_meaning(meaning_token.text)
-            if observed_meaning and observed_meaning not in meaning:
-                warnings.append(f"Korean OCR gloss '{observed_meaning}' was normalized with the local glossary.")
-        elif glossary_entry and not meaning_token:
-            warnings.append("Korean gloss was filled from the local glossary because OCR did not recover it.")
         items.append(
             {
                 "id": new_id("vocab"),
@@ -142,8 +124,8 @@ def _extract_vocab_items_from_layout(
                 "meaning_ko": meaning,
                 "field_evidence": {
                     "surface": token_evidence([surface_token], surface),
-                    "reading": token_evidence([reading_token], reading) if reading_token else static_evidence(reading, "glossary"),
-                    "meaning_ko": token_evidence([meaning_token], meaning) if meaning_token else static_evidence(meaning, "glossary"),
+                    "reading": token_evidence([reading_token], reading),
+                    "meaning_ko": token_evidence([meaning_token], meaning),
                 },
                 "evidence_tokens": [token.id for token in evidence],
                 "bbox": bbox,
@@ -152,7 +134,6 @@ def _extract_vocab_items_from_layout(
                 "warnings": warnings,
             }
         )
-    items.extend(_supplement_vocab_items_from_glossary(japanese_tokens, korean_tokens, validator, items, glossary))
     return items
 
 
@@ -270,11 +251,15 @@ def _cy(token: OcrToken) -> float:
 
 def _clean_surface(text: str) -> str:
     text = SURFACE_LEADING_NOISE_RE.sub("", text.strip())
-    return "".join(ch for ch in text if _char_is_japanese(ch))
+    surface = "".join(ch for ch in text if _char_is_japanese(ch))
+    if any(0x4E00 <= ord(ch) <= 0x9FFF for ch in surface) and surface and 0x30A0 <= ord(surface[-1]) <= 0x30FF:
+        surface = surface[:-1]
+    return surface
 
 
 def _clean_reading(text: str) -> str:
-    match = KANA_PREFIX_RE.match(text.strip())
+    text = SURFACE_LEADING_NOISE_RE.sub("", text.strip())
+    match = KANA_PREFIX_RE.match(text)
     return match.group(0) if match else ""
 
 
@@ -291,31 +276,34 @@ def _clean_korean_meaning(text: str) -> str:
 def _surface_candidates(
     tokens: list[OcrToken],
     split_x: float,
-    glossary: dict[str, dict[str, str]],
-) -> list[tuple[OcrToken, str, str]]:
-    candidates: list[tuple[OcrToken, str, str]] = []
-    surfaces = sorted(glossary, key=len, reverse=True)
+) -> list[tuple[OcrToken, str, str, str]]:
+    candidates: list[tuple[OcrToken, str, str, str]] = []
     for token in sorted(tokens, key=lambda item: (_cy(item), item.bbox[0])):
         if _cy(token) < 390:
             continue
-        matched_surface = _surface_from_glossary(token.text, surfaces)
-        if matched_surface:
-            surface = matched_surface
-        else:
+        embedded_reading, surface = _split_combined_vocab_token(token.text)
+        if not surface:
             surface = _clean_surface(token.text)
-            if _kana_count(surface) > _kanji_count(surface):
-                continue
         if not surface or not _looks_like_surface_token(token, surface, split_x):
             continue
-        candidates.append((token, surface, _surface_column(token, split_x)))
+        candidates.append((token, surface, _surface_column(token, split_x), embedded_reading))
     return candidates
 
 
-def _surface_from_glossary(text: str, surfaces: list[str]) -> str:
-    for surface in surfaces:
-        if surface in text:
-            return surface
-    return ""
+def _split_combined_vocab_token(text: str) -> tuple[str, str]:
+    cleaned = SURFACE_LEADING_NOISE_RE.sub("", text.strip())
+    reading_match = KANA_PREFIX_RE.match(cleaned)
+    if not reading_match:
+        return "", ""
+    suffix = cleaned[reading_match.end() :]
+    kanji_index = next((index for index, char in enumerate(suffix) if 0x4E00 <= ord(char) <= 0x9FFF), None)
+    if kanji_index is None:
+        return "", ""
+    reading = reading_match.group(0)
+    surface = "".join(ch for ch in suffix[kanji_index:] if _char_is_japanese(ch))
+    if len(surface) < 2:
+        return "", ""
+    return reading, surface
 
 
 def _looks_like_surface_token(token: OcrToken, surface: str, split_x: float) -> bool:
@@ -340,9 +328,7 @@ def _nearest_reading_token(
     surface_token: OcrToken,
     split_x: float,
     column: str,
-    glossary_entry: dict[str, str] | None,
 ) -> OcrToken | None:
-    expected_reading = glossary_entry["reading"] if glossary_entry else ""
     candidates = []
     for token in tokens:
         if token is surface_token:
@@ -353,143 +339,15 @@ def _nearest_reading_token(
         if distance_y > 40:
             continue
         reading = _clean_reading(token.text)
-        has_expected = bool(expected_reading and expected_reading in token.text)
-        if not reading and not has_expected:
-            continue
-        if token.bbox[0] < surface_token.bbox[0] and not has_expected:
+        if not reading:
             continue
         distance_x = abs(token.bbox[0] - surface_token.bbox[0])
-        priority = 0 if has_expected else 1
-        candidates.append((priority, distance_y, distance_x, token))
+        side_priority = 0 if token.bbox[0] <= surface_token.bbox[0] else 1
+        candidates.append((side_priority, distance_y, distance_x, token))
     if not candidates:
         return None
     candidates.sort(key=lambda item: (item[0], item[1], item[2], -item[3].confidence))
     return candidates[0][3]
-
-
-def _supplement_vocab_items_from_glossary(
-    japanese_tokens: list[OcrToken],
-    korean_tokens: list[OcrToken],
-    validator: DictionaryValidator,
-    existing_items: list[dict],
-    glossary: dict[str, dict[str, str]],
-) -> list[dict]:
-    if len(japanese_tokens) < 20 or len(existing_items) >= 30:
-        return []
-    existing = {(str(item.get("surface")), str(item.get("reading"))) for item in existing_items}
-    supplements: list[dict] = []
-    for entry in glossary.values():
-        key = (entry["surface"], entry["reading"])
-        if key in existing:
-            continue
-        evidence: list[OcrToken] = []
-        reading_token = _token_containing(japanese_tokens, entry["reading"])
-        meaning_token = _similar_meaning_token(korean_tokens, entry["meaning_ko"])
-        if not reading_token and not _meaning_token_is_strong_match(meaning_token, entry["meaning_ko"]):
-            meaning_token = None
-        if reading_token:
-            evidence.append(reading_token)
-        if meaning_token:
-            evidence.append(meaning_token)
-        if not evidence:
-            continue
-        _, warnings = validator.validate_vocab(entry["surface"], entry["reading"])
-        warnings.append("Entry was supplemented from the local glossary because OCR missed one or more fields.")
-        bbox = union_bbox([token.bbox for token in evidence])
-        confidence = min(token.confidence for token in evidence)
-        supplements.append(
-            {
-                "id": new_id("vocab"),
-                "type": "vocab_item",
-                "surface": entry["surface"],
-                "reading": entry["reading"],
-                "meaning_ko": entry["meaning_ko"],
-                "field_evidence": {
-                    "surface": static_evidence(entry["surface"], "glossary"),
-                    "reading": token_evidence([reading_token], entry["reading"]) if reading_token else static_evidence(entry["reading"], "glossary"),
-                    "meaning_ko": (
-                        token_evidence([meaning_token], entry["meaning_ko"])
-                        if meaning_token
-                        else static_evidence(entry["meaning_ko"], "glossary")
-                    ),
-                },
-                "evidence_tokens": [token.id for token in evidence],
-                "bbox": bbox,
-                "confidence": round(confidence, 3),
-                "needs_review": True,
-                "warnings": warnings,
-            }
-        )
-        existing.add(key)
-    return supplements
-
-
-def _token_containing(tokens: list[OcrToken], value: str) -> OcrToken | None:
-    candidates = [token for token in tokens if value and value in token.text and _cy(token) >= 390]
-    if not candidates:
-        return None
-    candidates.sort(key=lambda token: (-token.confidence, _cy(token)))
-    return candidates[0]
-
-
-def _similar_meaning_token(tokens: list[OcrToken], meaning: str) -> OcrToken | None:
-    candidates = []
-    for token in tokens:
-        cleaned = _clean_korean_meaning(token.text)
-        if not cleaned:
-            continue
-        score = _hangul_subsequence_score(cleaned, meaning)
-        if score >= 0.6:
-            candidates.append((score, token.confidence, token))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda item: (-item[0], -item[1]))
-    return candidates[0][2]
-
-
-def _hangul_subsequence_score(actual: str, expected: str) -> float:
-    actual_hangul = [char for char in actual if _char_is_hangul(char)]
-    expected_hangul = [char for char in expected if _char_is_hangul(char)]
-    if not actual_hangul or not expected_hangul:
-        return 0.0
-    pos = 0
-    matched = 0
-    for char in expected_hangul:
-        try:
-            found = actual_hangul.index(char, pos)
-        except ValueError:
-            continue
-        matched += 1
-        pos = found + 1
-    return matched / len(expected_hangul)
-
-
-def _meaning_token_is_strong_match(token: OcrToken | None, meaning: str) -> bool:
-    if not token:
-        return False
-    actual_hangul = [char for char in _clean_korean_meaning(token.text) if _char_is_hangul(char)]
-    expected_hangul = [char for char in meaning if _char_is_hangul(char)]
-    if len(expected_hangul) < 3 or not actual_hangul:
-        return False
-    return actual_hangul[0] == expected_hangul[0]
-
-
-@lru_cache(maxsize=1)
-def _load_korean_glossary() -> dict[str, dict[str, str]]:
-    path = KOREAN_GLOSSARY_PATH
-    if not path.is_absolute():
-        path = Path(__file__).resolve().parents[3] / path
-    if not path.exists():
-        return {}
-    data = json.loads(path.read_text(encoding="utf-8"))
-    glossary: dict[str, dict[str, str]] = {}
-    for item in data:
-        surface = str(item.get("surface") or "")
-        reading = str(item.get("reading") or "")
-        meaning = str(item.get("meaning_ko") or "")
-        if surface and reading and meaning:
-            glossary[surface] = {"surface": surface, "reading": reading, "meaning_ko": meaning}
-    return glossary
 
 
 def _char_is_hangul(ch: str) -> bool:

@@ -1,4 +1,4 @@
-import type { CardCandidate, FieldOcrPreview, OcrComparison, OcrToken, Page } from "./api";
+import type { CardCandidate, DocumentParseBlock, FieldOcrPreview, OcrComparison, OcrToken, Page } from "./api";
 
 export type ReviewFilter = "all" | "needs_review" | "approved" | "green" | "yellow" | "red";
 export type EvidenceOverlayMode = "focused" | "region" | "all" | "off";
@@ -69,6 +69,19 @@ export function cardForToken(cards: CardCandidate[], token: OcrToken): CardCandi
   );
 }
 
+export function cardForDocumentBlock(cards: CardCandidate[], block: DocumentParseBlock): CardCandidate | null {
+  return (
+    cards.find((card) => focusedDocumentBlockIds(card).has(block.id ?? "")) ??
+    cards.find((card) => allFieldDocumentBlockIds(card).has(block.id ?? "")) ??
+    cards.find((card) => {
+      const bbox = sourceBbox(card);
+      const blockBox = normalizeBbox(block.bbox);
+      return bbox && blockBox ? boxCentersOverlap(blockBox, bbox) : false;
+    }) ??
+    null
+  );
+}
+
 export function warningKey(warning: string, index: number): string {
   return `${warning}-${index}`;
 }
@@ -88,6 +101,11 @@ export function tokenDisplayClass(
 
 export function evidenceOverlayModeForLoad(cards: CardCandidate[], tokens: OcrToken[]): EvidenceOverlayMode {
   return cards.length === 0 && tokens.length > 0 ? "all" : "focused";
+}
+
+export function shouldShowDocumentBlocks(page: Page | null, tokens: OcrToken[], hasDocumentBlocks: boolean): boolean {
+  if (!page || !hasDocumentBlocks) return false;
+  return page.active_ocr_engine === "paddleocr_vl" || tokens.length === 0;
 }
 
 export function tokenOnlyEvidenceClass(token: OcrToken): string {
@@ -137,6 +155,29 @@ export function tokenTitle(token: OcrToken, linkedCard: CardCandidate | null, re
   return `${token.text} (${token.source}, ${token.script_class}, OCR ${Math.round(token.confidence * 100)}%, ${use})`;
 }
 
+export function documentBlockDisplayClass(
+  block: DocumentParseBlock,
+  selectedCard: CardCandidate | null,
+  linkedCard: CardCandidate | null,
+  relevant: boolean
+): string {
+  if (relevant) return `document-block selected-evidence ${reviewQualityClass(selectedCard)}`;
+  if (linkedCard) return `document-block linked-document-block ${reviewQualityClass(linkedCard)}`;
+  const confidence = typeof block.confidence === "number" ? block.confidence : 0.68;
+  return `document-block scanned-unused token-confidence-${tokenConfidenceClass(confidence)}`;
+}
+
+export function documentBlockTitle(block: DocumentParseBlock, linkedCard: CardCandidate | null, relevant: boolean): string {
+  let use = "unused PaddleOCR-VL document block";
+  if (relevant) {
+    use = "selected candidate document block";
+  } else if (linkedCard) {
+    use = `used by ${candidateTitle(linkedCard)}`;
+  }
+  const confidence = typeof block.confidence === "number" ? `, ${Math.round(block.confidence * 100)}%` : "";
+  return `${block.label}${confidence}: ${block.content.slice(0, 120)} (${use})`;
+}
+
 export function isAnswerSupportToken(token: OcrToken, page: Page): boolean {
   if (!page.image_height || !page.page_type.endsWith("_mcq")) return false;
   if (token.bbox[1] < page.image_height * 0.82) return false;
@@ -147,6 +188,10 @@ export function focusedTokenIds(card: CardCandidate | null): Set<string> {
   return focusedTokenIdsForField(card, null);
 }
 
+export function focusedDocumentBlockIds(card: CardCandidate | null): Set<string> {
+  return focusedDocumentBlockIdsForField(card, null);
+}
+
 export function focusedTokenIdsForField(card: CardCandidate | null, field: string | null): Set<string> {
   if (field) {
     const tokens = fieldEvidence(card, field)?.token_ids;
@@ -155,6 +200,16 @@ export function focusedTokenIdsForField(card: CardCandidate | null, field: strin
   const tokens = card?.source.evidence_tokens;
   if (!Array.isArray(tokens)) return new Set();
   return new Set(tokens.filter((token): token is string => typeof token === "string"));
+}
+
+export function focusedDocumentBlockIdsForField(card: CardCandidate | null, field: string | null): Set<string> {
+  if (field) {
+    const blocks = fieldEvidence(card, field)?.block_ids;
+    if (Array.isArray(blocks)) return new Set(blocks.filter((block): block is string => typeof block === "string"));
+  }
+  const blocks = card?.source.evidence_blocks;
+  if (Array.isArray(blocks)) return new Set(blocks.filter((block): block is string => typeof block === "string"));
+  return new Set();
 }
 
 export function focusBbox(card: CardCandidate | null, tokens: OcrToken[], field: string | null = null): number[] | null {
@@ -246,6 +301,21 @@ export function allFieldTokenIds(card: CardCandidate | null): Set<string> {
   return ids;
 }
 
+export function allFieldDocumentBlockIds(card: CardCandidate | null): Set<string> {
+  const ids = new Set<string>();
+  const evidence = card?.source.field_evidence;
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) return ids;
+  Object.values(evidence).forEach((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return;
+    const blockIds = (item as Record<string, unknown>).block_ids;
+    if (!Array.isArray(blockIds)) return;
+    blockIds.forEach((block) => {
+      if (typeof block === "string") ids.add(block);
+    });
+  });
+  return ids;
+}
+
 export function tokenInside(token: OcrToken, bbox: number[]): boolean {
   const normalizedToken = normalizeBbox(token.bbox);
   const normalizedBbox = normalizeBbox(bbox);
@@ -253,6 +323,16 @@ export function tokenInside(token: OcrToken, bbox: number[]): boolean {
   const [x1, y1, x2, y2] = normalizedBbox;
   const cx = (normalizedToken[0] + normalizedToken[2]) / 2;
   const cy = (normalizedToken[1] + normalizedToken[3]) / 2;
+  return cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2;
+}
+
+export function boxCentersOverlap(inner: number[], outer: number[]): boolean {
+  const normalizedInner = normalizeBbox(inner);
+  const normalizedOuter = normalizeBbox(outer);
+  if (!normalizedInner || !normalizedOuter) return false;
+  const [x1, y1, x2, y2] = normalizedOuter;
+  const cx = (normalizedInner[0] + normalizedInner[2]) / 2;
+  const cy = (normalizedInner[1] + normalizedInner[3]) / 2;
   return cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2;
 }
 
@@ -272,6 +352,8 @@ export function normalizeBbox(value: unknown): number[] | null {
 export function evidenceSummary(card: CardCandidate): string {
   const count = focusedTokenIds(card).size;
   if (count) return `${count} evidence tokens are highlighted for the selected candidate.`;
+  const blockCount = focusedDocumentBlockIds(card).size;
+  if (blockCount) return `${blockCount} PaddleOCR-VL document block${blockCount === 1 ? " is" : "s are"} highlighted for the selected candidate.`;
   if (card.source_bbox) return "Source region is highlighted for the selected candidate.";
   return "Select another candidate or switch to All OCR for debugging.";
 }
@@ -419,6 +501,9 @@ export function syncVocabCardText(card: CardCandidate, source: Record<string, un
     return { ...card, front: `${escapeHtml(surface)}<br>${escapeHtml(reading)}<br><br>뜻?`, back: escapeHtml(meaning) };
   }
   if (card.note_type === "jp_vocab_writing") {
+    return { ...card, front: `${escapeHtml(reading)}<br>${escapeHtml(meaning)}<br><br>올바른 표기는?`, back: escapeHtml(surface) };
+  }
+  if (card.note_type === "jp_vocab_entry") {
     return { ...card, front: `${escapeHtml(reading)}<br>${escapeHtml(meaning)}<br><br>올바른 표기는?`, back: escapeHtml(surface) };
   }
   return card;

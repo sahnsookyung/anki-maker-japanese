@@ -16,7 +16,7 @@ def test_verify_anki_csv_parser_accepts_export_contract(tmp_path) -> None:
     rows = parse_anki_csv(export_path)
 
     assert len(rows) == 1
-    assert rows[0].notetype == "jp_vocab_reading"
+    assert rows[0].notetype == "jp_vocab_entry"
     assert rows[0].front == "学校"
     assert rows[0].back == "がっこう"
     assert rows[0].tags == "jlpt"
@@ -24,7 +24,7 @@ def test_verify_anki_csv_parser_accepts_export_contract(tmp_path) -> None:
 
 def test_verify_anki_csv_parser_rejects_missing_headers(tmp_path) -> None:
     export_path = tmp_path / "cards.csv"
-    export_path.write_text("jp_vocab_reading,front,back,page,,,tag\n", encoding="utf-8")
+    export_path.write_text("jp_vocab_entry,front,back,page,,,tag\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="Missing Anki CSV header"):
         parse_anki_csv(export_path)
@@ -44,7 +44,7 @@ def _card() -> CardCandidate:
         page_id="page-1",
         source_type="vocab_item",
         source_id="source-1",
-        note_type="jp_vocab_reading",
+        note_type="jp_vocab_entry",
         front="学校",
         back="がっこう",
         tags=["jlpt"],

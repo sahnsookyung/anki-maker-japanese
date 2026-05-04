@@ -5,10 +5,11 @@ from pathlib import Path
 import pytest
 
 from app.db import database
-from app.evaluation.golden import GoldenQuestion, GoldenPage, load_golden_pages, meaning_matches
+from app.evaluation.golden import GoldenQuestion, GoldenPage, GoldenVocabRow, load_golden_pages, meaning_matches
+from app.evaluation.vocab_eval import evaluate_vocab_page
 from app.extraction import pipeline
 from app.extraction.vocab import extract_vocab_items_dual_ocr
-from app.models.schemas import Page, ProcessResult, OcrToken
+from app.models.schemas import CardCandidate, DocumentParseBlock, DocumentParseResult, Page, ProcessResult, OcrToken
 from scripts import benchmark_ocr_modes, evaluate_golden
 
 
@@ -31,20 +32,131 @@ def test_meaning_matches_normalized_korean_parts() -> None:
     assert meaning_matches("북쪽출입구", "북쪽 출입구")
 
 
-def test_dual_ocr_uses_glossary_and_filters_reading_noise() -> None:
+def test_dual_ocr_extracts_vocab_entry_from_ocr_evidence_without_glossary_fill() -> None:
     japanese_tokens = [
         _token("jp1", "回会う", [450, 400, 505, 424], "mixed"),
         _token("jp2", "あう日", [570, 404, 650, 428], "mixed"),
         _token("jp3", "去とこのひと世", [575, 445, 720, 470], "mixed"),
         _token("jp4", "おんなのひと", [580, 480, 720, 505], "hiragana"),
     ]
-    korean_tokens = [_token("ko1", "만니다", [565, 402, 650, 430], "hangul", source="paddleocr_korean")]
+    korean_tokens = [_token("ko1", "만나다", [565, 402, 650, 430], "hangul", source="paddleocr_korean")]
 
     items = extract_vocab_items_dual_ocr(japanese_tokens, korean_tokens)
 
     assert [(item["surface"], item["reading"], item["meaning_ko"]) for item in items] == [
         ("会う", "あう", "만나다")
     ]
+    assert all(item["field_evidence"][field]["provenance"] == "ocr" for item in items for field in ("surface", "reading", "meaning_ko"))
+
+
+def test_dual_ocr_keeps_kana_heavy_combined_surface_tokens() -> None:
+    japanese_tokens = [_token("jp1", "あたらしい新しい", [450, 410, 590, 435], "mixed")]
+    korean_tokens = [_token("ko1", "새롭다", [450, 410, 520, 435], "hangul", source="paddleocr_korean")]
+
+    items = extract_vocab_items_dual_ocr(japanese_tokens, korean_tokens)
+
+    assert [(item["surface"], item["reading"], item["meaning_ko"]) for item in items] == [
+        ("新しい", "あたらしい", "새롭다")
+    ]
+
+
+def test_vocab_evaluation_requires_ocr_supported_fields_for_accuracy(tmp_path) -> None:
+    golden = GoldenPage(
+        page_id="vocab-page",
+        image_path=tmp_path / "page.jpg",
+        category="vocab_table",
+        expected_page_type="vocab_table",
+        expected_rows=[
+            GoldenVocabRow(
+                row_id="row-1",
+                section="",
+                column="left",
+                surface="学校",
+                reading="がっこう",
+                meaning_ko="학교",
+            )
+        ],
+    )
+    card = CardCandidate(
+        id="card-1",
+        page_id="page",
+        source_type="vocab_item",
+        source_id="row-1",
+        note_type="jp_vocab_entry",
+        front="がっこう<br>학교<br><br>올바른 표기는?",
+        back="学校",
+        source={
+            "surface": "学校",
+            "reading": "がっこう",
+            "meaning_ko": "학교",
+            "field_evidence": {
+                "surface": {"text": "学校", "provenance": "glossary"},
+                "reading": {"text": "がっこう", "provenance": "ocr", "token_ids": ["reading"], "bbox": [1, 1, 2, 2]},
+                "meaning_ko": {"text": "학교", "provenance": "ocr", "token_ids": ["meaning"], "bbox": [3, 3, 4, 4]},
+            },
+        },
+        confidence=0.9,
+        review_state="green",
+    )
+    result = evaluate_vocab_page(
+        golden,
+        ProcessResult(page=_page(tmp_path), tokens=[], cards=[card], script_summary={}, answer_map={}),
+    )
+
+    assert result.extracted_items == 1
+    assert result.ocr_supported_items == 0
+    assert result.glossary_supported_items == 1
+    assert result.row_accuracy == 0.0
+    assert result.missing_row_ids == ["row-1"]
+
+
+def test_vocab_evaluation_accepts_vl_block_evidence_without_glossary(tmp_path) -> None:
+    golden = GoldenPage(
+        page_id="vocab-page",
+        image_path=tmp_path / "page.jpg",
+        category="vocab_table",
+        expected_page_type="vocab_table",
+        expected_rows=[
+            GoldenVocabRow(
+                row_id="row-1",
+                section="",
+                column="left",
+                surface="学校",
+                reading="がっこう",
+                meaning_ko="학교",
+            )
+        ],
+    )
+    block_evidence = {"provenance": "paddleocr_vl_block", "block_ids": ["block-1"], "bbox": [1, 1, 100, 20]}
+    card = CardCandidate(
+        id="card-1",
+        page_id="page",
+        source_type="vocab_item",
+        source_id="row-1",
+        note_type="jp_vocab_entry",
+        front="がっこう<br>학교<br><br>올바른 표기는?",
+        back="学校",
+        source={
+            "surface": "学校",
+            "reading": "がっこう",
+            "meaning_ko": "학교",
+            "field_evidence": {
+                "surface": {**block_evidence, "text": "学校"},
+                "reading": {**block_evidence, "text": "がっこう"},
+                "meaning_ko": {**block_evidence, "text": "학교"},
+            },
+        },
+        confidence=0.78,
+        review_state="green",
+    )
+    result = evaluate_vocab_page(
+        golden,
+        ProcessResult(page=_page(tmp_path), tokens=[], cards=[card], script_summary={}, answer_map={}),
+    )
+
+    assert result.ocr_supported_items == 1
+    assert result.glossary_supported_items == 0
+    assert result.row_accuracy == 1.0
 
 
 def test_benchmark_token_text_coverage_exposes_source_mismatches(tmp_path) -> None:
@@ -86,6 +198,55 @@ def test_benchmark_token_text_coverage_exposes_source_mismatches(tmp_path) -> No
     assert coverage.fields_expected == 7
     assert coverage.fields_matched == 3
     assert coverage.item_accuracy == pytest.approx(0.0)
+
+
+def test_benchmark_uses_vl_document_text_for_text_coverage(tmp_path) -> None:
+    golden = GoldenPage(
+        page_id="mcq-page",
+        image_path=tmp_path / "page.jpg",
+        category="spelling_mcq",
+        expected_page_type="spelling_mcq",
+        expected_questions=[
+            GoldenQuestion(
+                question_id="q1",
+                question_no=1,
+                sentence="にわに しろい はなが さきました。",
+                target="はな",
+                choices=["木", "花", "犬", "山"],
+                correct_choice_no=2,
+                correct_answer="花",
+                answer_source="answer_strip",
+            )
+        ],
+    )
+    process_result = ProcessResult(
+        page=_page(tmp_path),
+        tokens=[],
+        cards=[],
+        script_summary={},
+        answer_map={},
+        document_parse=DocumentParseResult(
+            page_id="page",
+            provider="paddleocr_vl",
+            source_image_path="page.png",
+            backend="fake",
+            block_count=1,
+            blocks=[
+                DocumentParseBlock(
+                    id="block-1",
+                    label="text",
+                    content="1 にわに しろい はなが さきました。 1 木 2 花 3 犬 4 山",
+                    bbox=[0, 0, 100, 100],
+                )
+            ],
+        ),
+    )
+
+    coverage = benchmark_ocr_modes._token_text_coverage(golden, process_result, "paddleocr_vl")
+
+    assert coverage.mode == "paddleocr_vl_document_text"
+    assert coverage.field_accuracy == 1.0
+    assert coverage.item_accuracy == 1.0
 
 
 def test_benchmark_google_vision_path_reports_text_coverage_and_resources(tmp_path, monkeypatch) -> None:

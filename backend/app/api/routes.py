@@ -186,9 +186,11 @@ def page_ocr(page_id: str):
         raise HTTPException(status_code=404, detail=PAGE_NOT_FOUND)
     tokens = database.get_tokens(page_id)
     page, tokens = _ensure_review_artifacts(page, tokens, database.get_cards(page_id))
+    document_parse = None if _has_stale_evidence_warning(page) else database.get_active_document_parse(page_id)
     return {
         "page": page,
         "tokens": tokens,
+        "document_parse": document_parse,
     }
 
 
@@ -373,7 +375,7 @@ def _delete_page_crops(page_id: str) -> None:
 
 
 def _ensure_review_artifacts(page: Page, tokens: list, cards: list) -> tuple[Page, list]:
-    has_persisted_evidence = bool(tokens) or any(card.source_bbox for card in cards)
+    has_persisted_evidence = bool(tokens) or any(card.source_bbox for card in cards) or _has_document_parse_evidence(page.id)
     processed_path = Path(page.processed_image_path) if page.processed_image_path else None
     original_path = Path(page.original_image_path)
     if processed_path and not processed_path.exists() and original_path.exists():
@@ -450,6 +452,11 @@ def _merge_warnings(existing: list[str], additions: list[str]) -> list[str]:
 
 def _has_stale_evidence_warning(page: Page) -> bool:
     return "Existing OCR evidence needs reprocessing before boxes can be shown safely." in page.warnings
+
+
+def _has_document_parse_evidence(page_id: str) -> bool:
+    document_parse = database.get_active_document_parse(page_id)
+    return bool(document_parse and any(block.bbox for block in document_parse.blocks))
 
 
 def _page_cleanup_key(page: Page) -> str | None:

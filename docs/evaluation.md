@@ -6,7 +6,7 @@ Start with 10-20 rows per page, not the whole page. Pick rows that are visually 
 
 ## What The Benchmark Measures
 
-The current 100% benchmark match was achieved with pretrained PaddleOCR plus deterministic extraction code. There was no OCR model fine-tuning.
+The strict benchmark path uses pretrained PaddleOCR plus deterministic extraction code. There is no OCR model fine-tuning, and vocab row accuracy no longer gives credit for rows filled from local glossary data.
 
 The default evaluated path is:
 
@@ -18,13 +18,13 @@ image preprocessing
   -> optional PaddleOCR Korean OCR for vocab glosses when using base OCR
   -> page classification
   -> vocab / MCQ extraction
-  -> local Korean glossary normalization
+  -> OCR-evidence provenance checks
   -> golden JSON comparison
 ```
 
-PaddleOCR is still the production default because it is faster and currently scores better locally. PaddleOCR-VL is now supported as a real processing engine through the same normalized OCR interface, but it is benchmarked honestly and may fail locally if the model exceeds the configured memory cap. Google Cloud Vision, Ollama, and llama.cpp remain diagnostics or optional comparison paths; they do not create or approve cards.
+PaddleOCR is still the production default because it is faster and currently scores better overall locally. PaddleOCR-VL is now supported as a real processing engine through the same downstream card interfaces, but its visual evidence is document-block evidence rather than word-token evidence and it is benchmarked honestly. Google Cloud Vision, Ollama, and llama.cpp remain diagnostics or optional comparison paths; they do not create or approve cards.
 
-Interpret the benchmark as regression coverage for the four canonical workbook pages, not as a claim that arbitrary new pages will be perfect. New uploads still need focused evidence review, warnings, and approval before export.
+Interpret the benchmark as regression coverage for the four canonical workbook pages, not as a claim that arbitrary new pages will be perfect. Vocab row accuracy is intentionally strict: surface, reading, and Korean meaning must come from OCR-backed field evidence, so glossary-filled or manually inferred values do not inflate OCR accuracy. New uploads still need focused evidence review, warnings, and approval before export.
 
 ## Format
 

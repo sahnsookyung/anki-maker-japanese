@@ -259,6 +259,8 @@ def _result_dict(result: VocabEvalResult | McqEvalResult, engine: str) -> dict:
         "actual_page_type": result.actual_page_type,
         "expected_rows": result.expected_rows,
         "extracted_items": result.extracted_items,
+        "ocr_supported_items": result.ocr_supported_items,
+        "glossary_supported_items": result.glossary_supported_items,
         "matched_rows": result.matched_rows,
         "row_accuracy": round(result.row_accuracy, 4),
         "surface_reading_matches": result.surface_reading_matches,
@@ -289,7 +291,10 @@ def _format_result(result: VocabEvalResult | McqEvalResult, engine: str) -> str:
         f"Page: {result.page_id} ({engine})",
         f"  type: expected={result.expected_page_type} actual={result.actual_page_type}",
         f"  rows: matched={result.matched_rows}/{result.expected_rows} accuracy={result.row_accuracy:.1%}",
-        f"  extracted_items={result.extracted_items} generated_cards={result.generated_cards}",
+        (
+            f"  extracted_items={result.extracted_items} ocr_supported_items={result.ocr_supported_items} "
+            f"glossary_supported_items={result.glossary_supported_items} generated_cards={result.generated_cards}"
+        ),
         f"  surface+reading matches={result.surface_reading_matches} meaning matches={result.meaning_matches}",
         f"  script confusion: korean_field_missing_hangul={result.korean_field_missing_hangul}, japanese_field_has_hangul={result.japanese_field_has_hangul}",
     ]

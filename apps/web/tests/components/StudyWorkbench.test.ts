@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   allFieldTokenIds,
   bboxFromSource,
+  boxCentersOverlap,
   applyFieldOcrPreview,
   applyQuestionChoicesEdit,
   applyQuestionSourceEdit,
   applyVocabSourceEdit,
+  cardForDocumentBlock,
   candidateSubtitle,
   candidateTitle,
   cardForToken,
@@ -26,6 +28,7 @@ import {
   fieldLabel,
   fieldNamesForCard,
   focusBbox,
+  focusedDocumentBlockIdsForField,
   focusedTokenIds,
   focusedTokenIdsForField,
   initialReviewCardId,
@@ -36,9 +39,12 @@ import {
   nextReviewCardId,
   numberOrEmpty,
   provenanceLabel,
+  documentBlockDisplayClass,
+  documentBlockTitle,
   questionFront,
   reviewReasonBadges,
   reviewQualityClass,
+  shouldShowDocumentBlocks,
   sourceBbox,
   sourceChoices,
   summarizeCards,
@@ -55,7 +61,7 @@ import {
   warningKey,
   workflowClass
 } from "../../lib/review";
-import type { CardCandidate, OcrComparison, OcrToken, Page } from "../../lib/api";
+import type { CardCandidate, DocumentParseBlock, OcrComparison, OcrToken, Page } from "../../lib/api";
 
 describe("StudyWorkbench evidence helpers", () => {
   it("treats 92% candidate confidence as high-confidence visual evidence", () => {
@@ -176,6 +182,10 @@ describe("StudyWorkbench evidence helpers", () => {
     expect(evidenceOverlayModeForLoad([], [token])).toBe("all");
     expect(evidenceOverlayModeForLoad([selected], [token])).toBe("focused");
     expect(evidenceOverlayModeForLoad([], [])).toBe("focused");
+    expect(shouldShowDocumentBlocks(appPage({ active_ocr_engine: "paddleocr_vl" }), [token], true)).toBe(true);
+    expect(shouldShowDocumentBlocks(appPage({ active_ocr_engine: "paddleocr" }), [], true)).toBe(true);
+    expect(shouldShowDocumentBlocks(appPage({ active_ocr_engine: "paddleocr" }), [token], true)).toBe(false);
+    expect(shouldShowDocumentBlocks(appPage({ active_ocr_engine: "paddleocr_vl" }), [], false)).toBe(false);
     expect(tokenOnlyEvidenceClass(token)).toBe("token-review token-confidence-low");
     expect(tokenConfidenceClass(0.95)).toBe("high");
     expect(tokenConfidenceClass(0.8)).toBe("medium");
@@ -235,6 +245,29 @@ describe("StudyWorkbench evidence helpers", () => {
     expect(tokenInside(ocrToken({ bbox: [20, 20, 30, 30] }), [10, 10, 40, 40])).toBe(true);
     expect(tokenInside(ocrToken({ bbox: [80, 80, 90, 90] }), [10, 10, 40, 40])).toBe(false);
     expect(tokenInside(ocrToken({ bbox: [20, 20, 20, 30] }), [10, 10, 40, 40])).toBe(false);
+  });
+
+  it("links PaddleOCR-VL document blocks to candidate evidence", () => {
+    const block = documentBlock({ id: "block-a", bbox: [10, 10, 80, 30], confidence: 0.94 });
+    const card = candidate({
+      source: {
+        evidence_blocks: ["block-a"],
+        field_evidence: {
+          target: { block_ids: ["block-target"], bbox: [20, 20, 60, 40], text: "はな" }
+        }
+      },
+      source_bbox: [5, 5, 100, 50]
+    });
+    const fallbackCard = candidate({ id: "fallback", source: {}, source_bbox: [0, 0, 120, 60] });
+
+    expect(cardForDocumentBlock([card], block)?.id).toBe(card.id);
+    expect(cardForDocumentBlock([fallbackCard], documentBlock({ id: "unlinked", bbox: [10, 10, 80, 30] }))?.id).toBe("fallback");
+    expect([...focusedDocumentBlockIdsForField(card, "target")]).toEqual(["block-target"]);
+    expect([...focusedDocumentBlockIdsForField(card, null)]).toEqual(["block-a"]);
+    expect(boxCentersOverlap([40, 30, 10, 5], [0, 0, 50, 50])).toBe(true);
+    expect(documentBlockDisplayClass(block, card, card, true)).toContain("selected-evidence confidence-high");
+    expect(documentBlockDisplayClass(documentBlock({ confidence: 0.6 }), null, null, false)).toContain("scanned-unused token-confidence-low");
+    expect(documentBlockTitle(block, card, false)).toContain("used by");
   });
 
   it("normalizes reversed OCR-VL bounding boxes before geometry checks", () => {
@@ -441,10 +474,12 @@ describe("StudyWorkbench evidence helpers", () => {
 
     const readingCard = { ...card, note_type: "jp_vocab_reading" };
     const meaningCard = { ...card, note_type: "jp_vocab_meaning" };
+    const entryCard = { ...card, note_type: "jp_vocab_entry" };
     const unknownCard = { ...card, note_type: "unknown_vocab" };
     expect(syncVocabCardText(readingCard, { surface: "<語>", reading: "ご", meaning_ko: "뜻&의미" }).front).toContain("&lt;語&gt;");
     expect(syncVocabCardText(readingCard, { surface: "<語>", reading: "ご", meaning_ko: "뜻&의미" }).back).toBe("ご");
     expect(syncVocabCardText(meaningCard, meaningCard.source).back).toBe("학교");
+    expect(syncVocabCardText(entryCard, { surface: "語", reading: "ご", meaning_ko: "뜻" }).back).toBe("語");
     expect(syncVocabCardText(unknownCard, unknownCard.source)).toBe(unknownCard);
     expect(syncVocabCardText(candidate({ source_type: "question_item" }), {})).toEqual(candidate({ source_type: "question_item" }));
   });
@@ -509,6 +544,18 @@ function ocrToken(overrides: Partial<OcrToken> = {}): OcrToken {
     confidence: 0.95,
     script_class: "hiragana",
     source: "paddleocr",
+    ...overrides
+  };
+}
+
+function documentBlock(overrides: Partial<DocumentParseBlock> = {}): DocumentParseBlock {
+  return {
+    id: "block-1",
+    label: "text",
+    content: "にわに しろい はなが さきました。",
+    bbox: [5, 5, 20, 20],
+    order: 1,
+    confidence: 0.9,
     ...overrides
   };
 }

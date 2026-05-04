@@ -21,8 +21,9 @@ from app.extraction.cards import mcq_cards, vocab_cards
 from app.extraction.classifier import classify_page
 from app.extraction.mcq import extract_mcq_items
 from app.extraction.vocab import extract_vocab_items, extract_vocab_items_dual_ocr
+from app.extraction.vl_document import extract_from_document_parse
 from app.extraction.vlm_cleanup import cleanup_mcq_items, cleanup_vocab_items
-from app.models.schemas import CardCandidate, Page, ProcessResult
+from app.models.schemas import CardCandidate, DocumentParseResult, Page, ProcessResult
 from app.ocr.engines import PADDLEOCR_ENGINE, PADDLEOCR_VL_ENGINE, run_ocr_engine
 from app.ocr.service import recognize_with_provider
 from app.validation.dictionary import DictionaryValidator
@@ -47,6 +48,19 @@ def process_page(page: Page, engine: str = PADDLEOCR_ENGINE) -> ProcessResult:
     )
     try:
         engine_result = run_ocr_engine(processed_path, page.id, engine)
+        if engine_result.engine == PADDLEOCR_VL_ENGINE:
+            if not engine_result.document_parse:
+                raise RuntimeError("PaddleOCR-VL returned no document parse result.")
+            return _process_document_parse_result(
+                page=page,
+                run_id=run.id,
+                processed_path=processed_path,
+                preprocess_width=preprocess.width,
+                preprocess_height=preprocess.height,
+                preprocess_warnings=preprocess.warnings,
+                ocr_warnings=engine_result.warnings,
+                document_parse=engine_result.document_parse,
+            )
         tokens = engine_result.tokens
         evidence_tokens = engine_result.evidence_tokens or tokens
         ocr_warnings = list(engine_result.warnings)
@@ -141,6 +155,96 @@ def process_page(page: Page, engine: str = PADDLEOCR_ENGINE) -> ProcessResult:
     except Exception as exc:
         database.fail_ocr_run(run.id, str(exc), warnings=preprocess.warnings)
         raise
+
+
+def _process_document_parse_result(
+    *,
+    page: Page,
+    run_id: str,
+    processed_path: Path,
+    preprocess_width: int,
+    preprocess_height: int,
+    preprocess_warnings: list[str],
+    ocr_warnings: list[str],
+    document_parse: DocumentParseResult,
+) -> ProcessResult:
+    validator = DictionaryValidator(DICTIONARY_PATH)
+    extraction = extract_from_document_parse(document_parse, validator)
+    cards: list[CardCandidate] = []
+    if extraction.page_type == "vocab_table":
+        for item in extraction.items:
+            cards.extend(vocab_cards(page.id, item))
+    elif extraction.page_type in {"reading_mcq", "spelling_mcq"}:
+        for item in extraction.items:
+            cards.extend(mcq_cards(page.id, item))
+
+    block_texts = [block.content for block in document_parse.blocks if block.content] or [document_parse.markdown_text]
+    summary = script_summary(block_texts)
+    warnings = [
+        *preprocess_warnings,
+        *ocr_warnings,
+        *extraction.warnings,
+        "Processed with PaddleOCR-VL document parsing; visual evidence is block-level.",
+    ]
+    if not cards:
+        warnings.append("No card candidates were generated from PaddleOCR-VL document blocks.")
+
+    processed_page = Page(
+        id=page.id,
+        original_image_path=page.original_image_path,
+        upload_name=page.upload_name,
+        display_name=page.display_name,
+        processed_image_path=str(processed_path),
+        active_ocr_run_id=page.active_ocr_run_id,
+        page_type=extraction.page_type,
+        page_type_confidence=extraction.page_type_confidence,
+        image_width=preprocess_width,
+        image_height=preprocess_height,
+        warnings=_unique_warnings(warnings),
+        created_at=page.created_at,
+    )
+    database.upsert_page(processed_page)
+    database.replace_tokens(page.id, [], run_id)
+    database.replace_cards(page.id, cards, run_id)
+    completed_run = database.complete_ocr_run(
+        run_id,
+        warnings=processed_page.warnings,
+        metrics={
+            "token_count": 0,
+            "document_block_count": len(document_parse.blocks),
+            "card_count": len(cards),
+            "page_type": extraction.page_type,
+            "page_type_confidence": extraction.page_type_confidence,
+            "script_summary": summary,
+            "answer_map_size": len(extraction.answer_map),
+            "vlm_cleanup_enabled": VLM_CLEANUP_ENABLED,
+            "vocab_dual_ocr_enabled": VOCAB_DUAL_OCR_ENABLED,
+            "document_parse": document_parse.model_dump(mode="json"),
+        },
+        processed_image_path=str(processed_path),
+        image_width=preprocess_width,
+        image_height=preprocess_height,
+    )
+    return ProcessResult(
+        page=processed_page.model_copy(
+            update={
+                "active_ocr_run_id": run_id,
+                "active_ocr_engine": completed_run.engine if completed_run else PADDLEOCR_VL_ENGINE,
+                "active_ocr_completed_at": completed_run.completed_at if completed_run else None,
+                "active_ocr_duration_ms": completed_run.duration_ms if completed_run else None,
+            }
+        ),
+        tokens=[],
+        cards=[card.model_copy(update={"run_id": run_id}) for card in cards],
+        script_summary=summary,
+        answer_map=extraction.answer_map,
+        ocr_run=completed_run,
+        document_parse=document_parse,
+    )
+
+
+def _unique_warnings(warnings: list[str]) -> list[str]:
+    return list(dict.fromkeys(warning for warning in warnings if warning))
 
 
 def _sha256_file(path: Path) -> str | None:

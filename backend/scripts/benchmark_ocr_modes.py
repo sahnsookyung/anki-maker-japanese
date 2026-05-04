@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -27,7 +28,6 @@ from app.extraction import pipeline
 from app.ocr.engines import PADDLEOCR_ENGINE, PADDLEOCR_VL_ENGINE, normalize_ocr_engine
 from app.ocr.service import recognize_with_provider
 from app.models.schemas import Page, ProcessResult
-from app.vision.paddle_ocr_vl import get_paddle_ocr_vl_parser
 
 
 @dataclass(frozen=True)
@@ -254,7 +254,7 @@ def _with_vl_worker_result(
 def _run_worker_command(cmd: list[str], args: argparse.Namespace) -> subprocess.CompletedProcess[str]:
     timeout_seconds = float(getattr(args, "worker_timeout_seconds", 300))
     max_rss_mb = float(getattr(args, "worker_max_rss_mb", 8192))
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
     start = time.monotonic()
     failure_reason = ""
     while process.poll() is None:
@@ -272,7 +272,7 @@ def _run_worker_command(cmd: list[str], args: argparse.Namespace) -> subprocess.
     try:
         stdout, stderr = process.communicate(timeout=5)
     except subprocess.TimeoutExpired:
-        process.kill()
+        _kill_process_group(process)
         stdout, stderr = process.communicate(timeout=5)
     if failure_reason:
         stderr = "\n".join(part for part in (stderr, failure_reason) if part)
@@ -281,12 +281,28 @@ def _run_worker_command(cmd: list[str], args: argparse.Namespace) -> subprocess.
 
 
 def _terminate_process(process: subprocess.Popen[str]) -> None:
-    process.terminate()
+    _signal_process_group(process, signal.SIGTERM)
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        process.kill()
+        _kill_process_group(process)
         process.wait(timeout=5)
+
+
+def _kill_process_group(process: subprocess.Popen[str]) -> None:
+    _signal_process_group(process, signal.SIGKILL)
+
+
+def _signal_process_group(process: subprocess.Popen[str], sig: int) -> None:
+    try:
+        os.killpg(os.getpgid(process.pid), sig)
+    except ProcessLookupError:
+        return
+    except OSError:
+        if sig == signal.SIGTERM:
+            process.terminate()
+        else:
+            process.kill()
 
 
 def _process_tree_rss_mb(pid: int) -> float | None:
@@ -467,29 +483,18 @@ def _run_google_vision_evaluation(
 
 
 def _token_text_coverage(golden: GoldenPage, process_result: ProcessResult, engine: str) -> TextCoverageResult:
+    if engine == PADDLEOCR_VL_ENGINE and process_result.document_parse:
+        document_parse = process_result.document_parse
+        text = "\n".join([document_parse.markdown_text, *[block.content for block in document_parse.blocks]])
+        return _text_coverage(
+            golden,
+            text,
+            document_parse.warnings,
+            mode=f"{engine}_document_text",
+        )
     ordered_tokens = sorted(process_result.tokens, key=lambda token: (token.bbox[1], token.bbox[0], token.id))
     text = "\n".join(token.text for token in ordered_tokens)
     return _text_coverage(golden, text, [], mode=f"{engine}_normalized_token_text")
-
-
-def _run_vl_text_coverage(golden: GoldenPage, process_result: ProcessResult) -> TextCoverageResult:
-    warnings: list[str] = []
-    image_path = Path(process_result.page.processed_image_path or golden.image_path)
-    try:
-        parsed = get_paddle_ocr_vl_parser().parse(image_path, process_result.page.id)
-    except Exception as exc:
-        return TextCoverageResult(
-            mode="paddleocr_vl",
-            page_id=golden.page_id,
-            fields_matched=0,
-            fields_expected=_expected_field_count(golden),
-            items_fully_matched=0,
-            items_expected=_expected_item_count(golden),
-            warnings=[f"PaddleOCR-VL failed: {exc}"],
-        )
-    text = "\n".join([parsed.markdown_text, *[block.content for block in parsed.blocks]])
-    warnings.extend(parsed.warnings)
-    return _text_coverage(golden, text, warnings)
 
 
 def _text_coverage(
@@ -576,6 +581,8 @@ def _result_dict(result: VocabEvalResult | McqEvalResult, engine: str = PADDLEOC
         "matched": result.matched_rows,
         "expected": result.expected_rows,
         "accuracy": result.row_accuracy,
+        "ocr_supported_items": result.ocr_supported_items,
+        "glossary_supported_items": result.glossary_supported_items,
         "surface_reading_matches": result.surface_reading_matches,
         "meaning_matches": result.meaning_matches,
         "generated_cards": result.generated_cards,

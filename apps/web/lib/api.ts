@@ -100,6 +100,7 @@ export type ProcessResult = {
   script_summary: Record<string, number>;
   answer_map: Record<string, number>;
   ocr_run?: OcrRun | null;
+  document_parse?: DocumentParseResult | null;
 };
 
 export type OcrEngine = "paddleocr" | "paddleocr_vl";
@@ -136,10 +137,12 @@ export type OcrComparison = {
 };
 
 export type DocumentParseBlock = {
+  id?: string | null;
   label: string;
   content: string;
   bbox?: number[] | null;
   order?: number | null;
+  confidence?: number | null;
 };
 
 export type DocumentParseResult = {

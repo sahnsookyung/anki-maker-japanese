@@ -493,6 +493,32 @@ button:disabled:hover {
   opacity: 0.22;
 }
 
+.box.document-block {
+  stroke: rgba(95, 75, 182, 0.82);
+  stroke-width: 4;
+  stroke-dasharray: 11 7;
+  fill: rgba(95, 75, 182, 0.06);
+  opacity: 0.62;
+}
+
+.box.document-block.scanned-unused {
+  stroke: rgba(132, 132, 132, 0.62);
+  fill: rgba(132, 132, 132, 0.05);
+  opacity: 0.28;
+}
+
+.box.document-block.linked-document-block {
+  stroke: var(--vl);
+  fill: rgba(95, 75, 182, 0.08);
+  opacity: 0.78;
+}
+
+.box.document-block.selected-evidence {
+  stroke-dasharray: none;
+  fill: rgba(31, 111, 139, 0.12);
+  opacity: 1;
+}
+
 .box.token-review {
   stroke: var(--green);
   opacity: 0.9;
@@ -525,22 +551,26 @@ button:disabled:hover {
 }
 
 .box.candidate-evidence.confidence-high,
-.source-region.confidence-high {
+.source-region.confidence-high,
+.box.document-block.confidence-high {
   stroke: var(--green);
 }
 
 .box.candidate-evidence.confidence-medium,
-.source-region.confidence-medium {
+.source-region.confidence-medium,
+.box.document-block.confidence-medium {
   stroke: #f0b33d;
 }
 
 .box.candidate-evidence.confidence-low,
-.source-region.confidence-low {
+.source-region.confidence-low,
+.box.document-block.confidence-low {
   stroke: var(--red);
 }
 
 .box.candidate-evidence.confidence-unknown,
-.source-region.confidence-unknown {
+.source-region.confidence-unknown,
+.box.document-block.confidence-unknown {
   stroke: #f6e27f;
 }
 
@@ -603,6 +633,14 @@ button:disabled:hover {
   margin-top: 0.35rem;
 }
 
+.evidence-caveat {
+  margin: 0.35rem 0 0;
+  max-width: 30rem;
+  color: var(--vl);
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
 .evidence-source-toggle,
 .comparison-actions {
   display: flex;
@@ -655,6 +693,11 @@ button:disabled:hover {
 
 .legend-dot.used-context {
   color: rgba(111, 61, 155, 0.95);
+}
+
+.legend-dot.document-block {
+  color: var(--vl);
+  border-style: dashed;
 }
 
 .legend-dot.scanned-unused {

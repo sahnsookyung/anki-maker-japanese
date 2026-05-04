@@ -11,15 +11,15 @@ workbook image
   -> image preprocessing
   -> selected OCR engine
      -> default: PaddleOCR Japanese text detection/recognition
-     -> optional: PaddleOCR-VL document blocks converted to normalized OCR tokens
+     -> optional: PaddleOCR-VL document blocks kept as block evidence
   -> optional PaddleOCR Korean recognition pass for vocab glosses
   -> page-type classifier
   -> vocab / MCQ extraction heuristics
-  -> local glossary normalization
+  -> OCR evidence/provenance checks
   -> reviewable Anki card candidates with visual evidence
 ```
 
-For the four-page golden benchmark, the 100% match came from this OCR-plus-structure pipeline, not from PaddleOCR-VL and not from OCR fine-tuning.
+For the four-page golden benchmark, the OCR-plus-structure pipeline is measured without OCR fine-tuning. Vocab rows are scored only when the extracted surface, reading, and Korean meaning are backed by OCR field evidence, so glossary-filled values do not inflate the benchmark.
 
 Important runtime settings:
 
@@ -44,7 +44,7 @@ Why this matters:
 - Japanese and Korean text are recognized with separate OCR passes instead of expecting one recognizer to infer both roles.
 - The measured production default uses Japanese-specific PP-OCRv3 recognition for Japanese workbook text and PP-OCRv5 Korean recognition for Korean glosses.
 - PaddleOCR emits text, bounding boxes, confidence, and script classes; app code decides what is a row, question, target, choice, answer, or Korean gloss.
-- The local Korean glossary normalizes known workbook vocabulary when OCR is partial or noisy.
+- Vocab extraction does not fill missing rows from the local glossary; each benchmarked vocab row must have OCR-backed evidence for surface, reading, and Korean meaning.
 - Review state, warnings, and evidence overlays remain part of the product because benchmark accuracy is not a guarantee for arbitrary new pages.
 - PaddleOCR-VL is optional and can be run as a card-generation engine, but it remains visually separated from the default PaddleOCR path and is scored honestly in benchmarks.
 - OCR-VL diagnostics are still separate from processing: document-block preview does not create, approve, or export cards.
@@ -115,7 +115,7 @@ Why this matters:
 │ 2. OCR engine normalization  │
 │ 3. classify page type        │
 │ 4. extract vocab / MCQ items │
-│ 5. normalize via glossary    │
+│ 5. verify evidence provenance│
 │ 6. generate card candidates  │
 │ 7. store evidence metadata   │
 └───────┬──────────────┬───────┘
@@ -147,9 +147,9 @@ Why this matters:
    The classifier decides whether the page is vocab_table, reading_mcq, spelling_mcq, or unknown_review_required.
 
 3. Extract
-   For vocabulary pages, the pipeline extracts surface, reading, Korean meaning, source_bbox, and evidence_tokens.
+   For vocabulary pages, the pipeline extracts one candidate per surface/reading/Korean meaning row, plus source_bbox and evidence_tokens.
    For MCQ pages, the pipeline extracts question_no, sentence, target, choices, correct_answer, correct_choice_no, answer_source, source_bbox, evidence_tokens, and token_roles.
-   The Korean glossary can normalize known vocab/answers where OCR is noisy, with warnings when normalization affects the result.
+   Vocab rows are not supplemented from glossary data; benchmark row accuracy only credits rows whose fields are backed by OCR evidence.
    The card generator turns each extracted item into reviewable CardCandidate rows scoped to the OCR run.
 
 4. Review

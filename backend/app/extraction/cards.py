@@ -37,37 +37,7 @@ def vocab_cards(page_id: str, item: dict[str, Any]) -> list[CardCandidate]:
             source_type="vocab_item",
             source_id=source_id,
             source=source,
-            note_type="jp_vocab_reading",
-            front=f"{escape(surface)}<br>뜻: {escape(meaning)}<br><br>읽는 법?",
-            back=escape(reading),
-            tags=["jlpt", "vocab", "reading"],
-            confidence=confidence,
-            review_state=state,
-            source_bbox=bbox,
-            warnings=warnings,
-        ),
-        CardCandidate(
-            id=new_id("card"),
-            page_id=page_id,
-            source_type="vocab_item",
-            source_id=source_id,
-            source=source,
-            note_type="jp_vocab_meaning",
-            front=f"{escape(surface)}<br>{escape(reading)}<br><br>뜻?",
-            back=escape(meaning),
-            tags=["jlpt", "vocab", "meaning"],
-            confidence=confidence,
-            review_state=state,
-            source_bbox=bbox,
-            warnings=warnings,
-        ),
-        CardCandidate(
-            id=new_id("card"),
-            page_id=page_id,
-            source_type="vocab_item",
-            source_id=source_id,
-            source=source,
-            note_type="jp_vocab_writing",
+            note_type="jp_vocab_entry",
             front=f"{escape(reading)}<br>{escape(meaning)}<br><br>올바른 표기는?",
             back=escape(surface),
             tags=["jlpt", "vocab", "writing"],
@@ -89,7 +59,7 @@ def mcq_cards(page_id: str, item: dict[str, Any]) -> list[CardCandidate]:
     confidence = float(item.get("confidence", 0.5))
     warnings = list(item.get("warnings", []))
     blocked = not (sentence and target and correct_answer and bbox)
-    if len(choices) != 4:
+    if len(choices) != 4 or not all(choices):
         blocked = True
         warnings.append("Expected exactly four choices.")
     if item.get("answer_source") in {"unknown", "model_inferred"}:

@@ -38,7 +38,7 @@ class PaddleOcrVlDocumentParser:
             "use_seal_recognition": False,
             "use_ocr_for_image_block": False,
             "format_block_content": False,
-            "merge_layout_blocks": True,
+            "merge_layout_blocks": False,
             "use_queues": False,
         }
         if PADDLE_OCR_VL_SERVER_URL:
@@ -63,6 +63,7 @@ class PaddleOcrVlDocumentParser:
             use_seal_recognition=False,
             use_ocr_for_image_block=False,
             format_block_content=False,
+            merge_layout_blocks=False,
             max_pixels=PADDLE_OCR_VL_MAX_PIXELS,
             max_new_tokens=PADDLE_OCR_VL_MAX_NEW_TOKENS,
         )
@@ -162,18 +163,67 @@ def _result_payload(result: Any) -> dict[str, Any]:
 
 def _blocks_from_payload(payload: dict[str, Any]) -> list[DocumentParseBlock]:
     blocks: list[DocumentParseBlock] = []
-    for item in payload.get("parsing_res_list") or []:
+    for index, item in enumerate(payload.get("parsing_res_list") or []):
         if not isinstance(item, dict):
             continue
+        order = _int_or_none(item.get("block_order"))
         blocks.append(
             DocumentParseBlock(
+                id=str(item.get("block_id") or f"vl_block_{order if order is not None else index}"),
                 label=str(item.get("block_label") or "unknown"),
                 content=str(item.get("block_content") or ""),
-                bbox=item.get("block_bbox"),
-                order=item.get("block_order"),
+                bbox=_rect_bbox(item.get("block_bbox")),
+                order=order,
+                confidence=_float_or_none(item.get("confidence") or item.get("block_confidence")),
             )
         )
     return blocks
+
+
+def _rect_bbox(value: Any) -> list[float] | None:
+    if not isinstance(value, list) or not value:
+        return None
+    if len(value) == 4 and all(isinstance(item, (int, float)) for item in value):
+        x1, y1, x2, y2 = [float(item) for item in value]
+        left, right = sorted([x1, x2])
+        top, bottom = sorted([y1, y2])
+        return [left, top, right, bottom] if right > left and bottom > top else None
+    points: list[tuple[float, float]] = []
+    for point in value:
+        if isinstance(point, dict):
+            x_value = point.get("x")
+            y_value = point.get("y")
+            if isinstance(x_value, (int, float)) and isinstance(y_value, (int, float)):
+                points.append((float(x_value), float(y_value)))
+        elif (
+            isinstance(point, (list, tuple))
+            and len(point) >= 2
+            and isinstance(point[0], (int, float))
+            and isinstance(point[1], (int, float))
+        ):
+            points.append((float(point[0]), float(point[1])))
+    if not points:
+        return None
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    left, right = min(xs), max(xs)
+    top, bottom = min(ys), max(ys)
+    return [left, top, right, bottom] if right > left and bottom > top else None
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if 0 <= parsed <= 1 else None
 
 
 def _markdown_text(result: Any) -> str:

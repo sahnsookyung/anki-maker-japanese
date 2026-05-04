@@ -38,7 +38,7 @@ def test_cards_to_csv_writes_anki_headers_and_round_trips_fields(tmp_path) -> No
         page_id="page-1",
         source_type="vocab_item",
         source_id="vocab-1",
-        note_type="jp_vocab_reading",
+        note_type="jp_vocab_entry",
         front='学校, "がっこう"\t校',
         back="school\n학교<br>学校",
         tags=["jlpt", "needs-review"],
@@ -54,7 +54,7 @@ def test_cards_to_csv_writes_anki_headers_and_round_trips_fields(tmp_path) -> No
     rows = list(csv.reader(StringIO("\n".join(data_lines))))
     assert rows == [
         [
-            "jp_vocab_reading",
+            "jp_vocab_entry",
             '学校, "がっこう"\t校',
             "school<br>학교<br>学校",
             "page-1",

@@ -63,6 +63,7 @@ class ProcessResult(BaseModel):
     script_summary: dict[str, int]
     answer_map: dict[int, int] = Field(default_factory=dict)
     ocr_run: "OcrRun | None" = None
+    document_parse: "DocumentParseResult | None" = None
 
 
 class OcrRun(BaseModel):
@@ -97,10 +98,12 @@ class OcrComparison(BaseModel):
 
 
 class DocumentParseBlock(BaseModel):
+    id: str | None = None
     label: str
     content: str = ""
     bbox: BBox | None = None
     order: int | None = None
+    confidence: float | None = None
 
 
 class DocumentParseResult(BaseModel):

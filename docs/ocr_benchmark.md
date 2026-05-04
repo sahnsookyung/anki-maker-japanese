@@ -38,7 +38,7 @@ Rationale:
 
 ## PaddleOCR-VL Comparison
 
-PaddleOCR-VL is supported as an optional processing engine, but it is not treated as automatically equivalent to the base OCR path. It returns document blocks/markdown-style text, so the backend normalizes those blocks into the same OCR token shape used by PaddleOCR: text, bbox, confidence, provider, reading order, and optional role.
+PaddleOCR-VL is supported as an optional processing engine, but it is not treated as automatically equivalent to the base OCR path. It returns document blocks/markdown-style text, so the backend keeps those blocks as document-block evidence instead of pretending they are word-level OCR tokens. Card extraction consumes the same downstream item/card interfaces, but visual evidence remains clearly labeled as OCR-VL block evidence.
 
 The benchmark therefore measures:
 
@@ -46,7 +46,7 @@ The benchmark therefore measures:
 - PaddleOCR-VL extraction accuracy against the same golden rows/questions when the model can run within local resource limits.
 - MCQ semantic accuracy for generated Anki cards.
 - MCQ source-field accuracy for sentence, target, all four choices, answer, and answer number.
-- Normalized OCR-token text coverage, which checks whether OCR text contains expected transcript fields before answer-strip or glossary heuristics can rescue the card.
+- Normalized OCR text coverage, which checks whether PaddleOCR tokens or OCR-VL document text contain expected transcript fields before answer-strip or glossary heuristics can rescue the card.
 - Wall time, user/system CPU time, CPU percent relative to one core, peak RSS, RSS samples, and worker failures.
 - NPU/GPU fields are included in the JSON output; they are marked unavailable unless a local collector is configured.
 
@@ -70,7 +70,7 @@ Run a cautious one-page PaddleOCR-VL comparison:
 
 ```bash
 cd backend
-uv run python scripts/benchmark_ocr_modes.py --engine all --vl-limit 1 --worker-timeout-seconds 120 --worker-max-rss-mb 14336
+uv run python scripts/benchmark_ocr_modes.py --engine all --vl-limit 1 --worker-timeout-seconds 300 --worker-max-rss-mb 14336
 ```
 
 Keep `--vl-limit` low at first. PaddleOCR-VL is intentionally opt-in because it is heavier than the base OCR path, and this project has already seen local memory pressure from vision-model experiments. The worker memory cap is deliberate: a failed VL run should become a benchmark record, not a laptop crash.
@@ -86,6 +86,13 @@ uv run python scripts/evaluate_golden.py --engine paddleocr_vl --json
 uv run python scripts/evaluate_golden.py --from-db --json
 uv run python scripts/evaluate_golden.py --from-db --run-id run_... --json
 uv run python scripts/benchmark_ocr_modes.py --include-vl --include-google-vision --json
+```
+
+Run all four golden pages through PaddleOCR-VL explicitly:
+
+```bash
+cd backend
+uv run python scripts/benchmark_ocr_modes.py --engine paddleocr_vl --json --worker-timeout-seconds 900 --worker-max-rss-mb 14336
 ```
 
 Fresh evaluation now uses the same isolated per-page worker path for every engine, so PaddleOCR and OCR-VL are scored under the same subprocess/DB/processed-image isolation rules. Use `--from-db` after processing pages from the browser to verify that UI-generated candidates score the same way as CLI-generated candidates. Because `--from-db` evaluates whatever OCR run is currently active for a page, it labels results as `persisted_paddleocr`, `persisted_paddleocr_vl`, or `persisted_unknown` instead of pretending a fresh engine run happened. Use `--run-id` when you need to score a specific persisted run.
@@ -115,12 +122,14 @@ Leave caching enabled during normal UI use; disabling it trades memory observabi
 
 ## Latest Local Benchmark Notes
 
-On May 3, 2026, guarded subprocess-isolated local runs showed:
+On May 4, 2026, guarded subprocess-isolated local runs with strict OCR-evidence vocab scoring showed:
 
-- The measured default, Japanese PP-OCRv3 mobile + Korean PP-OCRv5, reached 100% vocab row accuracy and 100% MCQ semantic accuracy on all four golden pages.
+- The measured default, Japanese PP-OCRv3 mobile + Korean PP-OCRv5, reached 100% MCQ semantic accuracy on the two MCQ golden pages.
+- Vocab rows are now scored only when surface, reading, and Korean meaning are all OCR-backed. Under that stricter rule, PaddleOCR scored 23/36 rows on category 1 and 12/24 rows on category 3; no glossary-supported vocab rows were counted.
 - MCQ source-field accuracy is stricter than card accuracy and currently exposes remaining OCR/layout roughness on the MCQ pages; the two MCQ pages scored 84% source-field accuracy.
-- Normalized OCR-token text coverage for PaddleOCR was 278/320 expected fields (86.9%), which is the clearest signal that 100% card accuracy is not raw OCR accuracy.
-- Base PaddleOCR page workers peaked around 2.8 GB RSS per page on the current machine.
-- PaddleOCR-VL generated no cards on the four golden pages through the current shared extraction path, with 24/320 normalized token-text fields matched (7.5%). It peaked around 12.1 GB RSS per page under the 14336 MB guardrail.
+- PaddleOCR-VL generated correct card candidates for both MCQ pages, scoring 10/10 on category 2 and 10/10 on category 4 with 90% source-field accuracy on both. It did not generate benchmark-credit vocab rows for categories 1 or 3 because the local VL document text did not recover complete surface/reading/Korean triples.
+- PaddleOCR-VL document-text coverage was 24.1% on category 1, 90.0% on category 2, 51.4% on category 3, and 70.0% on category 4. Compare this with semantic and source-field accuracy when judging extraction changes.
+- Base PaddleOCR page workers peaked around 2.8 GB RSS per page and finished the four-page run in about 40 seconds on the current machine.
+- PaddleOCR-VL page workers peaked around 12.1 GB RSS per page and took about 8.7 minutes for the same four pages under the 14336 MB guardrail.
 
 Interpret those notes as a local hardware/resource snapshot, not a universal model limit. If you raise `--worker-max-rss-mb`, run one page at a time and keep the JSON metrics so the result is comparable.

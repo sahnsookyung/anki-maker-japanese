@@ -16,6 +16,8 @@ class VocabEvalResult:
     actual_page_type: str
     expected_rows: int
     extracted_items: int
+    ocr_supported_items: int
+    glossary_supported_items: int
     matched_rows: int
     surface_reading_matches: int
     meaning_matches: int
@@ -31,6 +33,7 @@ class VocabEvalResult:
 
 def evaluate_vocab_page(golden: GoldenPage, process_result: ProcessResult) -> VocabEvalResult:
     items = _items_from_cards(process_result.cards)
+    ocr_supported_items = [item for item in items if _item_has_ocr_evidence(item)]
     matched: set[str] = set()
     surface_reading_matches = 0
     meaning_match_count = 0
@@ -38,7 +41,7 @@ def evaluate_vocab_page(golden: GoldenPage, process_result: ProcessResult) -> Vo
     for row in golden.expected_rows:
         candidates = [
             item
-            for item in items
+            for item in ocr_supported_items
             if normalize_text(str(item.get("surface", ""))) == normalize_text(row.surface)
             and normalize_text(str(item.get("reading", ""))) == normalize_text(row.reading)
         ]
@@ -55,6 +58,8 @@ def evaluate_vocab_page(golden: GoldenPage, process_result: ProcessResult) -> Vo
         actual_page_type=process_result.page.page_type,
         expected_rows=len(golden.expected_rows),
         extracted_items=len(items),
+        ocr_supported_items=len(ocr_supported_items),
+        glossary_supported_items=sum(1 for item in items if _item_has_glossary_evidence(item)),
         matched_rows=len(matched),
         surface_reading_matches=surface_reading_matches,
         meaning_matches=meaning_match_count,
@@ -76,6 +81,35 @@ def _items_from_cards(cards: list[CardCandidate]) -> list[dict[str, Any]]:
             continue
         by_source.setdefault(card.source_id, card.source)
     return list(by_source.values())
+
+
+def _item_has_ocr_evidence(item: dict[str, Any]) -> bool:
+    evidence = item.get("field_evidence")
+    if not isinstance(evidence, dict):
+        return False
+    return all(_field_has_ocr_evidence(evidence.get(field)) for field in ("surface", "reading", "meaning_ko"))
+
+
+def _field_has_ocr_evidence(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    provenance = value.get("provenance")
+    token_ids = value.get("token_ids")
+    block_ids = value.get("block_ids")
+    bbox = value.get("bbox")
+    has_bbox = isinstance(bbox, list) and len(bbox) == 4
+    if provenance == "ocr":
+        return isinstance(token_ids, list) and bool(token_ids) and has_bbox
+    if provenance == "paddleocr_vl_block":
+        return isinstance(block_ids, list) and bool(block_ids) and has_bbox
+    return False
+
+
+def _item_has_glossary_evidence(item: dict[str, Any]) -> bool:
+    evidence = item.get("field_evidence")
+    if not isinstance(evidence, dict):
+        return False
+    return any(isinstance(value, dict) and value.get("provenance") == "glossary" for value in evidence.values())
 
 
 def _has_script(text: str, script: str) -> bool:

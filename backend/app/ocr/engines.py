@@ -2,11 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-import re
 
-from app.core.script import script_summary
 from app.models.schemas import DocumentParseResult, OcrToken
-from app.ocr.providers import make_token
 from app.ocr.service import recognize_with_warnings
 from app.vision.paddle_ocr_vl import get_paddle_ocr_vl_parser
 
@@ -31,119 +28,22 @@ def run_ocr_engine(image_path: Path, page_id: str, engine: str = PADDLEOCR_ENGIN
         tokens, warnings = recognize_with_warnings(image_path, page_id)
         return OcrEngineResult(engine=normalized, tokens=tokens, warnings=warnings)
     parsed = get_paddle_ocr_vl_parser().parse(image_path, page_id)
-    vl_tokens, conversion_warnings = tokens_from_document_parse(parsed)
-    geometry_tokens, geometry_warnings = recognize_with_warnings(image_path, page_id)
-    if geometry_tokens:
-        tokens, used_geometry_ids = _align_tokens_to_geometry(vl_tokens, geometry_tokens)
-        evidence_tokens = _merge_visual_evidence_tokens(tokens, geometry_tokens, used_geometry_ids)
-    else:
-        tokens = vl_tokens
-        evidence_tokens = vl_tokens
     warnings = [
         *parsed.warnings,
-        *conversion_warnings,
-        *geometry_warnings,
         (
-            "PaddleOCR-VL text was parsed, but visual evidence uses PaddleOCR word boxes "
-            "because VL boxes are document-block geometry."
+            "PaddleOCR-VL returned document blocks. Candidate extraction and visual evidence use "
+            "block-level geometry instead of PaddleOCR word boxes."
         ),
     ]
-    if geometry_tokens and vl_tokens:
-        warnings.append("PaddleOCR-VL tokens keep VL text with PaddleOCR-aligned evidence boxes when text matches.")
-        unmatched_count = len(evidence_tokens) - len(tokens)
-        if unmatched_count > 0:
-            warnings.append(
-                f"{unmatched_count} unmatched PaddleOCR geometry tokens are retained as unused OCR evidence for visual review."
-            )
-    elif not geometry_tokens and vl_tokens:
-        warnings.append("PaddleOCR word geometry was unavailable; using PaddleOCR-VL block-derived boxes for review only.")
-    if not tokens:
-        warnings.append("PaddleOCR-VL produced no normalized OCR tokens; review page manually.")
+    if not parsed.blocks and not parsed.markdown_text.strip():
+        warnings.append("PaddleOCR-VL produced no document text; review page manually.")
     return OcrEngineResult(
         engine=normalized,
-        tokens=tokens,
+        tokens=[],
         warnings=warnings,
         document_parse=parsed,
-        evidence_tokens=evidence_tokens,
+        evidence_tokens=[],
     )
-
-
-def _align_tokens_to_geometry(vl_tokens: list[OcrToken], geometry_tokens: list[OcrToken]) -> tuple[list[OcrToken], set[str]]:
-    if not vl_tokens or not geometry_tokens:
-        return vl_tokens, set()
-    used_geometry_ids: set[str] = set()
-    aligned: list[OcrToken] = []
-    cursor = 0
-    for token in vl_tokens:
-        match, match_index = _best_geometry_match(token, geometry_tokens, used_geometry_ids, cursor)
-        if match is None:
-            if _should_keep_unmatched_vl_token(token):
-                aligned.append(token)
-            continue
-        used_geometry_ids.add(match.id)
-        cursor = match_index + 1
-        aligned.append(
-            token.model_copy(
-                update={
-                    "bbox": match.bbox,
-                    "confidence": min(token.confidence, match.confidence),
-                }
-            )
-        )
-    return sorted(aligned, key=_visual_order_key), used_geometry_ids
-
-
-def _merge_visual_evidence_tokens(
-    aligned_tokens: list[OcrToken],
-    geometry_tokens: list[OcrToken],
-    used_geometry_ids: set[str],
-) -> list[OcrToken]:
-    evidence_tokens = [
-        *aligned_tokens,
-        *(token for token in geometry_tokens if token.id not in used_geometry_ids),
-    ]
-    return sorted(evidence_tokens, key=_visual_order_key)
-
-
-def _visual_order_key(token: OcrToken) -> tuple[float, float, str]:
-    return token.bbox[1], token.bbox[0], token.id
-
-
-def _best_geometry_match(
-    token: OcrToken,
-    geometry_tokens: list[OcrToken],
-    used_geometry_ids: set[str],
-    cursor: int,
-) -> tuple[OcrToken | None, int]:
-    normalized_token = _normalize_match_text(token.text)
-    if not normalized_token:
-        return None, -1
-    candidates = [
-        (index, candidate)
-        for index, candidate in enumerate(geometry_tokens)
-        if candidate.id not in used_geometry_ids and _normalize_match_text(candidate.text) == normalized_token
-    ]
-    if not candidates:
-        return None, -1
-    ordered_candidates = [candidate for candidate in candidates if candidate[0] >= cursor] or candidates
-    match_index, match = min(ordered_candidates, key=lambda item: (item[0] < cursor, abs(item[0] - cursor), -item[1].confidence))
-    return match, match_index
-
-
-def _normalize_match_text(text: str) -> str:
-    normalized = re.sub(r"\\(?:underline|text)\{([^{}]*)\}", r"\1", text)
-    normalized = re.sub(r"\\[A-Za-z]+", "", normalized)
-    normalized = normalized.replace("{", "").replace("}", "")
-    return re.sub(r"\s+", "", normalized)
-
-
-def _should_keep_unmatched_vl_token(token: OcrToken) -> bool:
-    normalized = _normalize_match_text(token.text)
-    if not normalized:
-        return False
-    if re.fullmatch(r"[0-9０-９①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]+", normalized):
-        return False
-    return not re.fullmatch(r"[$¥￥\\.,，。:;!?・/|_-]+", normalized)
 
 
 def normalize_ocr_engine(engine: str | None) -> str:
@@ -155,111 +55,3 @@ def normalize_ocr_engine(engine: str | None) -> str:
     if normalized not in SUPPORTED_OCR_ENGINES:
         raise ValueError(f"Unsupported OCR engine {engine!r}. Use one of: {', '.join(sorted(SUPPORTED_OCR_ENGINES))}.")
     return normalized
-
-
-def tokens_from_document_parse(result: DocumentParseResult) -> tuple[list[OcrToken], list[str]]:
-    warnings: list[str] = []
-    tokens: list[OcrToken] = []
-    ordered_blocks = sorted(result.blocks, key=lambda block: block.order if block.order is not None else 10_000)
-    synthetic_block_count = 0
-    y_cursor = 20.0
-    for block_index, block in enumerate(ordered_blocks):
-        content = block.content.strip()
-        if not content:
-            continue
-        block_tokens, used_synthetic_bbox = _tokens_from_text_block(
-            page_id=result.page_id,
-            text=content,
-            block_bbox=block.bbox,
-            block_index=block_index,
-            y_cursor=y_cursor,
-        )
-        if used_synthetic_bbox:
-            synthetic_block_count += 1
-        if block_tokens:
-            y_cursor = max(token.bbox[3] for token in block_tokens) + 18
-            tokens.extend(block_tokens)
-
-    if not tokens and result.markdown_text.strip():
-        markdown_tokens, _ = _tokens_from_text_block(
-            page_id=result.page_id,
-            text=result.markdown_text,
-            block_bbox=None,
-            block_index=0,
-            y_cursor=20.0,
-        )
-        tokens.extend(markdown_tokens)
-        synthetic_block_count += 1
-
-    if synthetic_block_count:
-        warnings.append(
-            "PaddleOCR-VL output was converted to synthetic OCR boxes; use it for text quality comparison, not precise evidence geometry."
-        )
-    return tokens, warnings
-
-
-def _tokens_from_text_block(
-    *,
-    page_id: str,
-    text: str,
-    block_bbox: list[float] | None,
-    block_index: int,
-    y_cursor: float,
-) -> tuple[list[OcrToken], bool]:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if not lines:
-        lines = [text.strip()]
-    bbox = _valid_bbox(block_bbox)
-    used_synthetic_bbox = bbox is None
-    if bbox is None:
-        width = max(320.0, max(len(line) for line in lines) * 18.0)
-        height = max(28.0 * len(lines), 36.0)
-        bbox = [20.0, y_cursor + block_index * 2.0, 20.0 + width, y_cursor + block_index * 2.0 + height]
-
-    x1, y1, x2, y2 = bbox
-    line_height = max(18.0, (y2 - y1) / max(1, len(lines)))
-    tokens: list[OcrToken] = []
-    for line_index, line in enumerate(lines):
-        parts = _line_parts(line)
-        if not parts:
-            continue
-        total_chars = max(1, sum(max(1, len(part)) for part in parts))
-        available_width = max(24.0, x2 - x1)
-        cursor = x1
-        line_top = y1 + line_index * line_height
-        line_bottom = min(y2, line_top + line_height * 0.82)
-        for part in parts:
-            part_width = max(12.0, available_width * (max(1, len(part)) / total_chars))
-            token = make_token(
-                page_id=page_id,
-                text=part,
-                bbox=[cursor, line_top, min(x2, cursor + part_width), max(line_top + 1.0, line_bottom)],
-                confidence=0.68,
-                source=PADDLEOCR_VL_ENGINE,
-            )
-            if token.text:
-                tokens.append(token)
-            cursor += part_width
-    return tokens, used_synthetic_bbox
-
-
-def _valid_bbox(value: list[float] | None) -> list[float] | None:
-    if not isinstance(value, list) or len(value) != 4:
-        return None
-    if not all(isinstance(item, (int, float)) for item in value):
-        return None
-    x1, y1, x2, y2 = [float(item) for item in value]
-    if x2 <= x1 or y2 <= y1:
-        return None
-    return [x1, y1, x2, y2]
-
-
-def _line_parts(line: str) -> list[str]:
-    spaced = re.split(r"\s+", line.strip())
-    if len(spaced) > 1:
-        return [part for part in spaced if part]
-    return [line.strip()]
-
-
-def engine_script_summary(tokens: list[OcrToken]) -> dict[str, int]:
-    return script_summary([token.text for token in tokens])

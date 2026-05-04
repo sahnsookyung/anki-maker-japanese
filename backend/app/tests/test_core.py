@@ -15,10 +15,10 @@ from app.api import routes
 from app.db import database
 from app.extraction import pipeline
 from app.extraction.answer_strip import parse_answer_strip_text
-from app.extraction.cards import mcq_cards
+from app.extraction.cards import mcq_cards, vocab_cards
 from app.extraction.mcq import extract_mcq_items
 from app.extraction.sentence_order import repair_predicate_first_sentence
-from app.models.schemas import CardCandidate, DocumentParseResult, FieldOcrPreviewResponse, OcrComparison, OcrToken, Page, ProcessResult
+from app.models.schemas import CardCandidate, DocumentParseBlock, DocumentParseResult, FieldOcrPreviewResponse, OcrComparison, OcrToken, Page, ProcessResult
 from app.ocr.engines import OcrEngineResult
 from fastapi import HTTPException
 
@@ -34,6 +34,36 @@ def test_answer_strip_parser() -> None:
     assert parse_answer_strip_text("1 2 2 3 3 1 10 4") == {1: 2, 2: 3, 3: 1, 10: 4}
     assert parse_answer_strip_text("① 2 ② 3") == {1: 2, 2: 3}
     assert parse_answer_strip_text("11 2 12 4 ⑬ 1") == {11: 2, 12: 4, 13: 1}
+    assert parse_answer_strip_text("11① 12④ 13②") == {11: 1, 12: 4, 13: 2}
+    assert parse_answer_strip_text("12 1 2 2 3 3 1 4 2") == {1: 2, 2: 3, 3: 1, 4: 2}
+    assert parse_answer_strip_text("2024 1 2 2 3 3 1 10 4") == {1: 2, 2: 3, 3: 1, 10: 4}
+    assert parse_answer_strip_text("60 答 12") == {1: 2}
+    assert parse_answer_strip_text("2024 答 12") == {1: 2}
+    assert parse_answer_strip_text("2024 답 11 22 33 44 51 62 73 84 91 103 114") == {
+        1: 1,
+        2: 2,
+        3: 3,
+        4: 4,
+        5: 1,
+        6: 2,
+        7: 3,
+        8: 4,
+        9: 1,
+        10: 3,
+        11: 4,
+    }
+    assert parse_answer_strip_text("12 2① 3② 4② 5③ 6③ 7③ 8① 9② 10④") == {
+        1: 2,
+        2: 1,
+        3: 2,
+        4: 2,
+        5: 3,
+        6: 3,
+        7: 3,
+        8: 1,
+        9: 2,
+        10: 4,
+    }
 
 
 def test_mcq_extraction_keeps_printed_question_numbers_when_previous_blocks_are_absent() -> None:
@@ -498,6 +528,27 @@ def test_cards_are_returned_in_workbook_semantic_order(tmp_path, monkeypatch) ->
         "card-vocab-meaning",
         "card-vocab-writing",
     ]
+
+
+def test_vocab_cards_create_one_candidate_per_vocab_entry() -> None:
+    [card] = vocab_cards(
+        "page-vocab",
+        {
+            "id": "row-1",
+            "surface": "学校",
+            "reading": "がっこう",
+            "meaning_ko": "학교",
+            "bbox": [1, 2, 3, 4],
+            "confidence": 0.93,
+            "warnings": [],
+        },
+    )
+
+    assert card.source_id == "row-1"
+    assert card.note_type == "jp_vocab_entry"
+    assert card.front == "がっこう<br>학교<br><br>올바른 표기는?"
+    assert card.back == "学校"
+    assert card.tags == ["jlpt", "vocab", "writing"]
 
 
 def test_failed_rerun_does_not_replace_active_successful_run(tmp_path, monkeypatch) -> None:
@@ -1029,6 +1080,52 @@ def test_page_ocr_regenerates_missing_processed_cache_and_keeps_tokens(tmp_path,
     assert database.get_tokens("page-cache")[0].id == "cached-token"
 
 
+def test_page_ocr_returns_persisted_vl_document_parse(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "ocr-vl-cache.db")
+    database.init_db()
+    original_path = tmp_path / "page.jpg"
+    original_path.write_bytes(b"original")
+    page = Page(
+        id="page-vl-cache",
+        original_image_path=str(original_path),
+        display_name="VL cached page",
+        processed_image_path=str(original_path),
+        page_type="vocab_table",
+        page_type_confidence=0.7,
+        image_width=320,
+        image_height=240,
+        warnings=[],
+        created_at="2026-05-03T00:00:00+00:00",
+    )
+    database.upsert_page(page)
+    run = database.start_ocr_run(page.id, "paddleocr_vl")
+    parsed = DocumentParseResult(
+        page_id=page.id,
+        provider="paddleocr_vl",
+        source_image_path=str(original_path),
+        backend="fake",
+        block_count=1,
+        blocks=[DocumentParseBlock(id="block-1", label="text", content="学校 がっこう 학교", bbox=[10, 20, 220, 45])],
+    )
+    database.complete_ocr_run(
+        run.id,
+        warnings=[],
+        metrics={"page_type": "vocab_table", "page_type_confidence": 0.7, "document_parse": parsed.model_dump(mode="json")},
+        processed_image_path=str(original_path),
+        image_width=320,
+        image_height=240,
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/pages/page-vl-cache/ocr")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tokens"] == []
+    assert payload["document_parse"]["blocks"][0]["id"] == "block-1"
+    assert payload["document_parse"]["blocks"][0]["bbox"] == [10.0, 20.0, 220.0, 45.0]
+
+
 def test_page_ocr_hides_stale_evidence_when_regenerated_geometry_differs(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "ocr-cache-mismatch.db")
     processed_dir = tmp_path / "processed"
@@ -1091,6 +1188,66 @@ def test_page_ocr_hides_stale_evidence_when_regenerated_geometry_differs(tmp_pat
     assert second_payload["tokens"] == []
     assert second_payload["page"]["image_width"] is None
     assert second_payload["page"]["image_height"] is None
+
+
+def test_page_ocr_hides_stale_vl_document_parse_when_regenerated_geometry_differs(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "ocr-vl-cache-mismatch.db")
+    processed_dir = tmp_path / "processed"
+    processed_dir.mkdir()
+    monkeypatch.setattr(routes, "PROCESSED_DIR", processed_dir)
+    database.init_db()
+    original_path = tmp_path / "uploads" / "page.jpg"
+    original_path.parent.mkdir()
+    original_path.write_bytes(b"original")
+    page_id = "page-vl-cache-mismatch"
+    database.upsert_page(
+        Page(
+            id=page_id,
+            original_image_path=str(original_path),
+            display_name="Cached VL page mismatch",
+            processed_image_path=str(processed_dir / "missing.png"),
+            page_type="reading_mcq",
+            page_type_confidence=0.9,
+            image_width=320,
+            image_height=240,
+            warnings=[],
+            created_at="2026-05-03T00:00:00+00:00",
+        )
+    )
+    run = database.start_ocr_run(page_id, "paddleocr_vl")
+    parsed = DocumentParseResult(
+        page_id=page_id,
+        provider="paddleocr_vl",
+        source_image_path=str(original_path),
+        backend="fake",
+        block_count=1,
+        blocks=[DocumentParseBlock(id="block-1", label="text", content="学校 がっこう 학교", bbox=[10, 20, 220, 45])],
+    )
+    database.complete_ocr_run(
+        run.id,
+        warnings=[],
+        metrics={"document_parse": parsed.model_dump(mode="json")},
+        processed_image_path=str(processed_dir / "missing.png"),
+        image_width=320,
+        image_height=240,
+    )
+
+    def fake_preprocess(original, output):
+        output.write_bytes(b"processed")
+        return SimpleNamespace(width=640, height=480, warnings=[])
+
+    monkeypatch.setattr(routes, "preprocess_image", fake_preprocess)
+    client = TestClient(app)
+
+    response = client.get(f"/api/pages/{page_id}/ocr")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tokens"] == []
+    assert payload["document_parse"] is None
+    assert payload["page"]["image_width"] is None
+    assert payload["page"]["image_height"] is None
+    assert "Existing OCR evidence needs reprocessing before boxes can be shown safely." in payload["page"]["warnings"]
 
 
 def test_page_ocr_hydrates_missing_image_dimensions_from_existing_processed_image(tmp_path, monkeypatch) -> None:

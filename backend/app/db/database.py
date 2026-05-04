@@ -10,7 +10,7 @@ from typing import Iterator, Any
 
 from app.core.ids import new_id
 from app.core.config import DB_PATH
-from app.models.schemas import CardCandidate, OcrRun, OcrToken, Page
+from app.models.schemas import CardCandidate, DocumentParseResult, OcrRun, OcrToken, Page
 
 
 _PAGE_WITH_ACTIVE_RUN_SQL = """
@@ -355,6 +355,16 @@ def get_active_ocr_run(page_id: str) -> OcrRun | None:
     return _ocr_run_from_row(row) if row else None
 
 
+def get_active_document_parse(page_id: str) -> DocumentParseResult | None:
+    run = get_active_ocr_run(page_id)
+    return _document_parse_from_run(run) if run else None
+
+
+def get_document_parse_for_run(run_id: str) -> DocumentParseResult | None:
+    run = get_ocr_run(run_id)
+    return _document_parse_from_run(run) if run else None
+
+
 def list_ocr_runs(page_id: str) -> list[OcrRun]:
     with connect() as conn:
         rows = conn.execute(
@@ -530,6 +540,7 @@ def _card_sort_key(card: CardCandidate) -> tuple[Any, ...]:
         position = 1_000_000
     source_rank = 0 if card.source_type == "question_item" else 1
     note_rank = {
+        "jp_vocab_entry": 0,
         "jp_vocab_reading": 0,
         "jp_vocab_meaning": 1,
         "jp_vocab_writing": 2,
@@ -809,6 +820,16 @@ def _ocr_run_from_row(row: sqlite3.Row) -> OcrRun:
         completed_at=row["completed_at"],
         duration_ms=row["duration_ms"],
     )
+
+
+def _document_parse_from_run(run: OcrRun | None) -> DocumentParseResult | None:
+    payload = run.metrics.get("document_parse") if run else None
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return DocumentParseResult(**payload)
+    except ValueError:
+        return None
 
 
 def _active_run_id(page_id: str | None) -> str | None:

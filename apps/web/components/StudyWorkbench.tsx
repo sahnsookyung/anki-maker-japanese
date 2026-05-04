@@ -4,6 +4,7 @@ import { type PointerEvent, type RefObject, type KeyboardEvent, type ReactNode, 
 import {
   API_BASE,
   type CardCandidate,
+  type DocumentParseBlock,
   type DocumentParseResult,
   type FieldOcrPreview,
   type OcrComparison,
@@ -41,7 +42,9 @@ import {
   applyQuestionSourceEdit,
   applyVocabSourceEdit,
   cardForToken,
+  cardForDocumentBlock,
   cardMatchesFilter,
+  boxCentersOverlap,
   candidateSubtitle,
   candidateTitle,
   choicesText,
@@ -55,6 +58,7 @@ import {
   fieldLabel,
   fieldNamesForCard,
   focusBbox,
+  focusedDocumentBlockIdsForField,
   focusedTokenIdsForField,
   initialReviewCardId,
   isHighConfidenceCard,
@@ -64,9 +68,12 @@ import {
   comparisonEvidenceAvailable,
   reviewReasonBadges,
   reviewQualityClass,
+  shouldShowDocumentBlocks,
   sourceBbox,
   summarizeCards,
   textValue,
+  documentBlockDisplayClass,
+  documentBlockTitle,
   tokenOnlyEvidenceClass,
   tokenDisplayClass,
   tokenInside,
@@ -259,7 +266,11 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
   async function selectPage(page: Page, clearMessage = true) {
     setSelectedPage(page);
     const [ocr, pageCards, runs] = await Promise.all([
-      apiGet<{ page: Page; tokens: OcrToken[] }>(`/api/pages/${page.id}/ocr`).catch(() => ({ page, tokens: [] })),
+      apiGet<{ page: Page; tokens: OcrToken[]; document_parse?: DocumentParseResult | null }>(`/api/pages/${page.id}/ocr`).catch(() => ({
+        page,
+        tokens: [],
+        document_parse: null
+      })),
       apiGet<CardCandidate[]>(`/api/pages/${page.id}/cards`).catch(() => []),
       listOcrRuns(page.id).catch(() => [])
     ]);
@@ -269,11 +280,11 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
     setOcrRuns(runs);
     syncPageCardSummary(page.id, pageCards);
     setSelectedCardId(initialReviewCardId(pageCards));
-    setOverlayMode(evidenceOverlayModeForLoad(pageCards, ocr.tokens));
+    setOverlayMode(ocr.document_parse?.blocks.length && !pageCards.length ? "all" : evidenceOverlayModeForLoad(pageCards, ocr.tokens));
     setActiveTokenFilters(new Set());
     setComparison(null);
     setEvidenceTokenSource("local");
-    setDocumentParse(null);
+    setDocumentParse(ocr.document_parse ?? null);
     if (clearMessage) setMessage(`Selected ${pageTitle(ocr.page)}.`);
   }
 
@@ -545,6 +556,13 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
     setMessage(`Selected ${candidateTitle(card)} from OCR evidence.`);
   }
 
+  function selectCardForDocumentBlock(block: DocumentParseBlock) {
+    const card = cardForDocumentBlock(cards, block);
+    if (!card) return;
+    selectCard(card, "card");
+    setMessage(`Selected ${candidateTitle(card)} from PaddleOCR-VL block evidence.`);
+  }
+
   function selectField(field: string, card: CardCandidate | null = selectedCard) {
     if (!card) return;
     setSelectedCardId(card.id);
@@ -670,11 +688,11 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
       setOcrRuns((current) => [result.ocr_run as OcrRun, ...current.filter((run) => run.id !== result.ocr_run?.id)]);
     }
     setSelectedCardId(initialReviewCardId(result.cards));
-    setOverlayMode(evidenceOverlayModeForLoad(result.cards, result.tokens));
+    setOverlayMode(result.document_parse?.blocks.length && !result.cards.length ? "all" : evidenceOverlayModeForLoad(result.cards, result.tokens));
     setActiveTokenFilters(new Set());
     setComparison(null);
     setEvidenceTokenSource("local");
-    setDocumentParse(null);
+    setDocumentParse(result.document_parse ?? null);
   }
 
   const processedUrl = imageUrl(selectedPage?.processed_image_path);
@@ -794,6 +812,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
             <EvidenceHeader
               page={selectedPage}
               tokenCount={evidenceTokens.length}
+              documentBlockCount={documentParse?.blocks.length ?? 0}
               candidateCount={cards.length}
               selectedCard={selectedCard}
               overlayMode={overlayMode}
@@ -809,6 +828,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
                 imageUrl={visibleUrl}
                 page={selectedPage}
                 tokens={evidenceTokens}
+                documentParse={documentParse}
                 cards={cards}
                 card={selectedCard}
                 selectedField={selectedField}
@@ -816,6 +836,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
                 mode={overlayMode}
                 activeFilters={activeTokenFilters}
                 onSelectCard={selectCardForToken}
+                onSelectDocumentBlock={selectCardForDocumentBlock}
                 onSelectEvidenceCard={(card) => selectCard(card, "card")}
                 onRegionDraftChange={setRegionDraft}
               />
@@ -1230,6 +1251,7 @@ function pageTimingStatus(timing: PageTimingStatus): string {
 function EvidenceHeader({
   page,
   tokenCount,
+  documentBlockCount,
   candidateCount,
   selectedCard,
   overlayMode,
@@ -1242,6 +1264,7 @@ function EvidenceHeader({
 }: Readonly<{
   page: Page | null;
   tokenCount: number;
+  documentBlockCount: number;
   candidateCount: number;
   selectedCard: CardCandidate | null;
   overlayMode: OverlayMode;
@@ -1255,9 +1278,10 @@ function EvidenceHeader({
   const overlayLabels: Record<OverlayMode, string> = {
     focused: "Focused",
     region: "Source region",
-    all: "All OCR",
+    all: documentBlockCount ? "All evidence" : "All OCR",
     off: "Off"
   };
+  const evidenceLabel = documentBlockCount && !tokenCount ? "PaddleOCR-VL document block" : evidenceSourceLabel;
   return (
     <div className="evidence-header">
       <div>
@@ -1266,9 +1290,12 @@ function EvidenceHeader({
         <p className="muted">
           {selectedCard
             ? evidenceSummary(selectedCard)
-            : tokenOnlySummary(tokenCount, candidateCount)}
+            : tokenOnlySummary(tokenCount, candidateCount, documentBlockCount)}
         </p>
-        <p className="muted evidence-source-note">Showing {evidenceSourceLabel} evidence boxes.</p>
+        <p className="muted evidence-source-note">Showing {evidenceLabel} evidence boxes.</p>
+        {page?.warnings.some((warning) => warning.includes("page-level block geometry")) ? (
+          <p className="evidence-caveat">OCR-VL gave page-level geometry only, so highlights are semantic blocks rather than precise word boxes.</p>
+        ) : null}
       </div>
       <div className="segmented">
         {(["focused", "region", "all", "off"] as OverlayMode[]).map((mode) => (
@@ -1298,6 +1325,7 @@ function EvidenceHeader({
           <span><i className="legend-dot selected-high" /> high confidence</span>
           <span><i className="legend-dot selected-medium" /> review confidence</span>
           <span><i className="legend-dot selected-low" /> low confidence</span>
+          {documentBlockCount ? <span><i className="legend-dot document-block" /> OCR-VL block</span> : null}
           <span><i className="legend-dot used-context" /> answer key/support</span>
           <span><i className="legend-dot scanned-unused" /> unused scan</span>
         </div>
@@ -1306,7 +1334,11 @@ function EvidenceHeader({
   );
 }
 
-function tokenOnlySummary(tokenCount: number, candidateCount: number): string {
+function tokenOnlySummary(tokenCount: number, candidateCount: number, documentBlockCount: number): string {
+  if (documentBlockCount && !tokenCount && !candidateCount) {
+    return `${documentBlockCount} PaddleOCR-VL document blocks are shown because no card candidates were generated.`;
+  }
+  if (documentBlockCount && !tokenCount) return `${documentBlockCount} PaddleOCR-VL document blocks available after processing.`;
   if (!tokenCount) return "No OCR evidence is available yet.";
   if (!candidateCount) return `${tokenCount} OCR tokens are shown because no card candidates were generated.`;
   return `${tokenCount} OCR tokens available after processing.`;
@@ -1316,6 +1348,7 @@ function EvidenceStage({
   imageUrl,
   page,
   tokens,
+  documentParse,
   cards,
   card,
   selectedField,
@@ -1323,12 +1356,14 @@ function EvidenceStage({
   mode,
   activeFilters,
   onSelectCard,
+  onSelectDocumentBlock,
   onSelectEvidenceCard,
   onRegionDraftChange
 }: Readonly<{
   imageUrl: string;
   page: Page | null;
   tokens: OcrToken[];
+  documentParse: DocumentParseResult | null;
   cards: CardCandidate[];
   card: CardCandidate | null;
   selectedField: string | null;
@@ -1336,6 +1371,7 @@ function EvidenceStage({
   mode: OverlayMode;
   activeFilters: Set<string>;
   onSelectCard: (token: OcrToken) => void;
+  onSelectDocumentBlock: (block: DocumentParseBlock) => void;
   onSelectEvidenceCard: (card: CardCandidate) => void;
   onRegionDraftChange: (draft: FieldRegionDraft) => void;
 }>) {
@@ -1368,6 +1404,17 @@ function EvidenceStage({
           mode={mode}
           activeFilters={activeFilters}
           onSelectCard={onSelectCard}
+          onSelectEvidenceCard={onSelectEvidenceCard}
+        />
+        <DocumentBlockOverlay
+          page={page}
+          tokens={tokens}
+          documentParse={documentParse}
+          cards={cards}
+          card={card}
+          selectedField={selectedField}
+          mode={mode}
+          onSelectBlock={onSelectDocumentBlock}
           onSelectEvidenceCard={onSelectEvidenceCard}
         />
         {regionDraft && card?.id === regionDraft.cardId ? (
@@ -1475,6 +1522,69 @@ function TokenOverlay({
             );
           })
         : null}
+    </g>
+  );
+}
+
+function DocumentBlockOverlay({
+  page,
+  tokens,
+  documentParse,
+  cards,
+  card,
+  selectedField,
+  mode,
+  onSelectBlock,
+  onSelectEvidenceCard
+}: Readonly<{
+  page: Page | null;
+  tokens: OcrToken[];
+  documentParse: DocumentParseResult | null;
+  cards: CardCandidate[];
+  card: CardCandidate | null;
+  selectedField: string | null;
+  mode: OverlayMode;
+  onSelectBlock: (block: DocumentParseBlock) => void;
+  onSelectEvidenceCard: (card: CardCandidate) => void;
+}>) {
+  const shouldShowBlocks = shouldShowDocumentBlocks(page, tokens, Boolean(documentParse?.blocks.length));
+  if (!shouldShowBlocks || !page?.image_width || !page.image_height || mode === "off" || mode === "region" || !documentParse?.blocks.length) {
+    return null;
+  }
+  const relevantBlockIds = focusedDocumentBlockIdsForField(card, selectedField);
+  const sourceBox = fieldBbox(card, selectedField) ?? sourceBbox(card);
+  return (
+    <g className="overlay document-overlay">
+      {documentParse.blocks.map((block, index) => {
+        const bbox = block.bbox ? clampBbox(block.bbox, page) : null;
+        if (!bbox) return null;
+        const blockId = block.id ?? `block-${index}`;
+        const linkedCard = cardForDocumentBlock(cards, block);
+        const relevant = relevantBlockIds.has(blockId) || (!relevantBlockIds.size && sourceBox ? boxCentersOverlap(bbox, sourceBox) : false);
+        const displayClass = documentBlockDisplayClass(block, card, linkedCard, relevant);
+        const [x1, y1, x2, y2] = bbox;
+        return (
+          <g key={blockId}>
+            <rect
+              x={x1}
+              y={y1}
+              width={x2 - x1}
+              height={y2 - y1}
+              className={`box ${displayClass} ${linkedCard ? "clickable" : ""}`}
+              onClick={
+                linkedCard
+                  ? (event) => {
+                      event.stopPropagation();
+                      if (relevant && card) onSelectEvidenceCard(card);
+                      else onSelectBlock(block);
+                    }
+                  : undefined
+              }
+            />
+            <title>{documentBlockTitle(block, linkedCard, relevant)}</title>
+          </g>
+        );
+      })}
     </g>
   );
 }

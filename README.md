@@ -117,7 +117,7 @@ export LLAMA_CPP_MODEL=your-local-vision-model
 
 The code defaults to local providers only. No cloud API key is required for the implemented MVP.
 
-The lightweight PaddleOCR path is the default local workflow. It uses Japanese OCR, optional Korean OCR for gloss columns, local glossary normalization, and review-state warnings so output remains editable and auditable. Keep `VLM_CLEANUP_ENABLED=false` for the lowest-memory local workflow, and use either PaddleOCR-VL or the existing local VLM cleanup path only when you want a second-pass cleanup layer.
+The lightweight PaddleOCR path is the default local workflow. It uses Japanese OCR, optional Korean OCR for gloss columns, OCR-backed evidence fields, and review-state warnings so output remains editable and auditable. Vocab benchmark accuracy only counts rows where surface, reading, and Korean meaning are all supported by OCR evidence; local glossary data is not used to fill missing vocab rows. Keep `VLM_CLEANUP_ENABLED=false` for the lowest-memory local workflow, and use either PaddleOCR-VL or the existing local VLM cleanup path only when you want a second-pass cleanup layer.
 
 Optional dictionary validation reads `DICTIONARY_PATH`, a JSON array shaped like:
 
@@ -141,7 +141,7 @@ notetype,front,back,source_page,source_bbox,confidence,tags
 
 Only approved cards are exported by default, and red/blocked cards stay excluded.
 
-The CSV is designed for Anki's text import flow. The app does not generate `.apkg` deck packages, and the target Anki collection must have matching note types such as `jp_vocab_reading` or `jp_spelling_mcq_recall` before import.
+The CSV is designed for Anki's text import flow. The app does not generate `.apkg` deck packages, and the target Anki collection must have matching note types such as `jp_vocab_entry` or `jp_spelling_mcq_recall` before import.
 
 Optional local verification against Anki's Python importer:
 
