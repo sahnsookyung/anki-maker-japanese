@@ -36,6 +36,88 @@ Rationale:
 - Korean glosses should remain a separate Korean recognition pass because the Korean PP-OCRv5 model explicitly supports Korean, English, and numeric text recognition.
 - Server models are worth testing later only if mobile accuracy is insufficient and local memory headroom is comfortable.
 
+## Experimental OCR Profiles And Variants
+
+Newer models are benchmarked as experimental profiles, not promoted by assumption. Each run records a profile manifest in `ocr_runs.provider_config` and benchmark JSON, including package versions, selected model names, language configuration, runtime platform/device environment, preprocessing metadata, model-cache paths and fingerprints when available, OCR cache status, and the extraction variant.
+
+Candidate profiles:
+
+- `jp_v3_mobile_current`: frozen production control, Japanese PP-OCRv3 mobile plus Korean PP-OCRv5.
+- `jp_v5_mobile_general`: newer PP-OCRv5 mobile detector and recognizer.
+- `jp_v5_server_general`: heavier PP-OCRv5 server detector and recognizer.
+- `jp_lang_auto`: PaddleOCR `lang="japan"` profile when supported by the installed PaddleOCR package. This can resolve to server-class models, so default profile-matrix runs skip it unless `--include-heavy-profiles` is set.
+- `ko_v5_current`: Korean PP-OCRv5 diagnostic profile.
+- `google_vision`: optional cloud diagnostic profile, not a default candidate-generation path.
+
+Extraction variants:
+
+- `baseline_current`: frozen current extractor.
+- `line_graph_v1`: records reading-order line-graph diagnostics.
+- `table_graph_v1`: records row/cell/selection/header diagnostics from the provider-neutral document graph.
+- `ranked_rows_v1`: records ranked row-hypothesis scores for evidence quality, script compatibility, alignment, and completeness.
+- `crop_confirm_v1`: runs bounded crop OCR on uncertain field boxes and records the result as review-only diagnostics; it does not silently fill benchmark fields.
+- `provider_agreement_v1`: runs the configured comparison provider as a diagnostic-only agreement hook; it is never an automatic extraction decision.
+
+Run a cautious profile comparison:
+
+```bash
+cd backend
+uv run python scripts/benchmark_ocr_modes.py --profile-matrix --json
+```
+
+`--profile-matrix` skips heavy server profiles by default. Add `--include-heavy-profiles` only when you intentionally want to spend the extra RAM/time.
+
+Run the staged ablation protocol without a combinatorial blast:
+
+```bash
+cd backend
+uv run python scripts/benchmark_ocr_modes.py --experiment-stage 1 --json
+uv run python scripts/benchmark_ocr_modes.py --experiment-stage 2 --json
+uv run python scripts/benchmark_ocr_modes.py --experiment-stage 3 --json
+uv run python scripts/benchmark_ocr_modes.py --experiment-stage 4 --json
+```
+
+Stage 1 runs local model profiles against `baseline_current`. Stage 2 runs graph variants on the current baseline and `jp_v5_mobile_general` by default; use `--stage-profiles jp_v3_mobile_current,jp_v5_mobile_general,...` to pin the top profiles from Stage 1. Unknown staged profile ids are skipped with a warning so long experiment runs can continue. Stage 3 isolates crop-confirm diagnostics. Stage 4 runs optional OCR-VL/Google Vision comparisons. Heavy profiles are still skipped unless `--include-heavy-profiles` is explicit.
+
+Run one explicit stronger-model experiment:
+
+```bash
+cd backend
+uv run python scripts/benchmark_ocr_modes.py \
+  --model-profile jp_v5_mobile_general \
+  --extraction-variant baseline_current \
+  --json
+```
+
+Non-default profiles run through subprocess workers so PaddleOCR imports with the requested model environment. Direct `--in-process` runs are only safe for the frozen default profile unless the profile environment is already active before Python starts.
+
+Promotion rule: without a holdout set beyond the four canonical golden pages, profile/variant results are experimental only. A default change requires pre-registered gates: vocab row accuracy improves by at least 15 percentage points, no page regresses more than 3 points, MCQ does not regress, evidence alignment remains reviewable, and RSS/time stay within the chosen resource budget.
+
+Benchmark modes are intentionally separate:
+
+- `fresh_cli` runs OCR and scores the in-memory result.
+- `persisted_db` runs OCR, reloads tokens/cards/document blocks from SQLite, and scores persisted state.
+- `ui_api` creates a page record, calls the FastAPI processing route, reloads persisted state, and scores that output.
+
+Use all three before trusting a change:
+
+```bash
+cd backend
+uv run python scripts/benchmark_ocr_modes.py --benchmark-mode fresh_cli --json
+uv run python scripts/benchmark_ocr_modes.py --benchmark-mode persisted_db --json
+uv run python scripts/benchmark_ocr_modes.py --benchmark-mode ui_api --json
+```
+
+When `--work-dir` or `--keep-work-dir` is set, the benchmark writes visual audit artifacts under `audit/`: one deterministic overlay JSON and one PNG per page/profile/variant. The JSON is the reviewable source of truth; the PNG is a quick visual sanity check for token boxes, document blocks, and candidate regions.
+
+The OCR cache key includes the original-image hash, preprocessing hash, OCR engine/provider, model profile, selected model/config fingerprint, package versions, and extraction variant. A matching successful run reuses the OCR payload but reruns extraction from the cached tokens/document blocks, so benchmark cache hits do not freeze stale candidate logic. Benchmark resource output marks result/model cache status and a `cache_phase`/`timing_bucket` of `cold_or_uncached`, `warm_ocr_cache`, or `unknown`; compare a cold run with a repeated warm run in the same `--work-dir` when timing cache behavior.
+
+All overlay and document-graph boxes are stored in processed-image coordinates, because providers read the preprocessed image. The run transform metadata records both original and processed paths, original/processed dimensions, preprocessing steps, and whether the original-to-processed mapping is invertible for visual audit.
+
+`crop_confirm_v1` is capped by `OCR_CROP_CONFIRM_MAX_FIELDS` per page so it can test uncertain-field crop OCR without turning Stage 3 into a full second OCR pass.
+
+The browser review UI also exposes the active run profile, variant, runtime, evidence-alignment score, blocked candidate count, and whether a strict benchmark score is available. Arbitrary uploads do not have a strict OCR score unless they are part of a golden evaluation set.
+
 ## PaddleOCR-VL Comparison
 
 PaddleOCR-VL is supported as an optional processing engine, but it is not treated as automatically equivalent to the base OCR path. It returns document blocks/markdown-style text, so the backend keeps those blocks as document-block evidence instead of pretending they are word-level OCR tokens. Card extraction consumes the same downstream item/card interfaces, but visual evidence remains clearly labeled as OCR-VL block evidence.
@@ -64,6 +146,7 @@ Use JSON output when comparing runs:
 ```bash
 cd backend
 uv run python scripts/benchmark_ocr_modes.py --json
+uv run python scripts/benchmark_ocr_modes.py --json --dashboard-markdown ../benchmark-dashboard.md
 ```
 
 Run a cautious one-page PaddleOCR-VL comparison:
@@ -125,7 +208,7 @@ Leave caching enabled during normal UI use; disabling it trades memory observabi
 On May 4, 2026, guarded subprocess-isolated local runs with strict OCR-evidence vocab scoring showed:
 
 - The measured default, Japanese PP-OCRv3 mobile + Korean PP-OCRv5, reached 100% MCQ semantic accuracy on the two MCQ golden pages.
-- Vocab rows are now scored only when surface, reading, and Korean meaning are all OCR-backed. Under that stricter rule, PaddleOCR scored 23/36 rows on category 1 and 12/24 rows on category 3; no glossary-supported vocab rows were counted.
+- Vocab rows are now scored only when surface, reading, and Korean meaning are all OCR-backed and the referenced evidence still exists. Under that stricter rule, PaddleOCR scored 22/36 rows on category 1 and 10/24 rows on category 3; no glossary-supported vocab rows were counted.
 - MCQ source-field accuracy is stricter than card accuracy and currently exposes remaining OCR/layout roughness on the MCQ pages; the two MCQ pages scored 84% source-field accuracy.
 - PaddleOCR-VL generated correct card candidates for both MCQ pages, scoring 10/10 on category 2 and 10/10 on category 4 with 90% source-field accuracy on both. It did not generate benchmark-credit vocab rows for categories 1 or 3 because the local VL document text did not recover complete surface/reading/Korean triples.
 - PaddleOCR-VL document-text coverage was 24.1% on category 1, 90.0% on category 2, 51.4% on category 3, and 70.0% on category 4. Compare this with semantic and source-field accuracy when judging extraction changes.

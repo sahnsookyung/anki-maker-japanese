@@ -29,7 +29,13 @@ def vocab_cards(page_id: str, item: dict[str, Any]) -> list[CardCandidate]:
     blocked = not (surface and reading and meaning and bbox)
     state = review_state(confidence, warnings, blocked)
     source_id = item.get("id", new_id("vocab"))
-    source = {**item, "id": source_id}
+    source = {
+        **item,
+        "id": source_id,
+        "study_writing": item.get("study_writing", True),
+        "study_reading": item.get("study_reading", False),
+        "study_meaning": item.get("study_meaning", False),
+    }
     return [
         CardCandidate(
             id=new_id("card"),
@@ -38,9 +44,9 @@ def vocab_cards(page_id: str, item: dict[str, Any]) -> list[CardCandidate]:
             source_id=source_id,
             source=source,
             note_type="jp_vocab_entry",
-            front=f"{escape(reading)}<br>{escape(meaning)}<br><br>올바른 표기는?",
+            front=escape(reading),
             back=escape(surface),
-            tags=["jlpt", "vocab", "writing"],
+            tags=["jlpt", "vocab"],
             confidence=confidence,
             review_state=state,
             source_bbox=bbox,

@@ -104,6 +104,26 @@ export type ProcessResult = {
 };
 
 export type OcrEngine = "paddleocr" | "paddleocr_vl";
+export type OcrModelProfile = {
+  id: string;
+  label: string;
+  budget: "safe_local" | "heavy_local" | "cloud_optional" | string;
+  provider: string;
+  creates_candidates: boolean;
+  description: string;
+};
+export type OcrExtractionVariant = {
+  id: string;
+  label: string;
+  description: string;
+};
+
+export type OcrProfilePayload = {
+  profiles: OcrModelProfile[];
+  variants: OcrExtractionVariant[];
+  default_profile: string;
+  default_variant: string;
+};
 
 export type OcrRun = {
   id: string;
@@ -216,6 +236,8 @@ export async function uploadImages(files: File[]): Promise<BatchUploadResult> {
 export type ProcessPageOptions = {
   busyRetryAttempts?: number;
   busyRetryDelayMs?: number;
+  modelProfile?: string;
+  extractionVariant?: string;
 };
 
 export async function processPage(
@@ -223,7 +245,11 @@ export async function processPage(
   engine: OcrEngine = "paddleocr",
   options: ProcessPageOptions = {}
 ): Promise<ProcessResult> {
-  const engineQuery = engine === "paddleocr" ? "" : `?engine=${encodeURIComponent(engine)}`;
+  const params = new URLSearchParams();
+  if (engine !== "paddleocr") params.set("engine", engine);
+  if (options.modelProfile) params.set("model_profile", options.modelProfile);
+  if (options.extractionVariant) params.set("extraction_variant", options.extractionVariant);
+  const engineQuery = params.toString() ? `?${params}` : "";
   const retryAttempts = options.busyRetryAttempts ?? 240;
   const retryDelayMs = options.busyRetryDelayMs ?? 1000;
   for (let attempt = 0; attempt <= retryAttempts; attempt += 1) {
@@ -301,11 +327,26 @@ export type ExportOptions = {
   include_red?: boolean;
 };
 
+export type ExportFile = {
+  kind: "vocab" | "mcq";
+  filename: string;
+  path: string;
+  download_url: string;
+  row_count: number;
+};
+
+export type ExportResult = {
+  export_id: string;
+  files: ExportFile[];
+  note_count: number;
+  estimated_generated_card_count: number;
+};
+
 export async function exportCsv(
   pageIds: string[],
   options: ExportOptions = {}
-): Promise<{ card_count: number; download_url: string }> {
-  return requestJson<{ card_count: number; download_url: string }>("/api/exports/csv", {
+): Promise<ExportResult> {
+  return requestJson<ExportResult>("/api/exports/csv", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -335,6 +376,10 @@ export async function parseDocument(pageId: string): Promise<DocumentParseResult
 
 export async function getOcrRuntime(): Promise<OcrRuntimeStatus> {
   return apiGet<OcrRuntimeStatus>("/api/ocr/runtime");
+}
+
+export async function getOcrProfiles(): Promise<OcrProfilePayload> {
+  return apiGet<OcrProfilePayload>("/api/ocr/profiles");
 }
 
 export function imageUrl(path?: string | null): string | null {

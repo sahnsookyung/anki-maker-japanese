@@ -110,6 +110,130 @@ def test_process_page_preserves_upload_name_in_result(tmp_path, monkeypatch) -> 
     assert database.get_page("page-upload-name").upload_name == "Original upload.jpg"
 
 
+def test_process_page_reuses_cached_ocr_payload_without_reusing_extraction_state(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "pipeline-cache.db")
+    monkeypatch.setattr(pipeline, "PROCESSED_DIR", tmp_path / "processed")
+    database.init_db()
+    image_path = tmp_path / "uploaded.jpg"
+    image_path.write_bytes(b"same image")
+    page = Page(
+        id="page-cache-reuse",
+        original_image_path=str(image_path),
+        upload_name="cache.jpg",
+        display_name="Cache page",
+        page_type="uploaded",
+        page_type_confidence=0.0,
+        warnings=[],
+        created_at="2026-05-04T00:00:00+00:00",
+    )
+    database.upsert_page(page)
+    calls = 0
+
+    def fake_preprocess(original, processed):
+        processed.parent.mkdir(parents=True, exist_ok=True)
+        processed.write_bytes(b"processed")
+        return SimpleNamespace(width=100, height=100, warnings=[])
+
+    def fake_ocr(image_path_arg, page_id, engine):
+        nonlocal calls
+        calls += 1
+        return OcrEngineResult(
+            engine="paddleocr",
+            tokens=[
+                OcrToken(
+                    id="tok-first",
+                    page_id=page_id,
+                    text="学校",
+                    bbox=[10, 10, 40, 20],
+                    confidence=0.98,
+                    script_class="kanji",
+                    source="paddleocr",
+                )
+            ],
+            warnings=[],
+        )
+
+    monkeypatch.setattr(pipeline, "preprocess_image", fake_preprocess)
+    monkeypatch.setattr(pipeline, "run_ocr_engine", fake_ocr)
+    monkeypatch.setattr(pipeline, "classify_page", lambda tokens, height: ("unknown_review_required", 0.1, {}))
+    monkeypatch.setattr(pipeline, "parse_answer_strip", lambda tokens, height: {})
+
+    first = pipeline.process_page(page, engine="paddleocr")
+    second = pipeline.process_page(page, engine="paddleocr")
+
+    assert calls == 1
+    assert first.tokens[0].text == second.tokens[0].text == "学校"
+    assert first.tokens[0].id != second.tokens[0].id
+    assert second.ocr_run is not None
+    assert second.ocr_run.provider_config["model_profile"]["cache"]["hit"] is True
+    graph = second.ocr_run.metrics["document_graph"]
+    assert graph["transform"]["coordinate_space"] == "processed_image"
+    assert graph["transform"]["processed_image_path"] == str(tmp_path / "processed" / f"{page.id}.png")
+    assert graph["transform"]["original_image_path"] == str(image_path)
+    assert graph["transform"]["original_to_processed"]["invertible"] is False
+
+
+def test_process_page_reuses_ocr_cache_across_page_ids_for_same_image(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "pipeline-cross-page-cache.db")
+    monkeypatch.setattr(pipeline, "PROCESSED_DIR", tmp_path / "processed")
+    database.init_db()
+    image_path = tmp_path / "uploaded.jpg"
+    image_path.write_bytes(b"same image")
+    pages = [
+        Page(
+            id=page_id,
+            original_image_path=str(image_path),
+            upload_name=f"{page_id}.jpg",
+            display_name=page_id,
+            page_type="uploaded",
+            page_type_confidence=0.0,
+            warnings=[],
+            created_at="2026-05-04T00:00:00+00:00",
+        )
+        for page_id in ("page-cache-a", "page-cache-b")
+    ]
+    calls = 0
+
+    def fake_preprocess(original, processed):
+        processed.parent.mkdir(parents=True, exist_ok=True)
+        processed.write_bytes(b"processed")
+        return SimpleNamespace(width=100, height=100, warnings=[], original_width=100, original_height=100)
+
+    def fake_ocr(image_path_arg, page_id, engine):
+        nonlocal calls
+        calls += 1
+        return OcrEngineResult(
+            engine="paddleocr",
+            tokens=[
+                OcrToken(
+                    id=f"tok-{page_id}",
+                    page_id=page_id,
+                    text="学校",
+                    bbox=[10, 10, 40, 20],
+                    confidence=0.98,
+                    script_class="kanji",
+                    source="paddleocr",
+                )
+            ],
+            warnings=[],
+        )
+
+    monkeypatch.setattr(pipeline, "preprocess_image", fake_preprocess)
+    monkeypatch.setattr(pipeline, "run_ocr_engine", fake_ocr)
+    monkeypatch.setattr(pipeline, "classify_page", lambda tokens, height: ("unknown_review_required", 0.1, {}))
+    monkeypatch.setattr(pipeline, "parse_answer_strip", lambda tokens, height: {})
+
+    first = pipeline.process_page(pages[0], engine="paddleocr")
+    second = pipeline.process_page(pages[1], engine="paddleocr")
+
+    assert calls == 1
+    assert first.tokens[0].id != second.tokens[0].id
+    assert second.tokens[0].page_id == "page-cache-b"
+    assert first.ocr_run is not None
+    assert second.ocr_run is not None
+    assert second.ocr_run.metrics["cache_source_run_id"] == first.ocr_run.id
+
+
 def test_process_page_persists_vl_document_parse_instead_of_visual_tokens(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "pipeline.db")
     monkeypatch.setattr(pipeline, "PROCESSED_DIR", tmp_path / "processed")
@@ -279,6 +403,53 @@ def test_page_worker_command_passes_runtime_environment_overrides(tmp_path, monk
     assert completed.returncode == 0
     assert isinstance(captured["env"], dict)
     assert captured["env"]["ANKI_MAKER_DB"] == db_path
+
+
+def test_benchmark_worker_command_enforces_rss_limit_and_profile_env(monkeypatch) -> None:
+    process = FakeProcess()
+    captured: dict[str, object] = {}
+
+    def fake_popen(*args, **kwargs):
+        captured["env"] = kwargs["env"]
+        return process
+
+    def fake_terminate(target):
+        target.terminated = True
+        target.returncode = -15
+
+    args = SimpleNamespace(worker_timeout_seconds=30, worker_max_rss_mb=5, model_profile="jp_v5_mobile_general")
+    monkeypatch.setattr(benchmark_ocr_modes.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(benchmark_ocr_modes, "_process_tree_rss_mb", lambda pid: 10.0)
+    monkeypatch.setattr(benchmark_ocr_modes, "_terminate_process", fake_terminate)
+
+    completed = benchmark_ocr_modes._run_worker_command(["python", "worker"], args)
+
+    assert completed.returncode != 0
+    assert process.terminated is True
+    assert "RSS limit" in completed.stderr
+    assert isinstance(captured["env"], dict)
+    assert captured["env"]["PADDLE_OCR_TEXT_RECOGNITION_MODEL_NAME"] == "PP-OCRv5_mobile_rec"
+
+
+def test_benchmark_worker_command_enforces_timeout(monkeypatch) -> None:
+    process = FakeProcess()
+    monotonic_values = iter([0.0, 31.0])
+
+    def fake_terminate(target):
+        target.terminated = True
+        target.returncode = -15
+
+    args = SimpleNamespace(worker_timeout_seconds=30, worker_max_rss_mb=0, model_profile="jp_v3_mobile_current")
+    monkeypatch.setattr(benchmark_ocr_modes.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(benchmark_ocr_modes, "_process_tree_rss_mb", lambda pid: None)
+    monkeypatch.setattr(benchmark_ocr_modes.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(benchmark_ocr_modes, "_terminate_process", fake_terminate)
+
+    completed = benchmark_ocr_modes._run_worker_command(["python", "worker"], args)
+
+    assert completed.returncode != 0
+    assert process.terminated is True
+    assert "timeout" in completed.stderr
 
 
 def test_page_worker_failure_detail_prefers_guardrail_message() -> None:

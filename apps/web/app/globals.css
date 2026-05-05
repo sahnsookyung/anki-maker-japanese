@@ -238,6 +238,64 @@ button:disabled:hover {
   min-width: 0;
 }
 
+.experimental-ocr-controls {
+  flex: 1 1 24rem;
+  max-width: 42rem;
+  border: 1px solid rgba(31, 111, 139, 0.18);
+  border-radius: 1rem;
+  padding: 0.35rem 0.65rem;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.experimental-ocr-controls summary {
+  cursor: pointer;
+  font-weight: 800;
+  color: var(--accent-2);
+}
+
+.experimental-grid {
+  display: grid;
+  grid-template-columns: minmax(10rem, 1fr) minmax(10rem, 1fr) auto;
+  gap: 0.55rem;
+  align-items: end;
+  margin-top: 0.65rem;
+}
+
+.experimental-grid label {
+  display: grid;
+  gap: 0.25rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.experimental-grid select {
+  min-width: 0;
+}
+
+.experimental-run {
+  border-color: rgba(31, 111, 139, 0.32);
+  color: var(--accent-2);
+}
+
+.run-quality-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.8rem 0 1rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.run-quality-strip span {
+  max-width: 100%;
+  border: 1px solid rgba(35, 31, 27, 0.11);
+  border-radius: 999px;
+  padding: 0.22rem 0.55rem;
+  background: rgba(255, 255, 255, 0.68);
+  overflow-wrap: anywhere;
+}
+
 .batch-status-strip {
   display: flex;
   flex-wrap: wrap;
@@ -257,6 +315,28 @@ button:disabled:hover {
 
 .batch-status-strip strong {
   color: var(--ink);
+}
+
+.export-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  font-size: 0.85rem;
+}
+
+.export-links strong,
+.export-links a {
+  border: 1px solid rgba(47, 125, 85, 0.2);
+  border-radius: 999px;
+  background: rgba(247, 252, 247, 0.9);
+  padding: 0.2rem 0.55rem;
+}
+
+.export-links a {
+  color: var(--success);
+  font-weight: 700;
+  text-decoration: none;
 }
 
 .batch-summary-card {
@@ -1061,6 +1141,41 @@ button:disabled:hover {
   overflow-wrap: anywhere;
 }
 
+.vocab-generated-previews {
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid rgba(47, 125, 85, 0.18);
+  border-radius: 0.9rem;
+  background: #f7fcf7;
+  padding: 0.7rem;
+}
+
+.vocab-generated-previews > span {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.vocab-preview {
+  border: 1px solid rgba(31, 111, 139, 0.18);
+  border-radius: 0.75rem;
+  background: white;
+  padding: 0.65rem;
+}
+
+.vocab-preview p {
+  display: grid;
+  grid-template-columns: minmax(4.5rem, auto) minmax(0, 1fr);
+  gap: 0.8rem;
+  margin: 0.35rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.vocab-preview p span {
+  min-width: 0;
+  text-align: right;
+}
+
 .badge {
   border-radius: 999px;
   background: #f1eadc;
@@ -1267,6 +1382,10 @@ textarea {
 
   .command-actions {
     justify-content: stretch;
+  }
+
+  .experimental-grid {
+    grid-template-columns: 1fr;
   }
 
   .command-bar button,

@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 from typing import Any
+from PIL import Image, ImageDraw
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -26,6 +27,15 @@ from app.evaluation.mcq_eval import McqEvalResult, evaluate_mcq_page
 from app.evaluation.vocab_eval import VocabEvalResult, evaluate_vocab_page
 from app.extraction import pipeline
 from app.ocr.engines import PADDLEOCR_ENGINE, PADDLEOCR_VL_ENGINE, normalize_ocr_engine
+from app.ocr.profiles import (
+    BASELINE_MODEL_PROFILE,
+    DEFAULT_EXTRACTION_VARIANT,
+    EXTRACTION_VARIANT_ORDER,
+    LOCAL_MODEL_PROFILES,
+    normalize_extraction_variant,
+    profile_env_overrides,
+    resolve_ocr_model_profile,
+)
 from app.ocr.service import recognize_with_provider
 from app.models.schemas import Page, ProcessResult
 
@@ -59,12 +69,36 @@ class PageBenchmark:
     resource_metrics: dict[str, Any]
     errors: list[str]
     google_vision: dict[str, Any] | None = None
+    audit_artifacts: dict[str, str] | None = None
+    schema_version: int = 1
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Compare PaddleOCR and PaddleOCR-VL extraction accuracy and resource usage.")
     parser.add_argument("--golden", default="../data/evaluation/golden_pages.example.json")
     parser.add_argument("--engine", default=PADDLEOCR_ENGINE, help="Primary extraction engine: paddleocr, paddleocr_vl, or all.")
+    parser.add_argument("--model-profile", default=BASELINE_MODEL_PROFILE, help="OCR model profile to benchmark.")
+    parser.add_argument("--extraction-variant", default=DEFAULT_EXTRACTION_VARIANT, help="Extraction variant to benchmark.")
+    parser.add_argument("--profile-matrix", action="store_true", help="Run baseline extraction against every local candidate model profile.")
+    parser.add_argument("--variant-matrix", action="store_true", help="Run every registered extraction variant for the selected profile set.")
+    parser.add_argument(
+        "--experiment-stage",
+        choices=["1", "2", "3", "4"],
+        default="",
+        help="Run the staged ablation protocol: 1=model profiles, 2=graph variants, 3=crop confirmation, 4=optional providers.",
+    )
+    parser.add_argument(
+        "--stage-profiles",
+        default="",
+        help="Comma-separated model profiles for stages 2/3. Defaults to current baseline plus jp_v5_mobile_general.",
+    )
+    parser.add_argument("--include-heavy-profiles", action="store_true", help="Include heavy local server models in --profile-matrix.")
+    parser.add_argument(
+        "--benchmark-mode",
+        choices=["fresh_cli", "persisted_db", "ui_api"],
+        default="fresh_cli",
+        help="Label how results were produced so CLI/API/DB parity runs are comparable.",
+    )
     parser.add_argument("--include-vl", action="store_true", help="Run PaddleOCR-VL extraction sequentially after base OCR.")
     parser.add_argument(
         "--include-google-vision",
@@ -79,8 +113,21 @@ def main() -> int:
     parser.add_argument("--worker-max-rss-mb", type=float, default=8192, help="Kill a page worker if its RSS exceeds this limit.")
     parser.add_argument("--worker-page-id", default="", help=argparse.SUPPRESS)
     parser.add_argument("--output-json", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--dashboard-markdown", default="", help="Optional path for a compact Markdown benchmark comparison table.")
     parser.add_argument("--json", action="store_true", help="Emit JSON.")
     args = parser.parse_args()
+    _apply_experiment_stage(args)
+    args.model_profile = resolve_ocr_model_profile(args.model_profile).id
+    args.extraction_variant = normalize_extraction_variant(args.extraction_variant)
+    if not resolve_ocr_model_profile(args.model_profile).creates_candidates and args.engine != "all":
+        print(f"Model profile {args.model_profile!r} is diagnostic-only; use dedicated comparison flags instead.", file=sys.stderr)
+        return 2
+    if args.in_process and args.model_profile != BASELINE_MODEL_PROFILE and not _profile_env_is_active(args.model_profile):
+        print(
+            "Non-default OCR model profiles must be run through the subprocess benchmark wrapper so PaddleOCR imports fresh profile env.",
+            file=sys.stderr,
+        )
+        return 2
 
     repo_root = BACKEND_DIR.parent
     golden_path = Path(args.golden)
@@ -106,11 +153,14 @@ def main() -> int:
         for golden in pages:
             run_start = _resource_snapshot()
             memory_samples = [_memory_sample("worker_start")]
-            process_result = _run_base_pipeline(golden, memory_samples, primary_engine)
+            process_result = _run_benchmark_pipeline(golden, memory_samples, primary_engine, args)
             base_eval = _evaluate_base(golden, process_result)
             base_payload = _result_dict(base_eval, primary_engine)
+            base_payload.update(_quality_payload(process_result))
+            base_payload["benchmark"] = _benchmark_manifest(args, process_result)
             base_payload["ocr_text_coverage"] = _coverage_dict(_token_text_coverage(golden, process_result, primary_engine))
             memory_samples.append(_memory_sample("base_evaluated"))
+            audit_artifacts = _write_audit_artifacts(golden, process_result, args, base_payload)
             vl_eval: dict[str, Any] | None = None
             if _should_run_vl(args) and vl_pages_run < args.vl_limit and primary_engine != PADDLEOCR_VL_ENGINE:
                 memory_samples.append(_memory_sample("before_vl"))
@@ -130,8 +180,9 @@ def main() -> int:
                     vl=vl_eval,
                     google_vision=google_eval,
                     memory_samples=memory_samples,
-                    resource_metrics=_resource_metrics(run_start, _resource_snapshot(), memory_samples),
+                    resource_metrics=_resource_metrics_with_cache(run_start, _resource_snapshot(), memory_samples, base_payload),
                     errors=[],
+                    audit_artifacts=audit_artifacts,
                 )
             )
 
@@ -146,42 +197,66 @@ def _run_pages_in_subprocesses(args: argparse.Namespace, golden_path: Path, page
     results: list[PageBenchmark] = []
     vl_pages_run = 0
     try:
-        for golden in pages:
-            page_work_dir = root_work_dir / golden.page_id
-            output_json = root_work_dir / f"{golden.page_id}.json"
-            primary_engine = _primary_engine(args)
-            cmd = [
-                sys.executable,
-                str(Path(__file__).resolve()),
-                "--golden",
-                str(golden_path),
-                "--worker-page-id",
-                golden.page_id,
-                "--work-dir",
-                str(page_work_dir),
-                "--output-json",
-                str(output_json),
-                "--json",
-                "--in-process",
-                "--engine",
-                primary_engine,
-            ]
-            if getattr(args, "include_google_vision", False):
-                cmd.append("--include-google-vision")
-            completed = _run_worker_command(cmd, args)
-            if completed.returncode != 0 or not output_json.exists():
-                results.append(_failed_page_result(golden, completed))
-                continue
-            data = json.loads(output_json.read_text(encoding="utf-8"))
-            page_result = PageBenchmark(**data[0])
-            if _should_run_vl(args) and vl_pages_run < args.vl_limit and primary_engine != PADDLEOCR_VL_ENGINE:
-                vl_pages_run += 1
-                page_result = _with_vl_worker_result(args, golden_path, golden, root_work_dir, page_result)
-            results.append(page_result)
+        for profile_id in _profile_ids_for_run(args):
+            for variant_id in _variant_ids_for_run(args):
+                run_args = argparse.Namespace(**{**vars(args), "model_profile": profile_id, "extraction_variant": variant_id})
+                for golden in pages:
+                    page_result = _run_single_page_subprocess(run_args, golden_path, golden, root_work_dir)
+                    if _should_run_vl(run_args) and vl_pages_run < run_args.vl_limit and _primary_engine(run_args) != PADDLEOCR_VL_ENGINE:
+                        vl_pages_run += 1
+                        page_result = _with_vl_worker_result(run_args, golden_path, golden, root_work_dir, page_result)
+                    results.append(page_result)
     finally:
         if not keep_work_dir:
             shutil.rmtree(root_work_dir, ignore_errors=True)
     return results
+
+
+def _run_single_page_subprocess(
+    args: argparse.Namespace,
+    golden_path: Path,
+    golden: GoldenPage,
+    root_work_dir: Path,
+) -> PageBenchmark:
+    model_profile = getattr(args, "model_profile", BASELINE_MODEL_PROFILE)
+    extraction_variant = getattr(args, "extraction_variant", DEFAULT_EXTRACTION_VARIANT)
+    benchmark_mode = getattr(args, "benchmark_mode", "fresh_cli")
+    page_work_dir = root_work_dir / golden.page_id
+    if _uses_matrix_output_names(args):
+        page_work_dir = root_work_dir / f"{golden.page_id}-{model_profile}-{extraction_variant}"
+    output_json = root_work_dir / f"{golden.page_id}.json"
+    if _uses_matrix_output_names(args):
+        output_json = root_work_dir / f"{golden.page_id}.{model_profile}.{extraction_variant}.json"
+    primary_engine = _primary_engine(args)
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--golden",
+        str(golden_path),
+        "--worker-page-id",
+        golden.page_id,
+        "--work-dir",
+        str(page_work_dir),
+        "--output-json",
+        str(output_json),
+        "--json",
+        "--in-process",
+        "--engine",
+        primary_engine,
+        "--model-profile",
+        model_profile,
+        "--extraction-variant",
+        extraction_variant,
+        "--benchmark-mode",
+        benchmark_mode,
+    ]
+    if getattr(args, "include_google_vision", False):
+        cmd.append("--include-google-vision")
+    completed = _run_worker_command(cmd, args)
+    if completed.returncode != 0 or not output_json.exists():
+        return _failed_page_result(golden, completed)
+    data = json.loads(output_json.read_text(encoding="utf-8"))
+    return PageBenchmark(**data[0])
 
 
 def _with_vl_worker_result(
@@ -191,6 +266,8 @@ def _with_vl_worker_result(
     root_work_dir: Path,
     base_result: PageBenchmark,
 ) -> PageBenchmark:
+    extraction_variant = getattr(args, "extraction_variant", DEFAULT_EXTRACTION_VARIANT)
+    benchmark_mode = getattr(args, "benchmark_mode", "fresh_cli")
     vl_work_dir = root_work_dir / f"{golden.page_id}-vl"
     vl_output_json = root_work_dir / f"{golden.page_id}.vl.json"
     cmd = [
@@ -208,6 +285,12 @@ def _with_vl_worker_result(
         "--in-process",
         "--engine",
         PADDLEOCR_VL_ENGINE,
+        "--model-profile",
+        BASELINE_MODEL_PROFILE,
+        "--extraction-variant",
+        extraction_variant,
+        "--benchmark-mode",
+        benchmark_mode,
     ]
     completed = _run_worker_command(cmd, args)
     if completed.returncode != 0 or not vl_output_json.exists():
@@ -254,7 +337,9 @@ def _with_vl_worker_result(
 def _run_worker_command(cmd: list[str], args: argparse.Namespace) -> subprocess.CompletedProcess[str]:
     timeout_seconds = float(getattr(args, "worker_timeout_seconds", 300))
     max_rss_mb = float(getattr(args, "worker_max_rss_mb", 8192))
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    env = os.environ.copy()
+    env.update(profile_env_overrides(getattr(args, "model_profile", BASELINE_MODEL_PROFILE)))
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True, env=env)
     start = time.monotonic()
     failure_reason = ""
     while process.poll() is None:
@@ -343,11 +428,14 @@ def _run_worker_page(args: argparse.Namespace, pages: list[GoldenPage]) -> PageB
         run_start = _resource_snapshot()
         memory_samples = [_memory_sample("worker_start")]
         primary_engine = _primary_engine(args)
-        process_result = _run_base_pipeline(selected, memory_samples, primary_engine)
+        process_result = _run_benchmark_pipeline(selected, memory_samples, primary_engine, args)
         base_eval = _evaluate_base(selected, process_result)
         base_payload = _result_dict(base_eval, primary_engine)
+        base_payload.update(_quality_payload(process_result))
+        base_payload["benchmark"] = _benchmark_manifest(args, process_result)
         base_payload["ocr_text_coverage"] = _coverage_dict(_token_text_coverage(selected, process_result, primary_engine))
         memory_samples.append(_memory_sample("base_evaluated"))
+        audit_artifacts = _write_audit_artifacts(selected, process_result, args, base_payload)
         vl_eval = None
         if _should_run_vl(args) and primary_engine != PADDLEOCR_VL_ENGINE:
             memory_samples.append(_memory_sample("before_vl"))
@@ -365,8 +453,9 @@ def _run_worker_page(args: argparse.Namespace, pages: list[GoldenPage]) -> PageB
             vl=vl_eval,
             google_vision=google_eval,
             memory_samples=memory_samples,
-            resource_metrics=_resource_metrics(run_start, _resource_snapshot(), memory_samples),
+            resource_metrics=_resource_metrics_with_cache(run_start, _resource_snapshot(), memory_samples, base_payload),
             errors=[],
+            audit_artifacts=audit_artifacts,
         )
 
 
@@ -374,6 +463,8 @@ def _emit_results(results: list[PageBenchmark], args: argparse.Namespace) -> Non
     payload = [asdict(result) for result in results]
     if args.output_json:
         Path(args.output_json).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if getattr(args, "dashboard_markdown", ""):
+        _write_dashboard_markdown(results, Path(args.dashboard_markdown))
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return
@@ -414,7 +505,94 @@ def _should_run_vl(args: argparse.Namespace) -> bool:
     return bool(getattr(args, "include_vl", False) or getattr(args, "engine", PADDLEOCR_ENGINE) == "all")
 
 
-def _run_base_pipeline(golden: GoldenPage, memory_samples: list[dict[str, Any]], engine: str = PADDLEOCR_ENGINE) -> ProcessResult:
+def _profile_ids_for_run(args: argparse.Namespace) -> list[str]:
+    stage = getattr(args, "experiment_stage", "")
+    if stage in {"2", "3"}:
+        return _stage_profile_ids(args)
+    if not getattr(args, "profile_matrix", False):
+        return [getattr(args, "model_profile", BASELINE_MODEL_PROFILE)]
+    profiles = []
+    for profile_id in sorted(LOCAL_MODEL_PROFILES):
+        profile = resolve_ocr_model_profile(profile_id)
+        if not profile.creates_candidates:
+            continue
+        if profile.budget == "heavy_local" and not getattr(args, "include_heavy_profiles", False):
+            continue
+        profiles.append(profile_id)
+    return profiles
+
+
+def _variant_ids_for_run(args: argparse.Namespace) -> list[str]:
+    stage = getattr(args, "experiment_stage", "")
+    if stage == "2":
+        return ["line_graph_v1", "table_graph_v1", "ranked_rows_v1"]
+    if stage == "3":
+        return ["crop_confirm_v1"]
+    if getattr(args, "variant_matrix", False):
+        return [variant for variant in EXTRACTION_VARIANT_ORDER if variant != "provider_agreement_v1"]
+    return [normalize_extraction_variant(getattr(args, "extraction_variant", DEFAULT_EXTRACTION_VARIANT))]
+
+
+def _stage_profile_ids(args: argparse.Namespace) -> list[str]:
+    configured = [
+        value.strip()
+        for value in str(getattr(args, "stage_profiles", "") or "").split(",")
+        if value.strip()
+    ]
+    candidates = configured or [BASELINE_MODEL_PROFILE, "jp_v5_mobile_general"]
+    profiles: list[str] = []
+    for profile_id in candidates:
+        try:
+            profile = resolve_ocr_model_profile(profile_id)
+        except ValueError:
+            print(f"Skipping unknown OCR profile for staged benchmark: {profile_id}", file=sys.stderr)
+            continue
+        if profile.budget == "heavy_local" and not getattr(args, "include_heavy_profiles", False):
+            continue
+        if profile.creates_candidates:
+            profiles.append(profile.id)
+    return profiles
+
+
+def _apply_experiment_stage(args: argparse.Namespace) -> None:
+    stage = getattr(args, "experiment_stage", "")
+    if stage == "1":
+        args.profile_matrix = True
+        args.extraction_variant = DEFAULT_EXTRACTION_VARIANT
+        args.include_vl = False
+        args.include_google_vision = False
+    elif stage == "2":
+        args.variant_matrix = True
+        args.include_vl = False
+        args.include_google_vision = False
+    elif stage == "3":
+        args.variant_matrix = False
+        args.include_vl = False
+        args.include_google_vision = False
+    elif stage == "4":
+        args.include_vl = True
+        args.include_google_vision = True
+
+
+def _uses_matrix_output_names(args: argparse.Namespace) -> bool:
+    return bool(
+        getattr(args, "profile_matrix", False)
+        or getattr(args, "variant_matrix", False)
+        or getattr(args, "experiment_stage", "")
+    )
+
+
+def _profile_env_is_active(profile_id: str) -> bool:
+    return all(os.environ.get(key) == value for key, value in profile_env_overrides(profile_id).items())
+
+
+def _run_base_pipeline(
+    golden: GoldenPage,
+    memory_samples: list[dict[str, Any]],
+    engine: str = PADDLEOCR_ENGINE,
+    model_profile: str = BASELINE_MODEL_PROFILE,
+    extraction_variant: str = DEFAULT_EXTRACTION_VARIANT,
+) -> ProcessResult:
     page = Page(
         id=new_id("bench"),
         original_image_path=str(golden.image_path),
@@ -427,9 +605,243 @@ def _run_base_pipeline(golden: GoldenPage, memory_samples: list[dict[str, Any]],
     )
     database.upsert_page(page)
     memory_samples.append(_memory_sample(f"before_{engine}_pipeline"))
-    result = pipeline.process_page(page, engine=engine)
+    result = pipeline.process_page(page, engine=engine, model_profile=model_profile, extraction_variant=extraction_variant)
     memory_samples.append(_memory_sample(f"after_{engine}_pipeline"))
     return result
+
+
+def _run_benchmark_pipeline(
+    golden: GoldenPage,
+    memory_samples: list[dict[str, Any]],
+    engine: str,
+    args: argparse.Namespace,
+) -> ProcessResult:
+    mode = getattr(args, "benchmark_mode", "fresh_cli")
+    model_profile = getattr(args, "model_profile", BASELINE_MODEL_PROFILE)
+    extraction_variant = getattr(args, "extraction_variant", DEFAULT_EXTRACTION_VARIANT)
+    if mode == "ui_api":
+        return _run_api_pipeline(golden, memory_samples, engine, model_profile, extraction_variant)
+    result = _run_base_pipeline(golden, memory_samples, engine, model_profile, extraction_variant)
+    if mode == "persisted_db":
+        return _persisted_process_result(result.page.id)
+    return result
+
+
+def _run_api_pipeline(
+    golden: GoldenPage,
+    memory_samples: list[dict[str, Any]],
+    engine: str,
+    model_profile: str,
+    extraction_variant: str,
+) -> ProcessResult:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.api.routes import router
+
+    page = Page(
+        id=new_id("bench"),
+        original_image_path=str(golden.image_path),
+        upload_name=golden.image_path.name,
+        display_name=golden.image_path.stem,
+        processed_image_path=None,
+        page_type="uploaded",
+        page_type_confidence=0.0,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    database.upsert_page(page)
+    app = FastAPI()
+    app.include_router(router)
+    memory_samples.append(_memory_sample(f"before_{engine}_api"))
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/pages/{page.id}/process",
+            params={"engine": engine, "model_profile": model_profile, "extraction_variant": extraction_variant},
+        )
+    memory_samples.append(_memory_sample(f"after_{engine}_api"))
+    if response.status_code >= 400:
+        raise RuntimeError(response.text)
+    return _persisted_process_result(page.id)
+
+
+def _persisted_process_result(page_id: str) -> ProcessResult:
+    page = database.get_page(page_id)
+    if not page:
+        raise RuntimeError(f"Page {page_id!r} was not found after processing.")
+    run = database.get_active_ocr_run(page_id)
+    return ProcessResult(
+        page=page,
+        tokens=database.get_tokens(page_id),
+        cards=database.get_cards(page_id),
+        script_summary=run.metrics.get("script_summary", {}) if run else {},
+        answer_map={},
+        ocr_run=run,
+        document_parse=database.get_active_document_parse(page_id),
+    )
+
+
+def _quality_payload(process_result: ProcessResult) -> dict[str, Any]:
+    cards = process_result.cards
+    exportable = [card for card in cards if card.review_state != "red"]
+    return {
+        "candidate_recall_count": len(cards),
+        "exportable_candidate_count": len(exportable),
+        "manual_review_count": sum(1 for card in cards if card.review_state == "yellow" or card.warnings),
+        "red_candidate_count": sum(1 for card in cards if card.review_state == "red"),
+        "unscored_candidate_count": sum(1 for card in cards if not card.source_bbox),
+        "failure_taxonomy": _failure_taxonomy(process_result),
+    }
+
+
+def _failure_taxonomy(process_result: ProcessResult) -> dict[str, int]:
+    taxonomy = {
+        "missing_row": 0,
+        "wrong_pairing": 0,
+        "surface_ocr_error": 0,
+        "reading_ocr_error": 0,
+        "korean_ocr_error": 0,
+        "script_confusion": 0,
+        "stale_or_missing_evidence": 0,
+        "bbox_misalignment": 0,
+    }
+    for card in process_result.cards:
+        warnings = " ".join(card.warnings).lower()
+        if "missing surface" in warnings:
+            taxonomy["surface_ocr_error"] += 1
+        if "missing reading" in warnings:
+            taxonomy["reading_ocr_error"] += 1
+        if "missing korean meaning" in warnings:
+            taxonomy["korean_ocr_error"] += 1
+        if "script" in warnings:
+            taxonomy["script_confusion"] += 1
+        if "evidence" in warnings or not card.source.get("field_evidence"):
+            taxonomy["stale_or_missing_evidence"] += 1
+        if not card.source_bbox:
+            taxonomy["bbox_misalignment"] += 1
+    return taxonomy
+
+
+def _benchmark_manifest(args: argparse.Namespace, process_result: ProcessResult) -> dict[str, Any]:
+    profile = resolve_ocr_model_profile(getattr(args, "model_profile", BASELINE_MODEL_PROFILE))
+    extraction_variant = getattr(args, "extraction_variant", DEFAULT_EXTRACTION_VARIANT)
+    run = process_result.ocr_run
+    metrics = run.metrics if run else {}
+    profile_manifest = metrics.get("model_profile") if isinstance(metrics.get("model_profile"), dict) else {}
+    graph = metrics.get("document_graph") if isinstance(metrics.get("document_graph"), dict) else {}
+    return {
+        "schema_version": 1,
+        "mode": getattr(args, "benchmark_mode", "fresh_cli"),
+        "experiment_stage": getattr(args, "experiment_stage", "") or None,
+        "engine": _primary_engine(args),
+        "model_profile": profile.id,
+        "model_profile_label": profile.label,
+        "budget": profile.budget,
+        "extraction_variant": extraction_variant,
+        "promotion_status": "experimental",
+        "promotion_reason": "Changing the production default requires a holdout set and pre-registered gates.",
+        "promotion_gates": {
+            "holdout_required": True,
+            "min_vocab_row_accuracy_gain_points": 15,
+            "max_page_regression_points": 3,
+            "mcq_regression_allowed": False,
+            "requires_acceptable_evidence_alignment": True,
+        },
+        "profile_manifest": profile_manifest,
+        "document_graph_metrics": graph.get("metrics", {}),
+        "cache": profile_manifest.get("cache", {}),
+    }
+
+
+def _write_audit_artifacts(
+    golden: GoldenPage,
+    process_result: ProcessResult,
+    args: argparse.Namespace,
+    evaluation_payload: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    work_dir = Path(getattr(args, "work_dir", "") or "")
+    if not work_dir:
+        return {}
+    audit_dir = work_dir / "audit"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    profile_id = getattr(args, "model_profile", BASELINE_MODEL_PROFILE)
+    variant = getattr(args, "extraction_variant", DEFAULT_EXTRACTION_VARIANT)
+    stem = f"{golden.page_id}.{profile_id}.{variant}.{_primary_engine(args)}"
+    json_path = audit_dir / f"{stem}.overlay.json"
+    png_path = audit_dir / f"{stem}.overlay.png"
+    run_metrics = process_result.ocr_run.metrics if process_result.ocr_run else {}
+    document_graph = run_metrics.get("document_graph") if isinstance(run_metrics.get("document_graph"), dict) else {}
+    transform = document_graph.get("transform") if isinstance(document_graph.get("transform"), dict) else {}
+    payload = {
+        "schema_version": 1,
+        "page_id": golden.page_id,
+        "benchmark_mode": getattr(args, "benchmark_mode", "fresh_cli"),
+        "engine": _primary_engine(args),
+        "model_profile": profile_id,
+        "extraction_variant": variant,
+        "image_path": str(golden.image_path),
+        "processed_image_path": process_result.page.processed_image_path,
+        "coordinate_space": transform.get("coordinate_space", "processed_image"),
+        "transform": transform,
+        "document_graph_metrics": document_graph.get("metrics", {}),
+        "tokens": [token.model_dump() for token in process_result.tokens],
+        "cards": [
+            {
+                "id": card.id,
+                "source_type": card.source_type,
+                "source_id": card.source_id,
+                "note_type": card.note_type,
+                "source_bbox": card.source_bbox,
+                "confidence": card.confidence,
+                "review_state": card.review_state,
+                "warnings": card.warnings,
+                "field_evidence": card.source.get("field_evidence"),
+            }
+            for card in process_result.cards
+        ],
+        "document_blocks": [
+            block.model_dump(mode="json")
+            for block in (process_result.document_parse.blocks if process_result.document_parse else [])
+        ],
+        "major_failures": {
+            "missing_ids": (evaluation_payload or {}).get("missing_ids", []),
+            "source_mismatch_ids": (evaluation_payload or {}).get("source_mismatch_ids", []),
+            "failure_taxonomy": (evaluation_payload or {}).get("failure_taxonomy", {}),
+        },
+    }
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_overlay_png(png_path, process_result)
+    return {"overlay_json": str(json_path), "overlay_png": str(png_path)}
+
+
+def _write_overlay_png(path: Path, process_result: ProcessResult) -> None:
+    image_path = Path(process_result.page.processed_image_path or process_result.page.original_image_path)
+    if not image_path.exists():
+        return
+    with Image.open(image_path) as image:
+        canvas = image.convert("RGB")
+    draw = ImageDraw.Draw(canvas, "RGBA")
+    for token in process_result.tokens:
+        _draw_bbox(draw, token.bbox, outline=(128, 128, 128, 150), width=1)
+    document_blocks = process_result.document_parse.blocks if process_result.document_parse else []
+    for block in document_blocks:
+        if block.bbox:
+            _draw_bbox(draw, block.bbox, outline=(110, 70, 170, 180), width=3)
+    for card in process_result.cards:
+        if card.source_bbox:
+            color = {"green": (34, 139, 82, 220), "yellow": (245, 170, 28, 220), "red": (190, 45, 45, 220)}.get(
+                card.review_state,
+                (40, 120, 160, 220),
+            )
+            _draw_bbox(draw, card.source_bbox, outline=color, width=3)
+    canvas.save(path)
+
+
+def _draw_bbox(draw: ImageDraw.ImageDraw, bbox: list[float], *, outline: tuple[int, int, int, int], width: int) -> None:
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        return
+    x1, y1, x2, y2 = [float(value) for value in bbox]
+    if x2 <= x1 or y2 <= y1:
+        return
+    draw.rectangle([x1, y1, x2, y2], outline=outline, width=width)
 
 
 def _evaluate_base(golden: GoldenPage, process_result: ProcessResult) -> VocabEvalResult | McqEvalResult:
@@ -442,6 +854,7 @@ def _run_engine_evaluation(golden: GoldenPage, memory_samples: list[dict[str, An
     try:
         result = _run_base_pipeline(golden, memory_samples, engine)
         payload = _result_dict(_evaluate_base(golden, result), engine)
+        payload.update(_quality_payload(result))
         payload["ocr_text_coverage"] = _coverage_dict(_token_text_coverage(golden, result, engine))
         return payload
     except Exception as exc:
@@ -562,6 +975,8 @@ def _result_dict(result: VocabEvalResult | McqEvalResult, engine: str = PADDLEOC
             "matched": result.matched_questions,
             "expected": result.expected_questions,
             "accuracy": result.question_accuracy,
+            "strict_ocr_score": result.source_field_accuracy,
+            "strict_ocr_score_kind": "mcq_source_field_accuracy",
             "source_matched": result.source_matched_questions,
             "source_field_accuracy": result.source_field_accuracy,
             "sentence_matches": result.sentence_matches,
@@ -581,11 +996,22 @@ def _result_dict(result: VocabEvalResult | McqEvalResult, engine: str = PADDLEOC
         "matched": result.matched_rows,
         "expected": result.expected_rows,
         "accuracy": result.row_accuracy,
+        "strict_ocr_score": result.row_accuracy,
+        "strict_ocr_score_kind": "vocab_row_accuracy",
+        "layout_matched_rows": result.layout_matched_rows,
+        "layout_recall": result.layout_recall,
+        "surface_accuracy": result.surface_accuracy,
+        "reading_accuracy": result.reading_accuracy,
+        "meaning_accuracy": result.meaning_accuracy,
         "ocr_supported_items": result.ocr_supported_items,
         "glossary_supported_items": result.glossary_supported_items,
+        "surface_matches": result.surface_matches,
+        "reading_matches": result.reading_matches,
         "surface_reading_matches": result.surface_reading_matches,
         "meaning_matches": result.meaning_matches,
-        "generated_cards": result.generated_cards,
+        "generated_notes": result.generated_notes,
+        "korean_field_missing_hangul": result.korean_field_missing_hangul,
+        "japanese_field_has_hangul": result.japanese_field_has_hangul,
         "missing_ids": result.missing_row_ids,
     }
 
@@ -664,6 +1090,36 @@ def _resource_metrics(
     }
 
 
+def _resource_metrics_with_cache(
+    start: dict[str, float],
+    end: dict[str, float],
+    memory_samples: list[dict[str, Any]],
+    base_payload: dict[str, Any],
+) -> dict[str, Any]:
+    metrics = _resource_metrics(start, end, memory_samples)
+    metrics["cache"] = _cache_summary(base_payload)
+    return metrics
+
+
+def _cache_summary(base_payload: dict[str, Any]) -> dict[str, Any]:
+    benchmark = base_payload.get("benchmark") if isinstance(base_payload.get("benchmark"), dict) else {}
+    cache = benchmark.get("cache") if isinstance(benchmark.get("cache"), dict) else {}
+    result_cache_hit = cache.get("hit")
+    cache_phase = "unknown"
+    if result_cache_hit is True:
+        cache_phase = "warm_ocr_cache"
+    elif result_cache_hit is False:
+        cache_phase = "cold_or_uncached"
+    return {
+        "result_cache_hit": result_cache_hit,
+        "model_cache_hit": cache.get("model_cache_hit"),
+        "cache_phase": cache_phase,
+        "timing_bucket": cache_phase,
+        "cache_key": cache.get("key"),
+        "timing_note": "Benchmark wall time is measured per run; compare a cold run and a repeated warm run with the same cache key.",
+    }
+
+
 def _rss_mb() -> float | None:
     try:
         output = subprocess.check_output(["ps", "-o", "rss=", "-p", str(os.getpid())], text=True).strip()
@@ -723,7 +1179,7 @@ def _format_page(result: PageBenchmark) -> str:
     base = result.base
     lines = [
         f"Page: {result.page_id}",
-        f"  {base.get('mode', 'base')}: {base['matched']}/{base['expected']} accuracy={base['accuracy']:.1%} cards={base['generated_cards']}",
+        f"  {base.get('mode', 'base')}: {base['matched']}/{base['expected']} accuracy={base['accuracy']:.1%} {_generated_count(base)}",
     ]
     if "source_field_accuracy" in base:
         lines.append(
@@ -745,7 +1201,7 @@ def _format_page(result: PageBenchmark) -> str:
         lines.append(
             "  paddleocr_vl_extraction: "
             f"{result.vl.get('matched', 0)}/{result.vl.get('expected', 0)} "
-            f"accuracy={result.vl.get('accuracy', 0):.1%} cards={result.vl.get('generated_cards', 0)}"
+            f"accuracy={result.vl.get('accuracy', 0):.1%} {_generated_count(result.vl)}"
         )
         if result.vl.get("warnings"):
             lines.append(f"  vl warnings: {'; '.join(result.vl['warnings'])}")
@@ -762,6 +1218,51 @@ def _format_page(result: PageBenchmark) -> str:
     if result.errors:
         lines.append(f"  errors: {'; '.join(result.errors)}")
     return "\n".join(lines)
+
+
+def _write_dashboard_markdown(results: list[PageBenchmark], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# OCR Benchmark Dashboard",
+        "",
+        "| Page | Mode | Profile | Variant | Accuracy | Evidence | Wall | Peak RSS | Cache | Cache Phase | Errors |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- |",
+    ]
+    for result in results:
+        base = result.base
+        benchmark = base.get("benchmark") if isinstance(base.get("benchmark"), dict) else {}
+        graph_metrics = benchmark.get("document_graph_metrics") if isinstance(benchmark.get("document_graph_metrics"), dict) else {}
+        cache = result.resource_metrics.get("cache") if isinstance(result.resource_metrics.get("cache"), dict) else {}
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    result.page_id,
+                    str(benchmark.get("mode", "unknown")),
+                    str(benchmark.get("model_profile", "unknown")),
+                    str(benchmark.get("extraction_variant", "unknown")),
+                    _percent(base.get("accuracy")),
+                    _percent(graph_metrics.get("evidence_alignment_score")),
+                    f"{result.resource_metrics.get('wall_seconds', 0)}s",
+                    f"{result.resource_metrics.get('peak_rss_mb', 0)} MB",
+                    str(cache.get("result_cache_hit")),
+                    str(cache.get("cache_phase", "unknown")),
+                    "; ".join(result.errors)[:80],
+                ]
+            )
+            + " |"
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _percent(value: object) -> str:
+    return f"{float(value) * 100:.1f}%" if isinstance(value, (int, float)) else "n/a"
+
+
+def _generated_count(payload: dict[str, Any]) -> str:
+    if "generated_notes" in payload:
+        return f"notes={payload.get('generated_notes', 0)}"
+    return f"cards={payload.get('generated_cards', 0)}"
 
 
 if __name__ == "__main__":

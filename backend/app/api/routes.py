@@ -13,14 +13,16 @@ from app.core.config import (
     CROP_DIR,
     EXPORT_DIR,
     OCR_COMPARE_PROVIDER,
+    OCR_PAGE_WORKER_MAX_RSS_MB,
     OCR_VL_PAGE_WORKER_MAX_RSS_MB,
     PROCESSED_DIR,
     UPLOAD_DIR,
 )
+from app.core import config as runtime_config
 from app.core.images import preprocess_image
 from app.core.ids import new_id
 from app.db import database
-from app.export.anki_csv import write_csv
+from app.export.anki_csv import write_export_csvs
 from app.extraction.pipeline import process_page
 from app.models.schemas import (
     CardUpdate,
@@ -39,6 +41,15 @@ from app.ocr.comparison import compare_ocr_tokens
 from app.ocr.crop_worker import CropOcrError, crop_ocr_worker
 from app.ocr.engines import PADDLEOCR_ENGINE, PADDLEOCR_VL_ENGINE, SUPPORTED_OCR_ENGINES, normalize_ocr_engine
 from app.ocr.page_worker import run_document_parse_worker, run_page_process_worker
+from app.ocr.profiles import (
+    BASELINE_MODEL_PROFILE,
+    DEFAULT_EXTRACTION_VARIANT,
+    available_variant_payload,
+    available_profile_payload,
+    normalize_extraction_variant,
+    profile_env_overrides,
+    resolve_ocr_model_profile,
+)
 from app.ocr.runtime import ocr_runtime_job
 
 
@@ -135,23 +146,58 @@ def process(
         str,
         Query(description=f"OCR engine to use for candidate generation: {', '.join(sorted(SUPPORTED_OCR_ENGINES))}."),
     ] = PADDLEOCR_ENGINE,
+    model_profile: Annotated[
+        str,
+        Query(description="Experimental OCR model profile. Default keeps the frozen production control."),
+    ] = BASELINE_MODEL_PROFILE,
+    extraction_variant: Annotated[
+        str,
+        Query(description="Experimental extraction variant. Default keeps the frozen current extractor."),
+    ] = DEFAULT_EXTRACTION_VARIANT,
 ):
     page = database.get_page(page_id)
     if not page:
         raise HTTPException(status_code=404, detail=PAGE_NOT_FOUND)
     try:
         normalized_engine = normalize_ocr_engine(engine)
+        profile = resolve_ocr_model_profile(model_profile)
+        normalized_variant = normalize_extraction_variant(extraction_variant)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not profile.creates_candidates and normalized_engine == PADDLEOCR_ENGINE:
+        raise HTTPException(status_code=400, detail=f"Profile {profile.id!r} is diagnostic-only and cannot create Anki candidates.")
     with ocr_runtime_job(blocking=False) as acquired:
         if not acquired:
             raise HTTPException(status_code=409, detail=OCR_BUSY_DETAIL)
         try:
-            if normalized_engine == PADDLEOCR_VL_ENGINE:
-                return run_page_process_worker(page.id, normalized_engine, max_rss_mb=OCR_VL_PAGE_WORKER_MAX_RSS_MB)
-            return process_page(page, engine=normalized_engine)
+            use_worker = (
+                normalized_engine == PADDLEOCR_VL_ENGINE
+                or profile.id != BASELINE_MODEL_PROFILE
+                or normalized_variant != DEFAULT_EXTRACTION_VARIANT
+                or not _profile_matches_active_runtime_config(profile.id)
+            )
+            if use_worker:
+                return run_page_process_worker(
+                    page.id,
+                    normalized_engine,
+                    max_rss_mb=OCR_VL_PAGE_WORKER_MAX_RSS_MB if normalized_engine == PADDLEOCR_VL_ENGINE else OCR_PAGE_WORKER_MAX_RSS_MB,
+                    env_overrides=profile_env_overrides(profile.id),
+                    model_profile=profile.id,
+                    extraction_variant=normalized_variant,
+                )
+            return process_page(page, engine=normalized_engine, model_profile=profile.id, extraction_variant=normalized_variant)
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/ocr/profiles")
+def ocr_profiles() -> dict[str, object]:
+    return {
+        "profiles": available_profile_payload(),
+        "variants": available_variant_payload(),
+        "default_profile": BASELINE_MODEL_PROFILE,
+        "default_variant": DEFAULT_EXTRACTION_VARIANT,
+    }
 
 
 @router.post("/pages/dedupe")
@@ -321,13 +367,12 @@ def approve_card(card_id: str):
 def export_csv(request: ExportRequest) -> ExportResponse:
     cards = _exportable_cards(request)
     export_id = new_id("export")
-    path = EXPORT_DIR / f"{export_id}.csv"
-    write_csv(path, cards)
+    files, note_count, generated_card_count = write_export_csvs(EXPORT_DIR, export_id, cards)
     return ExportResponse(
         export_id=export_id,
-        path=str(path),
-        card_count=len(cards),
-        download_url=f"/api/exports/{export_id}.csv",
+        files=files,
+        note_count=note_count,
+        estimated_generated_card_count=generated_card_count,
     )
 
 
@@ -457,6 +502,23 @@ def _has_stale_evidence_warning(page: Page) -> bool:
 def _has_document_parse_evidence(page_id: str) -> bool:
     document_parse = database.get_active_document_parse(page_id)
     return bool(document_parse and any(block.bbox for block in document_parse.blocks))
+
+
+def _profile_matches_active_runtime_config(profile_id: str) -> bool:
+    runtime_values = {
+        "PADDLE_OCR_USE_LANGUAGE_PROFILE": str(runtime_config.PADDLE_OCR_USE_LANGUAGE_PROFILE).lower(),
+        "PADDLE_OCR_LANG": runtime_config.PADDLE_OCR_LANG,
+        "PADDLE_OCR_TEXT_DETECTION_MODEL_NAME": runtime_config.PADDLE_OCR_TEXT_DETECTION_MODEL_NAME,
+        "PADDLE_OCR_TEXT_RECOGNITION_MODEL_NAME": runtime_config.PADDLE_OCR_TEXT_RECOGNITION_MODEL_NAME,
+        "PADDLE_OCR_KOREAN_TEXT_DETECTION_MODEL_NAME": runtime_config.PADDLE_OCR_KOREAN_TEXT_DETECTION_MODEL_NAME,
+        "PADDLE_OCR_KOREAN_TEXT_RECOGNITION_MODEL_NAME": runtime_config.PADDLE_OCR_KOREAN_TEXT_RECOGNITION_MODEL_NAME,
+    }
+    for key, expected in profile_env_overrides(profile_id).items():
+        actual = runtime_values.get(key)
+        normalized_expected = str(expected).lower() if key == "PADDLE_OCR_USE_LANGUAGE_PROFILE" else expected
+        if actual != normalized_expected:
+            return False
+    return True
 
 
 def _page_cleanup_key(page: Page) -> str | None:

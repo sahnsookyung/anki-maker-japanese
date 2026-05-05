@@ -16,9 +16,12 @@ def test_verify_anki_csv_parser_accepts_export_contract(tmp_path) -> None:
     rows = parse_anki_csv(export_path)
 
     assert len(rows) == 1
-    assert rows[0].notetype == "jp_vocab_entry"
-    assert rows[0].front == "学校"
-    assert rows[0].back == "がっこう"
+    assert rows[0].surface == "学校"
+    assert rows[0].reading == "がっこう"
+    assert rows[0].meaning_ko == "학교"
+    assert rows[0].study_writing == "1"
+    assert rows[0].study_reading == ""
+    assert rows[0].study_meaning == ""
     assert rows[0].tags == "jlpt"
 
 
@@ -44,6 +47,12 @@ def _card() -> CardCandidate:
         page_id="page-1",
         source_type="vocab_item",
         source_id="source-1",
+        source={
+            "surface": "学校",
+            "reading": "がっこう",
+            "meaning_ko": "학교",
+            "study_meaning": False,
+        },
         note_type="jp_vocab_entry",
         front="学校",
         back="がっこう",

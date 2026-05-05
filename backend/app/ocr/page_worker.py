@@ -13,6 +13,7 @@ import warnings
 
 from app.core.config import BACKEND_DIR, OCR_PAGE_JOB_TIMEOUT_SECONDS, OCR_PAGE_WORKER_MAX_RSS_MB
 from app.db import database
+from app.extraction import pipeline as pipeline_module
 from app.extraction.pipeline import process_page
 from app.models.schemas import DocumentParseResult, ProcessResult
 from app.ocr.engines import normalize_ocr_engine
@@ -29,6 +30,8 @@ def run_page_process_worker(
     timeout_seconds: float = OCR_PAGE_JOB_TIMEOUT_SECONDS,
     max_rss_mb: float = OCR_PAGE_WORKER_MAX_RSS_MB,
     env_overrides: dict[str, str] | None = None,
+    model_profile: str | None = None,
+    extraction_variant: str | None = None,
 ) -> ProcessResult:
     normalized_engine = normalize_ocr_engine(engine)
     output_fd, output_name = tempfile.mkstemp(prefix=f"anki-page-{page_id}-", suffix=".json")
@@ -46,6 +49,10 @@ def run_page_process_worker(
             "--output-json",
             str(output_path),
         ]
+        if model_profile:
+            cmd.extend(["--model-profile", model_profile])
+        if extraction_variant:
+            cmd.extend(["--extraction-variant", extraction_variant])
         completed = _run_worker_command(cmd, timeout_seconds=timeout_seconds, max_rss_mb=max_rss_mb, env_overrides=env_overrides)
         if completed.returncode != 0 or not output_path.exists():
             detail = _worker_failure_detail(completed, "Page OCR worker")
@@ -95,6 +102,8 @@ def _run_worker_command(
     env_overrides: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    env["ANKI_MAKER_DB"] = str(database.DB_PATH)
+    env["ANKI_MAKER_PROCESSED_DIR"] = str(pipeline_module.PROCESSED_DIR)
     if env_overrides:
         env.update(env_overrides)
     process = subprocess.Popen(  # NOSONAR
@@ -228,6 +237,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run one page through a bounded OCR processing worker.")
     parser.add_argument("--page-id", required=True)
     parser.add_argument("--engine", default="paddleocr")
+    parser.add_argument("--model-profile", default="")
+    parser.add_argument("--extraction-variant", default="baseline_current")
     parser.add_argument("--document-parse", action="store_true")
     parser.add_argument("--image-path")
     parser.add_argument("--output-json", required=True)
@@ -244,7 +255,12 @@ def main() -> int:
             if not page:
                 print(f"Page {args.page_id!r} was not found.", file=sys.stderr)
                 return 2
-            result = process_page(page, engine=normalize_ocr_engine(args.engine))
+            result = process_page(
+                page,
+                engine=normalize_ocr_engine(args.engine),
+                model_profile=args.model_profile or None,
+                extraction_variant=args.extraction_variant,
+            )
         Path(args.output_json).write_text(json.dumps(result.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8")
         return 0
     except Exception as exc:

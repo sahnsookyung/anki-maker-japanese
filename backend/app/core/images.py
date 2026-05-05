@@ -13,6 +13,8 @@ class PreprocessResult:
     width: int | None
     height: int | None
     warnings: list[str]
+    original_width: int | None = None
+    original_height: int | None = None
 
 
 def preprocess_image(original_path: Path, output_path: Path) -> PreprocessResult:
@@ -25,13 +27,14 @@ def preprocess_image(original_path: Path, output_path: Path) -> PreprocessResult
 
     image = Image.open(original_path)
     image = ImageOps.exif_transpose(image).convert("RGB")
+    original_width, original_height = image.width, image.height
     image = _perspective_crop_if_available(image, warnings)
     image = _resize_if_needed(image, PREPROCESS_MAX_SIDE_LEN, warnings, "Preprocessed image")
     image = ImageOps.autocontrast(image)
     image = image.filter(ImageFilter.SHARPEN)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(output_path)
-    return PreprocessResult(output_path, image.width, image.height, warnings)
+    return PreprocessResult(output_path, image.width, image.height, warnings, original_width, original_height)
 
 
 def _perspective_crop_if_available(image: "Image.Image", warnings: list[str]) -> "Image.Image":

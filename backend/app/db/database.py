@@ -25,7 +25,6 @@ _PAGE_WITH_ACTIVE_RUN_SQL = """
 """
 _OCR_RUN_BY_ID_SQL = "SELECT * FROM ocr_runs WHERE id = ?"
 
-
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -120,6 +119,7 @@ def init_db() -> None:
         _ensure_page_columns(conn)
         _ensure_run_columns(conn)
         _backfill_legacy_runs(conn)
+        _delete_unsupported_vocab_cards(conn)
         _ensure_indexes(conn)
 
 
@@ -355,6 +355,34 @@ def get_active_ocr_run(page_id: str) -> OcrRun | None:
     return _ocr_run_from_row(row) if row else None
 
 
+def find_succeeded_run_by_cache_key(
+    page_id: str | None,
+    engine: str,
+    image_sha256: str | None,
+    cache_key: str | None,
+) -> OcrRun | None:
+    if not cache_key:
+        return None
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM ocr_runs
+            WHERE (? IS NULL OR page_id = ?)
+              AND engine = ?
+              AND status = 'succeeded'
+              AND (? IS NULL OR image_sha256 = ?)
+            ORDER BY completed_at DESC, started_at DESC
+            """,
+            (page_id, page_id, engine, image_sha256, image_sha256),
+        ).fetchall()
+    for row in rows:
+        run = _ocr_run_from_row(row)
+        if run.provider_config.get("cache_key") == cache_key:
+            return run
+    return None
+
+
 def get_active_document_parse(page_id: str) -> DocumentParseResult | None:
     run = get_active_ocr_run(page_id)
     return _document_parse_from_run(run) if run else None
@@ -541,9 +569,6 @@ def _card_sort_key(card: CardCandidate) -> tuple[Any, ...]:
     source_rank = 0 if card.source_type == "question_item" else 1
     note_rank = {
         "jp_vocab_entry": 0,
-        "jp_vocab_reading": 0,
-        "jp_vocab_meaning": 1,
-        "jp_vocab_writing": 2,
     }.get(card.note_type, 9)
     return (
         card.page_id,
@@ -706,6 +731,10 @@ def _backfill_legacy_runs(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE ocr_tokens SET run_id = ? WHERE page_id = ? AND run_id IS NULL", (run_id, row["id"]))
         conn.execute("UPDATE cards SET run_id = ? WHERE page_id = ? AND run_id IS NULL", (run_id, row["id"]))
         conn.execute("UPDATE pages SET active_ocr_run_id = ? WHERE id = ?", (run_id, row["id"]))
+
+
+def _delete_unsupported_vocab_cards(conn: sqlite3.Connection) -> None:
+    conn.execute("DELETE FROM cards WHERE source_type = 'vocab_item' AND note_type != 'jp_vocab_entry'")
 
 
 def _ensure_indexes(conn: sqlite3.Connection) -> None:

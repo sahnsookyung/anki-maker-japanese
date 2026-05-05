@@ -170,8 +170,16 @@ class ExportRequest(BaseModel):
     approved_only: bool = True
 
 
+class ExportFile(BaseModel):
+    kind: Literal["vocab", "mcq"]
+    filename: str
+    path: str
+    download_url: str
+    row_count: int
+
+
 class ExportResponse(BaseModel):
     export_id: str
-    path: str
-    card_count: int
-    download_url: str
+    files: list[ExportFile] = Field(default_factory=list)
+    note_count: int = 0
+    estimated_generated_card_count: int = 0

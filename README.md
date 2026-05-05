@@ -133,15 +133,30 @@ The app accepts uploads from the browser. Uploaded pages can be renamed in the U
 
 ## Export
 
-Approved cards export as UTF-8 CSV for Anki text import. The file includes Anki import headers for comma separation, HTML fields, note type, and tags, followed by these columns:
+Approved items export as UTF-8 CSV for Anki text import. Export is CSV-only: the app does not generate TSV, ZIP, `.apkg`, or AnkiConnect pushes.
+
+Vocabulary pages export one semantic `jp_vocab_entry` note row per `(Surface, Reading, MeaningKo)` entry. The recommended Anki setup generates one pronunciation-to-kanji card from each row and keeps the Korean meaning as hidden context on the answer side. The vocab CSV uses:
+
+```csv
+VocabKey,Surface,Reading,MeaningKo,StudyWriting,StudyReading,StudyMeaning,SourcePage,SourceBBox,Confidence,Warnings,tags
+```
+
+Create a `jp_vocab_entry` note type in Anki with fields matching those column names. `StudyReading` and `StudyMeaning` are compatibility columns and are exported empty for the one-card model. Recommended card template:
+
+```text
+Kana to Kanji front: {{#StudyWriting}}{{Reading}}{{/StudyWriting}}
+Kana to Kanji back:  {{FrontSide}}<hr id=answer>{{Surface}}<br><details><summary>Meaning</summary>{{MeaningKo}}</details>
+```
+
+Multiple-choice pages keep the current front/back CSV schema:
 
 ```csv
 notetype,front,back,source_page,source_bbox,confidence,tags
 ```
 
-Only approved cards are exported by default, and red/blocked cards stay excluded.
+Only approved candidates are exported by default, and red/blocked candidates stay excluded. When a selection contains both vocab and MCQ items, the export action returns separate CSV downloads by schema.
 
-The CSV is designed for Anki's text import flow. The app does not generate `.apkg` deck packages, and the target Anki collection must have matching note types such as `jp_vocab_entry` or `jp_spelling_mcq_recall` before import.
+The CSV is designed for Anki's text import flow. The target Anki collection must have matching note types such as `jp_vocab_entry` or `jp_spelling_mcq_recall` before import.
 
 Optional local verification against Anki's Python importer:
 
@@ -178,7 +193,13 @@ Run OCR mode benchmarks locally when comparing extraction quality or resource us
 cd backend
 uv run python scripts/benchmark_ocr_modes.py --json
 uv run python scripts/benchmark_ocr_modes.py --engine all --vl-limit 1 --worker-max-rss-mb 4096 --json
+uv run python scripts/benchmark_ocr_modes.py --profile-matrix --json
+uv run python scripts/benchmark_ocr_modes.py --model-profile jp_v5_mobile_general --extraction-variant baseline_current --json
+uv run python scripts/benchmark_ocr_modes.py --experiment-stage 1 --json
+uv run python scripts/benchmark_ocr_modes.py --experiment-stage 2 --json
 ```
+
+Experimental OCR profiles are intentionally separate from the default workflow. The UI exposes them under “Experimental OCR profile,” and benchmark JSON records the exact profile, extraction variant, runtime/device info, preprocessing, cache status, document-graph metrics, and promotion gates. `--profile-matrix` and staged runs skip heavy server profiles unless `--include-heavy-profiles` is passed. Do not change the production default based only on the four canonical pages; use a holdout set before promoting a newer model.
 
 The Playwright e2e smoke test fails on app-owned browser runtime errors, while ignoring external browser-extension noise such as `Extension context invalidated` from injected `content.js`.
 

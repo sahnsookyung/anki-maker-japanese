@@ -512,9 +512,7 @@ def test_cards_are_returned_in_workbook_semantic_order(tmp_path, monkeypatch) ->
         _question_card("card-q10", 10, 300),
         _question_card("card-q2", 2, 100),
         _question_card("card-q1", 1, 50),
-        _vocab_card("card-vocab-writing", "row-1", "jp_vocab_writing", 400),
-        _vocab_card("card-vocab-reading", "row-1", "jp_vocab_reading", 400),
-        _vocab_card("card-vocab-meaning", "row-1", "jp_vocab_meaning", 400),
+        _vocab_card("card-vocab-entry", "row-1", "jp_vocab_entry", 400),
     ]
 
     database.replace_cards("page-ordered", cards, run.id)
@@ -524,9 +522,7 @@ def test_cards_are_returned_in_workbook_semantic_order(tmp_path, monkeypatch) ->
         "card-q1",
         "card-q2",
         "card-q10",
-        "card-vocab-reading",
-        "card-vocab-meaning",
-        "card-vocab-writing",
+        "card-vocab-entry",
     ]
 
 
@@ -546,9 +542,12 @@ def test_vocab_cards_create_one_candidate_per_vocab_entry() -> None:
 
     assert card.source_id == "row-1"
     assert card.note_type == "jp_vocab_entry"
-    assert card.front == "がっこう<br>학교<br><br>올바른 표기는?"
+    assert card.front == "がっこう"
     assert card.back == "学校"
-    assert card.tags == ["jlpt", "vocab", "writing"]
+    assert card.tags == ["jlpt", "vocab"]
+    assert card.source["study_writing"] is True
+    assert card.source["study_reading"] is False
+    assert card.source["study_meaning"] is False
 
 
 def test_failed_rerun_does_not_replace_active_successful_run(tmp_path, monkeypatch) -> None:
@@ -714,9 +713,17 @@ def test_export_csv_route_filters_and_writes_anki_csv(tmp_path, monkeypatch) -> 
                 page_id="page-export",
                 source_type="vocab_item",
                 source_id="source-1",
-                note_type="jp_vocab_reading",
-                front="学校",
-                back="がっこう",
+                source={
+                    "surface": "学校",
+                    "reading": "がっこう",
+                    "meaning_ko": "학교",
+                    "study_writing": True,
+                    "study_reading": True,
+                    "study_meaning": False,
+                },
+                note_type="jp_vocab_entry",
+                front="がっこう",
+                back="学校",
                 tags=["jlpt"],
                 confidence=0.91,
                 status="approved",
@@ -728,9 +735,10 @@ def test_export_csv_route_filters_and_writes_anki_csv(tmp_path, monkeypatch) -> 
                 page_id="page-export",
                 source_type="vocab_item",
                 source_id="source-2",
-                note_type="jp_vocab_reading",
-                front="危険",
-                back="きけん",
+                source={"surface": "危険", "reading": "きけん", "meaning_ko": "위험"},
+                note_type="jp_vocab_entry",
+                front="きけん",
+                back="危険",
                 tags=[],
                 confidence=0.2,
                 status="approved",
@@ -742,9 +750,10 @@ def test_export_csv_route_filters_and_writes_anki_csv(tmp_path, monkeypatch) -> 
                 page_id="page-export",
                 source_type="vocab_item",
                 source_id="source-3",
-                note_type="jp_vocab_reading",
-                front="先生",
-                back="せんせい",
+                source={"surface": "先生", "reading": "せんせい", "meaning_ko": "선생"},
+                note_type="jp_vocab_entry",
+                front="せんせい",
+                back="先生",
                 tags=[],
                 confidence=0.8,
                 status="pending_review",
@@ -759,13 +768,187 @@ def test_export_csv_route_filters_and_writes_anki_csv(tmp_path, monkeypatch) -> 
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["card_count"] == 1
-    assert payload["download_url"].endswith(".csv")
-    csv_text = (tmp_path / "exports" / Path(payload["path"]).name).read_text(encoding="utf-8")
-    assert "#separator:Comma" in csv_text
+    assert payload["note_count"] == 1
+    assert payload["estimated_generated_card_count"] == 1
+    assert payload["files"][0]["kind"] == "vocab"
+    assert payload["files"][0]["download_url"].endswith(".csv")
+    csv_text = (tmp_path / "exports" / payload["files"][0]["filename"]).read_text(encoding="utf-8")
+    assert "#notetype:jp_vocab_entry" in csv_text
     assert "学校" in csv_text
+    assert ",1,,," in csv_text
     assert "危険" not in csv_text
     assert "先生" not in csv_text
+
+
+def test_export_csv_route_returns_separate_vocab_and_mcq_csv_files(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "mixed-exports.db")
+    monkeypatch.setattr(routes, "EXPORT_DIR", tmp_path / "exports")
+    database.init_db()
+    database.upsert_page(
+        Page(
+            id="page-mixed-export",
+            original_image_path=str(tmp_path / "page-mixed-export.jpg"),
+            display_name="Mixed export page",
+            page_type="reading_mcq",
+            page_type_confidence=1.0,
+            warnings=[],
+            created_at="2026-04-27T00:00:00+00:00",
+        )
+    )
+    database.replace_cards(
+        "page-mixed-export",
+        [
+            CardCandidate(
+                id="vocab-approved",
+                page_id="page-mixed-export",
+                source_type="vocab_item",
+                source_id="source-vocab",
+                source={"surface": "学校", "reading": "がっこう", "meaning_ko": "학교"},
+                note_type="jp_vocab_entry",
+                front="がっこう",
+                back="学校",
+                tags=["jlpt"],
+                confidence=0.91,
+                status="approved",
+                review_state="green",
+                warnings=[],
+            ),
+            CardCandidate(
+                id="mcq-approved",
+                page_id="page-mixed-export",
+                source_type="question_item",
+                source_id="source-q",
+                source={"question_no": 1},
+                note_type="jp_reading_mcq_recall",
+                front="front",
+                back="back",
+                tags=["jlpt"],
+                confidence=0.91,
+                status="approved",
+                review_state="green",
+                warnings=[],
+            ),
+        ],
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/exports/csv", json={"page_ids": ["page-mixed-export"], "approved_only": True})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [file["kind"] for file in payload["files"]] == ["vocab", "mcq"]
+    assert payload["note_count"] == 2
+    assert payload["estimated_generated_card_count"] == 2
+    assert (tmp_path / "exports" / payload["files"][0]["filename"]).read_text(encoding="utf-8").startswith("#separator:Comma")
+    assert (tmp_path / "exports" / payload["files"][1]["filename"]).read_text(encoding="utf-8").startswith("#separator:Comma")
+
+
+def test_export_csv_route_skips_zero_direction_vocab_notes(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "zero-direction-export.db")
+    monkeypatch.setattr(routes, "EXPORT_DIR", tmp_path / "exports")
+    database.init_db()
+    database.upsert_page(
+        Page(
+            id="page-zero-direction",
+            original_image_path=str(tmp_path / "page-zero-direction.jpg"),
+            display_name="Zero direction page",
+            page_type="vocab_table",
+            page_type_confidence=1.0,
+            warnings=[],
+            created_at="2026-04-27T00:00:00+00:00",
+        )
+    )
+    database.replace_cards(
+        "page-zero-direction",
+        [
+            CardCandidate(
+                id="vocab-zero-direction",
+                page_id="page-zero-direction",
+                source_type="vocab_item",
+                source_id="source-vocab",
+                source={
+                    "surface": "学校",
+                    "reading": "がっこう",
+                    "meaning_ko": "학교",
+                    "study_writing": False,
+                    "study_reading": False,
+                    "study_meaning": False,
+                },
+                note_type="jp_vocab_entry",
+                front="がっこう",
+                back="学校",
+                tags=["jlpt"],
+                confidence=0.91,
+                status="approved",
+                review_state="green",
+                warnings=[],
+            )
+        ],
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/exports/csv", json={"page_ids": ["page-zero-direction"], "approved_only": True})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["files"] == []
+    assert payload["note_count"] == 0
+    assert payload["estimated_generated_card_count"] == 0
+
+
+def test_init_db_deletes_unsupported_vocab_note_types(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "unsupported-vocab.db")
+    database.init_db()
+    database.upsert_page(
+        Page(
+            id="page-unsupported-vocab",
+            original_image_path=str(tmp_path / "page-unsupported.jpg"),
+            display_name="Unsupported vocab",
+            page_type="vocab_table",
+            page_type_confidence=1.0,
+            warnings=[],
+            created_at="2026-04-27T00:00:00+00:00",
+        )
+    )
+    database.replace_cards(
+        "page-unsupported-vocab",
+        [
+            CardCandidate(
+                id="old-reading",
+                page_id="page-unsupported-vocab",
+                source_type="vocab_item",
+                source_id="row-1",
+                source={"surface": "", "reading": "", "meaning_ko": ""},
+                note_type="jp_vocab_reading",
+                front="学校<br>뜻: 학&amp;교",
+                back="がっこう",
+                tags=["reading"],
+                confidence=0.8,
+                status="approved",
+                review_state="green",
+                warnings=[],
+            ),
+            CardCandidate(
+                id="old-writing",
+                page_id="page-unsupported-vocab",
+                source_type="vocab_item",
+                source_id="row-1",
+                source={},
+                note_type="jp_vocab_writing",
+                front="がっこう<br>학교",
+                back="学校",
+                tags=["writing"],
+                confidence=0.7,
+                status="approved",
+                review_state="yellow",
+                warnings=["Legacy warning"],
+            ),
+        ],
+    )
+
+    database.init_db()
+
+    assert database.get_cards("page-unsupported-vocab") == []
 
 
 def test_list_pages_includes_card_counts(tmp_path, monkeypatch) -> None:
@@ -942,15 +1125,18 @@ def test_process_page_accepts_explicit_ocr_engine(tmp_path, monkeypatch) -> None
     database.upsert_page(page)
     captured: dict[str, object] = {}
 
-    def fake_process_page(page_arg: Page, engine: str = "paddleocr") -> ProcessResult:
+    def fake_process_page(page_arg: Page, engine: str = "paddleocr", **kwargs) -> ProcessResult:
         captured["page_id"] = page_arg.id
         captured["engine"] = engine
+        captured["process_kwargs"] = kwargs
         return ProcessResult(page=page_arg, tokens=[], cards=[], script_summary={}, answer_map={})
 
     def fake_worker(page_id: str, engine: str, **kwargs) -> ProcessResult:
         captured["page_id"] = page_id
         captured["engine"] = engine
         captured["max_rss_mb"] = kwargs["max_rss_mb"]
+        captured["model_profile"] = kwargs.get("model_profile")
+        captured["extraction_variant"] = kwargs.get("extraction_variant")
         return ProcessResult(page=page, tokens=[], cards=[], script_summary={}, answer_map={})
 
     @contextmanager
@@ -970,8 +1156,103 @@ def test_process_page_accepts_explicit_ocr_engine(tmp_path, monkeypatch) -> None
         "page_id": "page-engine",
         "engine": "paddleocr_vl",
         "max_rss_mb": routes.OCR_VL_PAGE_WORKER_MAX_RSS_MB,
+        "model_profile": "jp_v3_mobile_current",
+        "extraction_variant": "baseline_current",
         "runtime_blocking": False,
     }
+
+
+def test_process_page_routes_experimental_profiles_through_worker(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "process-profile.db")
+    database.init_db()
+    page = Page(
+        id="page-profile",
+        original_image_path=str(tmp_path / "page.jpg"),
+        display_name="Profile page",
+        page_type="uploaded",
+        page_type_confidence=0.0,
+        warnings=[],
+        created_at="2026-04-28T00:00:00+00:00",
+    )
+    database.upsert_page(page)
+    captured: dict[str, object] = {}
+
+    def fake_worker(page_id: str, engine: str, **kwargs) -> ProcessResult:
+        captured.update({"page_id": page_id, "engine": engine, **kwargs})
+        return ProcessResult(page=page, tokens=[], cards=[], script_summary={}, answer_map={})
+
+    @contextmanager
+    def fake_runtime_job(blocking: bool = False):
+        yield True
+
+    monkeypatch.setattr(routes, "run_page_process_worker", fake_worker)
+    monkeypatch.setattr(routes, "ocr_runtime_job", fake_runtime_job)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/pages/page-profile/process?model_profile=jp_v5_mobile_general&extraction_variant=table_graph_v1"
+    )
+
+    assert response.status_code == 200
+    assert captured["engine"] == "paddleocr"
+    assert captured["model_profile"] == "jp_v5_mobile_general"
+    assert captured["extraction_variant"] == "table_graph_v1"
+    assert captured["env_overrides"]["PADDLE_OCR_TEXT_RECOGNITION_MODEL_NAME"] == "PP-OCRv5_mobile_rec"
+
+
+def test_process_page_routes_baseline_through_worker_when_runtime_config_drifted(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "process-drift.db")
+    database.init_db()
+    page = Page(
+        id="page-drift",
+        original_image_path=str(tmp_path / "page.jpg"),
+        display_name="Drift page",
+        page_type="uploaded",
+        page_type_confidence=0.0,
+        warnings=[],
+        created_at="2026-04-28T00:00:00+00:00",
+    )
+    database.upsert_page(page)
+    captured: dict[str, object] = {}
+
+    def fake_worker(page_id: str, engine: str, **kwargs) -> ProcessResult:
+        captured.update({"page_id": page_id, "engine": engine, **kwargs})
+        return ProcessResult(page=page, tokens=[], cards=[], script_summary={}, answer_map={})
+
+    def fail_process_page(*args, **kwargs):
+        raise AssertionError("drifted profile runs must use the worker environment")
+
+    @contextmanager
+    def fake_runtime_job(blocking: bool = False):
+        yield True
+
+    monkeypatch.setattr(routes.runtime_config, "PADDLE_OCR_TEXT_RECOGNITION_MODEL_NAME", "unexpected_rec_model")
+    monkeypatch.setattr(routes, "run_page_process_worker", fake_worker)
+    monkeypatch.setattr(routes, "process_page", fail_process_page)
+    monkeypatch.setattr(routes, "ocr_runtime_job", fake_runtime_job)
+    client = TestClient(app)
+
+    response = client.post("/api/pages/page-drift/process")
+
+    assert response.status_code == 200
+    assert captured["engine"] == "paddleocr"
+    assert captured["model_profile"] == "jp_v3_mobile_current"
+    assert captured["env_overrides"]["PADDLE_OCR_TEXT_RECOGNITION_MODEL_NAME"] == "japan_PP-OCRv3_mobile_rec"
+
+
+def test_ocr_profiles_endpoint_lists_default_and_experimental_profiles() -> None:
+    client = TestClient(app)
+
+    response = client.get("/api/ocr/profiles")
+
+    assert response.status_code == 200
+    payload = response.json()
+    profile_ids = {profile["id"] for profile in payload["profiles"]}
+    variant_ids = {variant["id"] for variant in payload["variants"]}
+    assert payload["default_profile"] == "jp_v3_mobile_current"
+    assert payload["default_variant"] == "baseline_current"
+    assert {"jp_v3_mobile_current", "jp_v5_mobile_general", "jp_v5_server_general", "jp_lang_auto"}.issubset(profile_ids)
+    assert {"baseline_current", "table_graph_v1", "provider_agreement_v1"}.issubset(variant_ids)
 
 
 def test_document_parse_route_uses_bounded_worker(tmp_path, monkeypatch) -> None:
@@ -1620,8 +1901,8 @@ def _card(card_id: str, *, status: str, review_state: str) -> CardCandidate:
         page_id="counted-page",
         source_type="vocab_item",
         source_id="source-1",
-        source={},
-        note_type="jp_vocab_reading",
+        source={"surface": "学校", "reading": "がっこう", "meaning_ko": "학교"},
+        note_type="jp_vocab_entry",
         front="front",
         back="back",
         confidence=0.9,
@@ -1655,7 +1936,7 @@ def _vocab_card(card_id: str, source_id: str, note_type: str, y: float) -> CardC
         page_id="page-ordered",
         source_type="vocab_item",
         source_id=source_id,
-        source={"bbox": [20, y, 220, y + 30]},
+        source={"surface": "学校", "reading": "がっこう", "meaning_ko": "학교", "bbox": [20, y, 220, y + 30]},
         note_type=note_type,
         front=f"front {card_id}",
         back=f"back {card_id}",

@@ -415,6 +415,9 @@ export function candidateTitle(card: CardCandidate): string {
 }
 
 export function candidateSubtitle(card: CardCandidate): string {
+  if (card.source_type === "vocab_item") {
+    return `Vocabulary entry · OCR ${Math.round(card.confidence * 100)}%`;
+  }
   return `${card.note_type} · OCR ${Math.round(card.confidence * 100)}%`;
 }
 
@@ -427,7 +430,19 @@ export function provenanceLabel(value: string): string {
 
 export function reviewReasonBadges(card: CardCandidate): string[] {
   const badges: string[] = [];
+  const warningCodes = Array.isArray(card.source.warning_codes) ? card.source.warning_codes.map(String) : [];
+  if (warningCodes.includes("MISSING_SURFACE")) badges.push("Missing surface");
+  if (warningCodes.includes("MISSING_READING")) badges.push("Missing reading");
+  if (warningCodes.includes("MISSING_KOREAN_MEANING")) badges.push("Missing Korean meaning");
+  if (warningCodes.includes("WEAK_OCR_EVIDENCE")) badges.push("Weak OCR evidence");
+  if (warningCodes.includes("SCRIPT_MISMATCH")) badges.push("Script mismatch");
+  if (warningCodes.includes("GLOSSARY_SUGGESTION")) badges.push("Glossary suggestion");
   const warningText = card.warnings.join(" ");
+  if (/Missing surface/i.test(warningText)) badges.push("Missing surface");
+  if (/Missing reading/i.test(warningText)) badges.push("Missing reading");
+  if (/Missing Korean meaning/i.test(warningText)) badges.push("Missing Korean meaning");
+  if (/Weak OCR evidence/i.test(warningText)) badges.push("Weak OCR evidence");
+  if (/script/i.test(warningText)) badges.push("Script mismatch");
   if (/four choices|exactly four choices|Missing choice/i.test(warningText)) badges.push("Missing choice");
   if (/target/i.test(warningText)) badges.push("Target unclear");
   if (/Answer source|Correct choice is missing|not export-safe/i.test(warningText)) badges.push("Needs answer");
@@ -489,24 +504,28 @@ export function applyVocabSourceEdit(card: CardCandidate, field: string, value: 
   return syncVocabCardText({ ...card, source: nextSource }, nextSource);
 }
 
+export function applyVocabStudyToggle(card: CardCandidate, field: string, enabled: boolean): CardCandidate {
+  const nextSource = { ...card.source, [field]: enabled };
+  return syncVocabCardText({ ...card, source: normalizeVocabStudySource(nextSource) }, nextSource);
+}
+
 export function syncVocabCardText(card: CardCandidate, source: Record<string, unknown>): CardCandidate {
   if (card.source_type !== "vocab_item") return card;
   const surface = textValue(source.surface);
   const reading = textValue(source.reading);
-  const meaning = textValue(source.meaning_ko);
-  if (card.note_type === "jp_vocab_reading") {
-    return { ...card, front: `${escapeHtml(surface)}<br>뜻: ${escapeHtml(meaning)}<br><br>읽는 법?`, back: escapeHtml(reading) };
-  }
-  if (card.note_type === "jp_vocab_meaning") {
-    return { ...card, front: `${escapeHtml(surface)}<br>${escapeHtml(reading)}<br><br>뜻?`, back: escapeHtml(meaning) };
-  }
-  if (card.note_type === "jp_vocab_writing") {
-    return { ...card, front: `${escapeHtml(reading)}<br>${escapeHtml(meaning)}<br><br>올바른 표기는?`, back: escapeHtml(surface) };
-  }
   if (card.note_type === "jp_vocab_entry") {
-    return { ...card, front: `${escapeHtml(reading)}<br>${escapeHtml(meaning)}<br><br>올바른 표기는?`, back: escapeHtml(surface) };
+    return { ...card, source: normalizeVocabStudySource(source), front: escapeHtml(reading), back: escapeHtml(surface) };
   }
   return card;
+}
+
+function normalizeVocabStudySource(source: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...source,
+    study_writing: true,
+    study_reading: false,
+    study_meaning: false
+  };
 }
 
 export function sourceChoices(source: Record<string, unknown>): string[] {
@@ -535,4 +554,12 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#x27;");
+}
+
+export function studyDirectionEnabled(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (value === false || value === null) return false;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") return !["", "0", "false", "no"].includes(value.trim().toLowerCase());
+  return true;
 }

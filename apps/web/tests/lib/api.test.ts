@@ -9,6 +9,7 @@ import {
   dedupePages,
   deletePage,
   exportCsv,
+  getOcrProfiles,
   getOcrRuntime,
   imageUrl,
   listOcrRuns,
@@ -164,11 +165,22 @@ describe("API helpers", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ removed_count: 2, removed: [] })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ ...card, status: "approved" })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ ...card, front: "updated" })))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ card_count: 1, download_url: "/api/exports/export.csv" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        export_id: "export-1",
+        files: [{ kind: "vocab", filename: "export_vocab.csv", path: "/tmp/export_vocab.csv", download_url: "/api/exports/export_vocab.csv", row_count: 1 }],
+        note_count: 1,
+        estimated_generated_card_count: 1
+      })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ agreement: 0.75 })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ block_count: 2 })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ text: "うえ", field: "target" })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ state: "running", jobs_handled: 1 })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        profiles: [{ id: "jp_v5_mobile_general" }],
+        variants: [{ id: "baseline_current", label: "Baseline", description: "Control" }],
+        default_profile: "jp_v3_mobile_current",
+        default_variant: "baseline_current"
+      })))
       .mockResolvedValueOnce(new Response(JSON.stringify([{ id: "run-1", engine: "paddleocr" }])))
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: "run-1", status: "succeeded" })));
     vi.stubGlobal("fetch", fetchMock);
@@ -181,13 +193,21 @@ describe("API helpers", () => {
     await expect(approveCard("card-1")).resolves.toMatchObject({ status: "approved" });
     await expect(updateCard(card)).resolves.toMatchObject({ front: "updated" });
     await expect(exportCsv(["page-1"], { approved_only: false, include_yellow: false, include_red: true })).resolves.toEqual({
-      card_count: 1,
-      download_url: "/api/exports/export.csv"
+      export_id: "export-1",
+      files: [{ kind: "vocab", filename: "export_vocab.csv", path: "/tmp/export_vocab.csv", download_url: "/api/exports/export_vocab.csv", row_count: 1 }],
+      note_count: 1,
+      estimated_generated_card_count: 1
     });
     await expect(compareOcr("page-1", "google vision")).resolves.toEqual({ agreement: 0.75 });
     await expect(parseDocument("page-1")).resolves.toEqual({ block_count: 2 });
     await expect(previewFieldOcr("card-1", "target", [1, 2, 3, 4])).resolves.toEqual({ text: "うえ", field: "target" });
     await expect(getOcrRuntime()).resolves.toEqual({ state: "running", jobs_handled: 1 });
+    await expect(getOcrProfiles()).resolves.toEqual({
+      profiles: [{ id: "jp_v5_mobile_general" }],
+      variants: [{ id: "baseline_current", label: "Baseline", description: "Control" }],
+      default_profile: "jp_v3_mobile_current",
+      default_variant: "baseline_current"
+    });
     await expect(listOcrRuns("page-1")).resolves.toEqual([{ id: "run-1", engine: "paddleocr" }]);
     await expect(activateOcrRun("page-1", "run-1")).resolves.toEqual({ id: "run-1", status: "succeeded" });
 
@@ -204,6 +224,7 @@ describe("API helpers", () => {
       "http://127.0.0.1:8000/api/pages/page-1/document/parse",
       "http://127.0.0.1:8000/api/cards/card-1/field-ocr/preview",
       "http://127.0.0.1:8000/api/ocr/runtime",
+      "http://127.0.0.1:8000/api/ocr/profiles",
       "http://127.0.0.1:8000/api/pages/page-1/ocr/runs",
       "http://127.0.0.1:8000/api/pages/page-1/ocr/runs/run-1/activate"
     ]);
@@ -233,6 +254,23 @@ describe("API helpers", () => {
     ]);
   });
 
+  it("passes experimental OCR profile and extraction variant query params", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ page_type: "vocab_table" })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      processPage("page-exp", "paddleocr", {
+        modelProfile: "jp_v5_mobile_general",
+        extractionVariant: "table_graph_v1"
+      })
+    ).resolves.toEqual({ page_type: "vocab_table" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/pages/page-exp/process?model_profile=jp_v5_mobile_general&extraction_variant=table_graph_v1",
+      { method: "POST" }
+    );
+  });
+
   it("builds image URLs only for known backend image directories", () => {
     expect(imageUrl("/tmp/backend/processed/page.png")).toBe("http://127.0.0.1:8000/files/processed/page.png");
     expect(imageUrl("/tmp/backend/uploads/page.jpg")).toBe("http://127.0.0.1:8000/files/uploads/page.jpg");
@@ -249,8 +287,8 @@ function candidate(): CardCandidate {
     page_id: "page-1",
     source_type: "vocab_item",
     source_id: "source-1",
-    source: { surface: "学校" },
-    note_type: "jp_vocab_reading",
+    source: { surface: "学校", reading: "がっこう", meaning_ko: "학교" },
+    note_type: "jp_vocab_entry",
     front: "学校",
     back: "がっこう",
     tags: ["jlpt"],

@@ -47,7 +47,8 @@ Why this matters:
 - Vocab extraction does not fill missing rows from the local glossary; each benchmarked vocab row must have OCR-backed evidence for surface, reading, and Korean meaning.
 - Review state, warnings, and evidence overlays remain part of the product because benchmark accuracy is not a guarantee for arbitrary new pages.
 - PaddleOCR-VL is optional and can be run as a card-generation engine, but it remains visually separated from the default PaddleOCR path and is scored honestly in benchmarks.
-- OCR-VL diagnostics are still separate from processing: document-block preview does not create, approve, or export cards.
+- OCR-VL document-block preview is separate from OCR-VL processing: previewing blocks does not create, approve, or export cards.
+- Experimental OCR profiles and extraction variants are recorded as run metadata and benchmark diagnostics. They do not change the safe default unless holdout results pass the promotion gates.
 - The backend caches OCR providers by default for UI responsiveness; benchmark scripts run pages in subprocesses so Paddle memory is released after each page.
 
 ## System Diagram
@@ -226,7 +227,7 @@ backend/app/ocr/*
   OCR provider abstraction and PaddleOCR / Google Vision / Tesseract integrations.
 
 backend/app/vision/paddle_ocr_vl.py
-  Optional PaddleOCR-VL document parser endpoint for comparison, not the default hot path.
+  Optional PaddleOCR-VL document parser used by the OCR-VL processing and preview paths, not the default hot path.
 
 backend/scripts/evaluate_golden.py
   Runs the golden benchmark against the four canonical fixture pages.
@@ -297,7 +298,7 @@ The default local processing path is PaddleOCR plus deterministic extraction. OC
 ```text
 Process with OCR-VL
   Calls /api/pages/{page_id}/process?engine=paddleocr_vl.
-  Converts PaddleOCR-VL document blocks/markdown into normalized OCR tokens.
+  Keeps PaddleOCR-VL output as document-block evidence.
   Generates review candidates through the same extractor/card pipeline.
 
 Preview OCR-VL document blocks

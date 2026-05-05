@@ -6,9 +6,11 @@ import {
   type CardCandidate,
   type DocumentParseBlock,
   type DocumentParseResult,
+  type ExportResult,
   type FieldOcrPreview,
   type OcrComparison,
   type OcrEngine,
+  type OcrProfilePayload,
   type OcrRun,
   type OcrRuntimeStatus,
   type OcrToken,
@@ -23,6 +25,7 @@ import {
   deletePage,
   exportCsv,
   getOcrRuntime,
+  getOcrProfiles,
   imageUrl,
   listOcrRuns,
   parseDocument,
@@ -112,6 +115,14 @@ const SCRIPT_LABELS = [
 ];
 const BATCH_REPORT_STORAGE_KEY = "anki-maker-latest-batch-report";
 const INITIAL_STATUS_MESSAGE = "Upload a study-book photo to begin.";
+const EXTRACTION_VARIANTS = [
+  { id: "baseline_current", label: "Frozen current extractor" },
+  { id: "line_graph_v1", label: "Line graph experiment" },
+  { id: "table_graph_v1", label: "Table graph experiment" },
+  { id: "ranked_rows_v1", label: "Ranked row experiment" },
+  { id: "crop_confirm_v1", label: "Crop-confirm experiment" },
+  { id: "provider_agreement_v1", label: "Provider agreement diagnostic" }
+];
 
 function scrollTargetElement(
   target: CardScrollTarget,
@@ -187,6 +198,10 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
   const [ocrRuns, setOcrRuns] = useState<OcrRun[]>([]);
   const [documentParse, setDocumentParse] = useState<DocumentParseResult | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<OcrRuntimeStatus | null>(null);
+  const [ocrProfiles, setOcrProfiles] = useState<OcrProfilePayload | null>(null);
+  const [experimentalProfile, setExperimentalProfile] = useState("jp_v5_mobile_general");
+  const [experimentalVariant, setExperimentalVariant] = useState("baseline_current");
+  const [lastExport, setLastExport] = useState<ExportResult | null>(null);
   const [selectedField, setSelectedField] = useState<string | null>(null);
   const [regionDraft, setRegionDraft] = useState<FieldRegionDraft | null>(null);
   const [fieldPreview, setFieldPreview] = useState<FieldOcrPreview | null>(null);
@@ -205,6 +220,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
 
   useEffect(() => {
     void refreshPages();
+    void loadOcrProfiles();
   }, []);
 
   useEffect(() => {
@@ -218,6 +234,9 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
   const activeEvidenceSource = evidenceTokenSource === "comparison" && comparisonAvailable ? "comparison" : "local";
   const filteredCards = cards.filter((card) => cardMatchesFilter(card, reviewFilter));
   const exportableCount = cards.filter((card) => card.status === "approved" && card.review_state !== "red").length;
+  const activeRun = selectedPage?.active_ocr_run_id
+    ? ocrRuns.find((run) => run.id === selectedPage.active_ocr_run_id) ?? null
+    : ocrRuns[0] ?? null;
   const anyOcrJobRunning =
     isBatchProcessing || Boolean(processingPageId || vlProcessingPageId || vlScanningPageId || isComparingOcr || isPreviewingField);
 
@@ -263,6 +282,21 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
     }
   }
 
+  async function loadOcrProfiles() {
+    try {
+      const payload = await getOcrProfiles();
+      setOcrProfiles(payload);
+      if (payload.profiles.some((profile) => profile.id === "jp_v5_mobile_general")) {
+        setExperimentalProfile("jp_v5_mobile_general");
+      } else {
+        setExperimentalProfile(payload.default_profile);
+      }
+      setExperimentalVariant(payload.default_variant);
+    } catch {
+      setOcrProfiles(null);
+    }
+  }
+
   async function selectPage(page: Page, clearMessage = true) {
     setSelectedPage(page);
     const [ocr, pageCards, runs] = await Promise.all([
@@ -305,12 +339,15 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
     }
   }
 
-  async function onProcessAllPages(engine: OcrEngine = "paddleocr") {
+  async function onProcessAllPages(
+    engine: OcrEngine = "paddleocr",
+    options: { modelProfile?: string; extractionVariant?: string; label?: string } = {}
+  ) {
     if (!pages.length || !beginOcrAction()) return;
     setIsBatchProcessing(true);
     const failures: string[] = [];
     const timings: PageTiming[] = [];
-    const engineLabel = engine === "paddleocr_vl" ? "PaddleOCR-VL" : "PaddleOCR";
+    const engineLabel = options.label ?? (engine === "paddleocr_vl" ? "PaddleOCR-VL" : "PaddleOCR");
     try {
       for (const [index, page] of pages.entries()) {
         if (engine === "paddleocr_vl") setVlProcessingPageId(page.id);
@@ -318,7 +355,10 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
         setMessage(`Processing page ${index + 1}/${pages.length} with ${engineLabel}: ${pageTitle(page)}...`);
         const startedAt = performance.now();
         try {
-          const result = await processPage(page.id, engine);
+          const result = await processPage(page.id, engine, {
+            modelProfile: options.modelProfile,
+            extractionVariant: options.extractionVariant
+          });
           const elapsedMs = durationMs(startedAt, performance.now());
           const timing = { pageId: page.id, pageTitle: pageTitle(result.page), ms: elapsedMs, success: true };
           timings.push(timing);
@@ -353,15 +393,22 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
     }
   }
 
-  async function onProcessPage(page: Page, engine: OcrEngine = "paddleocr") {
+  async function onProcessPage(
+    page: Page,
+    engine: OcrEngine = "paddleocr",
+    options: { modelProfile?: string; extractionVariant?: string; label?: string } = {}
+  ) {
     if (!beginOcrAction()) return;
     if (engine === "paddleocr_vl") setVlProcessingPageId(page.id);
     else setProcessingPageId(page.id);
-    const engineLabel = engine === "paddleocr_vl" ? "PaddleOCR-VL" : "PaddleOCR";
+    const engineLabel = options.label ?? (engine === "paddleocr_vl" ? "PaddleOCR-VL" : "PaddleOCR");
     setMessage(`Processing ${pageTitle(page)} with ${engineLabel}...`);
     const startedAt = performance.now();
     try {
-      const result = await processPage(page.id, engine);
+      const result = await processPage(page.id, engine, {
+        modelProfile: options.modelProfile,
+        extractionVariant: options.extractionVariant
+      });
       applyProcessResult(result, true);
       const elapsedMs = durationMs(startedAt, performance.now());
       recordPageTiming({ pageId: result.page.id, pageTitle: pageTitle(result.page), ms: elapsedMs, success: true }, engineLabel);
@@ -486,11 +533,20 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
 
   async function onExport() {
     if (!selectedPage) return;
+    setLastExport(null);
     try {
       const result = await exportCsv([selectedPage.id], { approved_only: true, include_yellow: true, include_red: false });
-      setMessage(`Exported ${result.card_count} approved cards.`);
-      globalThis.open(`${API_BASE}${result.download_url}`, "_blank");
+      setLastExport(result);
+      if (!result.files.length) {
+        setMessage("No CSV files were created. Check that approved vocab entries have surface, reading, and meaning.");
+        return;
+      }
+      const fileSummary = result.files.map((file) => `${file.row_count} ${file.kind} rows`).join(", ");
+      setMessage(
+        `Export ready: ${result.note_count} approved notes across ${result.files.length} CSV file${result.files.length === 1 ? "" : "s"} (${fileSummary}).`
+      );
     } catch (error) {
+      setLastExport(null);
       setMessage(apiErrorMessage(error, "Export failed."));
     }
   }
@@ -737,6 +793,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
         <div className="command-status">
           <p>{message}</p>
           <BatchStatusStrip report={latestBatchReport} />
+          <ExportLinks result={lastExport} />
         </div>
         <div className="command-actions">
           {pages.length ? (
@@ -757,6 +814,53 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
             >
               Process pages with OCR-VL
             </button>
+          ) : null}
+          {pages.length && ocrProfiles ? (
+            <details className="experimental-ocr-controls">
+              <summary>Experimental OCR profile</summary>
+              <div className="experimental-grid">
+                <label>
+                  <span>Model profile</span>
+                  <select value={experimentalProfile} onChange={(event) => setExperimentalProfile(event.target.value)}>
+                    {ocrProfiles.profiles
+                      .filter((profile) => profile.creates_candidates)
+                      .map((profile) => (
+                        <option value={profile.id} key={profile.id}>
+                          {profile.label} · {profileBudgetLabel(profile.budget)}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Extraction variant</span>
+                  <select value={experimentalVariant} onChange={(event) => setExperimentalVariant(event.target.value)}>
+                    {(ocrProfiles.variants.length ? ocrProfiles.variants : EXTRACTION_VARIANTS).map((variant) => (
+                      <option value={variant.id} key={variant.id}>
+                        {variant.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  className="secondary experimental-run"
+                  disabled={anyOcrJobRunning}
+                  onClick={() =>
+                    void onProcessAllPages("paddleocr", {
+                      modelProfile: experimentalProfile,
+                      extractionVariant: experimentalVariant,
+                      label: experimentalRunLabel(ocrProfiles, experimentalProfile, experimentalVariant)
+                    })
+                  }
+                  title="Run an experimental local OCR profile sequentially. Results are benchmark candidates, not a production-default change."
+                >
+                  Run experimental OCR
+                </button>
+              </div>
+              <p className="muted">
+                These profiles test whether newer/stronger OCR actually improves strict OCR-backed scores. The safe default remains PaddleOCR
+                until a holdout benchmark proves otherwise.
+              </p>
+            </details>
           ) : null}
           {pages.length > 1 ? (
             <button
@@ -823,6 +927,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
               comparisonAvailable={comparisonAvailable}
               onEvidenceSourceChange={setEvidenceTokenSource}
             />
+            <RunQualityStrip run={activeRun} cards={cards} />
             {visibleUrl ? (
               <EvidenceStage
                 imageUrl={visibleUrl}
@@ -1078,6 +1183,20 @@ function BatchStatusStrip({ report }: Readonly<{ report: BatchTimingReport | nul
   );
 }
 
+function ExportLinks({ result }: Readonly<{ result: ExportResult | null }>) {
+  if (!result?.files.length) return null;
+  return (
+    <div className="export-links" aria-label="Latest CSV export downloads">
+      <strong>CSV downloads</strong>
+      {result.files.map((file) => (
+        <a href={`${API_BASE}${file.download_url}`} key={file.filename} target="_blank" rel="noreferrer">
+          {file.kind === "vocab" ? "Vocab notes" : "MCQ cards"} ({file.row_count})
+        </a>
+      ))}
+    </div>
+  );
+}
+
 function OcrRunHistory({
   page,
   runs,
@@ -1125,6 +1244,80 @@ function batchProgressMessage(report: BatchTimingReport): string {
 function batchFinishedMessage(report: BatchTimingReport): string {
   const issueText = report.failedPages ? ` with ${pageCountLabel(report.failedPages)} failed` : "";
   return `Finished ${report.engineLabel} batch${issueText}. See Latest batch for timing details.`;
+}
+
+function experimentalRunLabel(payload: OcrProfilePayload, profileId: string, variant: string): string {
+  const profile = payload.profiles.find((item) => item.id === profileId);
+  const profileLabel = profile?.label ?? profileId;
+  const variantLabel = EXTRACTION_VARIANTS.find((item) => item.id === variant)?.label ?? variant;
+  return `${profileLabel} / ${variantLabel}`;
+}
+
+function RunQualityStrip({ run, cards }: Readonly<{ run: OcrRun | null; cards: CardCandidate[] }>) {
+  if (!run) return null;
+  const metrics = run.metrics ?? {};
+  const providerConfig = run.provider_config ?? {};
+  const modelProfile = profileLabelFromRun(providerConfig);
+  const variant = stringMetric(metrics, "extraction_variant") ?? stringMetric(providerConfig, "extraction_variant") ?? "baseline_current";
+  const strictScore = numberMetric(metrics, "strict_ocr_score");
+  const alignment = numberMetric(metrics, "evidence_alignment_score");
+  const blocked = numberMetric(metrics, "review_blocked_count") ?? cards.filter((card) => card.review_state === "red").length;
+  const manual = numberMetric(metrics, "manual_review_count") ?? cards.filter((card) => card.review_state === "yellow" || card.warnings.length).length;
+  const cacheState = cacheStateFromRun(providerConfig);
+  return (
+    <div className="run-quality-strip" aria-label="Active OCR run quality summary">
+      <span title="The OCR profile and extraction variant used for this run.">{modelProfile}</span>
+      <span title="Experimental extraction strategy recorded for this run.">{variant}</span>
+      <span title="Strict OCR score is only available for golden benchmark runs.">
+        Strict OCR {typeof strictScore === "number" ? `${Math.round(strictScore * 100)}%` : "not scored"}
+      </span>
+      <span title="Share of candidate fields/regions that have mapped visual evidence.">
+        Evidence {typeof alignment === "number" ? `${Math.round(alignment * 100)}%` : "n/a"}
+      </span>
+      <span title="Red candidates blocked from export.">Blocked {blocked}</span>
+      <span title="Candidates with warnings or yellow review state.">Review {manual}</span>
+      <span title="Whether this run reused a matching OCR payload.">{cacheState}</span>
+      {run.duration_ms ? <span title="Backend OCR run duration.">Runtime {formatDuration(run.duration_ms)}</span> : null}
+    </div>
+  );
+}
+
+function profileLabelFromRun(providerConfig: Record<string, unknown>): string {
+  const modelProfile = providerConfig.model_profile;
+  if (modelProfile && typeof modelProfile === "object") {
+    const label = (modelProfile as Record<string, unknown>).label;
+    const budget = (modelProfile as Record<string, unknown>).budget;
+    return [typeof label === "string" ? label : null, typeof budget === "string" ? profileBudgetLabel(budget) : null].filter(Boolean).join(" · ");
+  }
+  return stringMetric(providerConfig, "engine") ?? "OCR run";
+}
+
+function cacheStateFromRun(providerConfig: Record<string, unknown>): string {
+  const modelProfile = providerConfig.model_profile;
+  if (!modelProfile || typeof modelProfile !== "object") return "Cache n/a";
+  const cache = (modelProfile as Record<string, unknown>).cache;
+  if (!cache || typeof cache !== "object") return "Cache n/a";
+  const hit = (cache as Record<string, unknown>).hit;
+  if (hit === true) return "Cache hit";
+  if (hit === false) return "Cache miss";
+  return "Cache n/a";
+}
+
+function numberMetric(source: Record<string, unknown>, key: string): number | null {
+  const value = source[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function stringMetric(source: Record<string, unknown>, key: string): string | null {
+  const value = source[key];
+  return typeof value === "string" && value ? value : null;
+}
+
+function profileBudgetLabel(budget: string): string {
+  if (budget === "safe_local") return "Safe local";
+  if (budget === "heavy_local") return "Heavy local";
+  if (budget === "cloud_optional") return "Cloud optional";
+  return budget;
 }
 
 function pageCountLabel(count: number): string {
@@ -1887,7 +2080,7 @@ function CandidateGroups({
       {group.cards.length > 1 ? (
         <div className="candidate-group-title">
           <strong>{candidateTitle(group.cards[0])}</strong>
-          <span>{group.cards.length} semantic Anki cards</span>
+          <span>{group.cards.length} related candidates</span>
         </div>
       ) : null}
       {group.cards.map((card) => (
@@ -2098,14 +2291,20 @@ function CandidateBody({
           onCancelFieldPreview={onCancelFieldPreview}
         />
       ) : null}
-      <label>
-        <span>Front</span>
-        <textarea value={draft.front} onChange={(event) => onDraftChange({ ...draft, front: event.target.value })} />
-      </label>
-      <label>
-        <span>Back</span>
-        <textarea value={draft.back} onChange={(event) => onDraftChange({ ...draft, back: event.target.value })} />
-      </label>
+      {card.source_type === "question_item" ? (
+        <>
+          <label>
+            <span>Front</span>
+            <textarea value={draft.front} onChange={(event) => onDraftChange({ ...draft, front: event.target.value })} />
+          </label>
+          <label>
+            <span>Back</span>
+            <textarea value={draft.back} onChange={(event) => onDraftChange({ ...draft, back: event.target.value })} />
+          </label>
+        </>
+      ) : (
+        <VocabGeneratedPreviews card={draft} />
+      )}
       <label>
         <span>Tags</span>
         <input
@@ -2372,6 +2571,24 @@ function VocabSourceEditor({
       {fieldInput("reading", "Reading")}
       {fieldInput("meaning_ko", "Korean meaning")}
     </fieldset>
+  );
+}
+
+function VocabGeneratedPreviews({ card }: Readonly<{ card: CardCandidate }>) {
+  const source = card.source;
+  const surface = textValue(source.surface);
+  const reading = textValue(source.reading);
+  const meaning = textValue(source.meaning_ko);
+  return (
+    <div className="vocab-generated-previews">
+      <span>Generated Anki card</span>
+      <div className="vocab-preview">
+        <strong>Kana to Kanji</strong>
+        <p><b>Front</b><span>{reading}</span></p>
+        <p><b>Back</b><span>{surface}</span></p>
+        {meaning ? <p><b>Hidden</b><span>{meaning}</span></p> : null}
+      </div>
+    </div>
   );
 }
 

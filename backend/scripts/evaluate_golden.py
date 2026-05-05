@@ -23,6 +23,13 @@ from app.evaluation.vocab_eval import VocabEvalResult, evaluate_vocab_page
 from app.extraction import pipeline
 from app.ocr.engines import PADDLEOCR_ENGINE, PADDLEOCR_VL_ENGINE, normalize_ocr_engine
 from app.ocr.page_worker import run_page_process_worker
+from app.ocr.profiles import (
+    BASELINE_MODEL_PROFILE,
+    DEFAULT_EXTRACTION_VARIANT,
+    normalize_extraction_variant,
+    profile_env_overrides,
+    resolve_ocr_model_profile,
+)
 from app.models.schemas import Page, ProcessResult
 
 
@@ -38,6 +45,8 @@ def main() -> int:
         default=PADDLEOCR_ENGINE,
         help="Candidate-generation OCR engine: paddleocr, paddleocr_vl, or all.",
     )
+    parser.add_argument("--model-profile", default=BASELINE_MODEL_PROFILE, help="OCR model profile for fresh processing.")
+    parser.add_argument("--extraction-variant", default=DEFAULT_EXTRACTION_VARIANT, help="Extraction variant for fresh processing.")
     parser.add_argument("--from-db", action="store_true", help="Evaluate already persisted cards instead of processing images.")
     parser.add_argument("--db-path", default="", help="SQLite DB path to use with --from-db.")
     parser.add_argument("--run-id", default="", help="Evaluate a specific persisted OCR run id with --from-db.")
@@ -45,6 +54,8 @@ def main() -> int:
     parser.add_argument("--keep-work-dir", action="store_true", help="Keep isolated runtime files for debugging.")
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of a human-readable summary.")
     args = parser.parse_args()
+    args.model_profile = resolve_ocr_model_profile(args.model_profile).id
+    args.extraction_variant = normalize_extraction_variant(args.extraction_variant)
 
     backend_dir = BACKEND_DIR
     repo_root = backend_dir.parent
@@ -107,7 +118,13 @@ def main() -> int:
                         created_at=datetime.now(timezone.utc).isoformat(),
                     )
                     database.upsert_page(page)
-                    process_result = _process_page_for_evaluation(page, engine, redirect_logs=args.json)
+                    process_result = _process_page_for_evaluation(
+                        page,
+                        engine,
+                        model_profile=args.model_profile,
+                        extraction_variant=args.extraction_variant,
+                        redirect_logs=args.json,
+                    )
                     if golden.expected_rows:
                         results.append((engine, evaluate_vocab_page(golden, process_result)))
                     elif golden.expected_questions:
@@ -145,10 +162,17 @@ def _evaluation_runtime(work_dir_arg: str, keep_work_dir: bool) -> Iterator[Path
             shutil.rmtree(work_dir, ignore_errors=True)
 
 
-def _process_page_for_evaluation(page: Page, engine: str, *, redirect_logs: bool = False) -> ProcessResult:
+def _process_page_for_evaluation(
+    page: Page,
+    engine: str,
+    *,
+    model_profile: str = BASELINE_MODEL_PROFILE,
+    extraction_variant: str = DEFAULT_EXTRACTION_VARIANT,
+    redirect_logs: bool = False,
+) -> ProcessResult:
     if redirect_logs:
         with redirect_stdout(sys.stderr):
-            return _process_page_for_evaluation(page, engine)
+            return _process_page_for_evaluation(page, engine, model_profile=model_profile, extraction_variant=extraction_variant)
     max_rss_mb = OCR_VL_PAGE_WORKER_MAX_RSS_MB if engine == PADDLEOCR_VL_ENGINE else OCR_PAGE_WORKER_MAX_RSS_MB
     return run_page_process_worker(
         page.id,
@@ -157,7 +181,10 @@ def _process_page_for_evaluation(page: Page, engine: str, *, redirect_logs: bool
         env_overrides={
             "ANKI_MAKER_DB": str(database.DB_PATH),
             "ANKI_MAKER_PROCESSED_DIR": str(pipeline.PROCESSED_DIR),
+            **profile_env_overrides(model_profile),
         },
+        model_profile=model_profile,
+        extraction_variant=extraction_variant,
     )
 
 
@@ -259,13 +286,20 @@ def _result_dict(result: VocabEvalResult | McqEvalResult, engine: str) -> dict:
         "actual_page_type": result.actual_page_type,
         "expected_rows": result.expected_rows,
         "extracted_items": result.extracted_items,
+        "layout_matched_rows": result.layout_matched_rows,
         "ocr_supported_items": result.ocr_supported_items,
         "glossary_supported_items": result.glossary_supported_items,
         "matched_rows": result.matched_rows,
         "row_accuracy": round(result.row_accuracy, 4),
+        "layout_recall": round(result.layout_recall, 4),
+        "surface_accuracy": round(result.surface_accuracy, 4),
+        "reading_accuracy": round(result.reading_accuracy, 4),
+        "meaning_accuracy": round(result.meaning_accuracy, 4),
+        "surface_matches": result.surface_matches,
+        "reading_matches": result.reading_matches,
         "surface_reading_matches": result.surface_reading_matches,
         "meaning_matches": result.meaning_matches,
-        "generated_cards": result.generated_cards,
+        "generated_notes": result.generated_notes,
         "korean_field_missing_hangul": result.korean_field_missing_hangul,
         "japanese_field_has_hangul": result.japanese_field_has_hangul,
         "missing_row_ids": result.missing_row_ids,
@@ -293,7 +327,12 @@ def _format_result(result: VocabEvalResult | McqEvalResult, engine: str) -> str:
         f"  rows: matched={result.matched_rows}/{result.expected_rows} accuracy={result.row_accuracy:.1%}",
         (
             f"  extracted_items={result.extracted_items} ocr_supported_items={result.ocr_supported_items} "
-            f"glossary_supported_items={result.glossary_supported_items} generated_cards={result.generated_cards}"
+            f"glossary_supported_items={result.glossary_supported_items} generated_notes={result.generated_notes}"
+        ),
+        (
+            f"  layout_recall={result.layout_recall:.1%} "
+            f"surface={result.surface_matches}/{result.expected_rows} reading={result.reading_matches}/{result.expected_rows} "
+            f"meaning={result.meaning_matches}/{result.expected_rows}"
         ),
         f"  surface+reading matches={result.surface_reading_matches} meaning matches={result.meaning_matches}",
         f"  script confusion: korean_field_missing_hangul={result.korean_field_missing_hangul}, japanese_field_has_hangul={result.japanese_field_has_hangul}",

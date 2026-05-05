@@ -4,11 +4,13 @@ from pathlib import Path
 import os
 
 from app.core.config import (
+    PADDLE_OCR_LANG,
     PADDLE_OCR_KOREAN_TEXT_DETECTION_MODEL_NAME,
     PADDLE_OCR_KOREAN_TEXT_RECOGNITION_MODEL_NAME,
     PADDLE_OCR_MAX_SIDE_LEN,
     PADDLE_OCR_TEXT_DETECTION_MODEL_NAME,
     PADDLE_OCR_TEXT_RECOGNITION_MODEL_NAME,
+    PADDLE_OCR_USE_LANGUAGE_PROFILE,
     PADDLE_OCR_USE_DOC_ORIENTATION_CLASSIFY,
     PADDLE_OCR_USE_DOC_UNWARPING,
     PADDLE_OCR_USE_TEXTLINE_ORIENTATION,
@@ -26,6 +28,7 @@ class PaddleOcrProvider:
         name: str = "paddleocr",
         text_detection_model_name: str = PADDLE_OCR_TEXT_DETECTION_MODEL_NAME,
         text_recognition_model_name: str = PADDLE_OCR_TEXT_RECOGNITION_MODEL_NAME,
+        use_language_profile: bool = PADDLE_OCR_USE_LANGUAGE_PROFILE,
     ) -> None:
         self.name = name
         os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
@@ -38,14 +41,18 @@ class PaddleOcrProvider:
             "text_det_limit_side_len": PADDLE_OCR_MAX_SIDE_LEN,
             "return_word_box": False,
         }
-        self._ocr = PaddleOCR(
-            text_detection_model_name=text_detection_model_name,
-            text_recognition_model_name=text_recognition_model_name,
-            use_doc_orientation_classify=PADDLE_OCR_USE_DOC_ORIENTATION_CLASSIFY,
-            use_doc_unwarping=PADDLE_OCR_USE_DOC_UNWARPING,
-            use_textline_orientation=PADDLE_OCR_USE_TEXTLINE_ORIENTATION,
-            text_det_limit_side_len=PADDLE_OCR_MAX_SIDE_LEN,
-        )
+        init_kwargs = {
+            "use_doc_orientation_classify": PADDLE_OCR_USE_DOC_ORIENTATION_CLASSIFY,
+            "use_doc_unwarping": PADDLE_OCR_USE_DOC_UNWARPING,
+            "use_textline_orientation": PADDLE_OCR_USE_TEXTLINE_ORIENTATION,
+            "text_det_limit_side_len": PADDLE_OCR_MAX_SIDE_LEN,
+        }
+        if use_language_profile and PADDLE_OCR_LANG:
+            init_kwargs["lang"] = PADDLE_OCR_LANG
+        else:
+            init_kwargs["text_detection_model_name"] = text_detection_model_name
+            init_kwargs["text_recognition_model_name"] = text_recognition_model_name
+        self._ocr = PaddleOCR(**init_kwargs)
 
     def recognize(self, image_path: Path, page_id: str) -> list[OcrToken]:
         image, scale_x, scale_y = self._load_image(image_path)
@@ -112,4 +119,5 @@ class PaddleKoreanOcrProvider(PaddleOcrProvider):
             name="paddleocr_korean",
             text_detection_model_name=PADDLE_OCR_KOREAN_TEXT_DETECTION_MODEL_NAME,
             text_recognition_model_name=PADDLE_OCR_KOREAN_TEXT_RECOGNITION_MODEL_NAME,
+            use_language_profile=False,
         )

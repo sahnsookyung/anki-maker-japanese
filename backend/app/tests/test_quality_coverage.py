@@ -4,9 +4,11 @@ import csv
 import json
 from io import StringIO
 
+import pytest
+
 from app.core.script import char_script, classify_script, script_summary
 from app.evaluation.golden import load_golden_pages, meaning_matches
-from app.export.anki_csv import ANKI_FILE_HEADERS, cards_to_csv, write_csv
+from app.export.anki_csv import VOCAB_FILE_HEADERS, cards_to_csv, vocab_key, write_csv
 from app.models.schemas import CardCandidate
 from app.validation.dictionary import DictionaryValidator
 
@@ -38,6 +40,7 @@ def test_cards_to_csv_writes_anki_headers_and_round_trips_fields(tmp_path) -> No
         page_id="page-1",
         source_type="vocab_item",
         source_id="vocab-1",
+        source={"surface": '学校, "がっこう"\t校', "reading": "がっこう", "meaning_ko": "학교"},
         note_type="jp_vocab_entry",
         front='学校, "がっこう"\t校',
         back="school\n학교<br>学校",
@@ -49,17 +52,22 @@ def test_cards_to_csv_writes_anki_headers_and_round_trips_fields(tmp_path) -> No
 
     csv_text = cards_to_csv([card])
 
-    assert csv_text.splitlines()[: len(ANKI_FILE_HEADERS)] == ANKI_FILE_HEADERS
+    assert csv_text.splitlines()[: len(VOCAB_FILE_HEADERS)] == VOCAB_FILE_HEADERS
     data_lines = [line for line in csv_text.splitlines() if not line.startswith("#")]
     rows = list(csv.reader(StringIO("\n".join(data_lines))))
     assert rows == [
         [
-            "jp_vocab_entry",
+            vocab_key('学校, "がっこう"\t校', "がっこう", "학교"),
             '学校, "がっこう"\t校',
-            "school<br>학교<br>学校",
+            "がっこう",
+            "학교",
+            "1",
+            "",
+            "",
             "page-1",
-            "[1.0, 2.0, 3.0, 4.0]",
+            "[1,2,3,4]",
             "0.877",
+            "",
             "jlpt needs-review",
         ]
     ]
@@ -67,6 +75,83 @@ def test_cards_to_csv_writes_anki_headers_and_round_trips_fields(tmp_path) -> No
     output = tmp_path / "exports" / "cards.csv"
     write_csv(output, [card])
     assert output.read_text(encoding="utf-8") == csv_text
+
+
+def test_cards_to_csv_rejects_mixed_or_empty_schemas() -> None:
+    vocab_card = CardCandidate(
+        id="vocab-card",
+        page_id="page-1",
+        source_type="vocab_item",
+        source_id="vocab-1",
+        source={"surface": "学校", "reading": "がっこう", "meaning_ko": "학교"},
+        note_type="jp_vocab_entry",
+        front="front",
+        back="back",
+    )
+    mcq_card = CardCandidate(
+        id="mcq-card",
+        page_id="page-1",
+        source_type="question_item",
+        source_id="q-1",
+        source={"question_no": 1},
+        note_type="jp_reading_mcq_recall",
+        front="front",
+        back="back",
+    )
+
+    with pytest.raises(ValueError, match="at least one"):
+        cards_to_csv([])
+    with pytest.raises(ValueError, match="one export schema"):
+        cards_to_csv([vocab_card, mcq_card])
+
+
+def test_vocab_csv_omits_notes_with_no_enabled_study_direction() -> None:
+    card = CardCandidate(
+        id="vocab-card",
+        page_id="page-1",
+        source_type="vocab_item",
+        source_id="vocab-1",
+        source={
+            "surface": "学校",
+            "reading": "がっこう",
+            "meaning_ko": "학교",
+            "study_writing": False,
+            "study_reading": False,
+            "study_meaning": False,
+        },
+        note_type="jp_vocab_entry",
+        front="front",
+        back="back",
+    )
+
+    csv_text = cards_to_csv([card])
+
+    assert csv_text.splitlines() == VOCAB_FILE_HEADERS
+
+
+def test_vocab_csv_collapses_legacy_enabled_direction_to_one_card() -> None:
+    card = CardCandidate(
+        id="vocab-card",
+        page_id="page-1",
+        source_type="vocab_item",
+        source_id="vocab-1",
+        source={
+            "surface": "学校",
+            "reading": "がっこう",
+            "meaning_ko": "학교",
+            "study_writing": False,
+            "study_reading": True,
+            "study_meaning": False,
+        },
+        note_type="jp_vocab_entry",
+        front="がっこう",
+        back="学校",
+    )
+
+    csv_text = cards_to_csv([card])
+    row = csv_text.splitlines()[-1]
+
+    assert ",1,,,page-1," in row
 
 
 def test_dictionary_validator_handles_missing_invalid_and_unknown_pairs(tmp_path) -> None:

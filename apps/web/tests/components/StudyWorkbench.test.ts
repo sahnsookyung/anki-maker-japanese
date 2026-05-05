@@ -8,6 +8,7 @@ import {
   applyQuestionChoicesEdit,
   applyQuestionSourceEdit,
   applyVocabSourceEdit,
+  applyVocabStudyToggle,
   cardForDocumentBlock,
   candidateSubtitle,
   candidateTitle,
@@ -295,7 +296,7 @@ describe("StudyWorkbench evidence helpers", () => {
     const vocab = candidate({
       source_type: "vocab_item",
       source: { surface: "学校", reading: "がっこう" },
-      note_type: "jp_vocab_reading"
+      note_type: "jp_vocab_entry"
     });
     const question = candidate({
       note_type: "jp_spelling_mcq_recall",
@@ -306,6 +307,7 @@ describe("StudyWorkbench evidence helpers", () => {
     expect(candidateTitle(candidate({ source_type: "vocab_item", source: {} }))).toBe("Vocab · ");
     expect(candidateTitle(question)).toBe("Question 6 · なまえ");
     expect(candidateTitle(candidate({ source: {} }))).toBe("Question ? · target");
+    expect(candidateSubtitle(vocab)).toBe("Vocabulary entry · OCR 92%");
     expect(candidateSubtitle(question)).toBe("jp_spelling_mcq_recall · OCR 92%");
     expect(provenanceLabel("answer_strip")).toBe("Answer key");
     expect(provenanceLabel("local_glossary")).toBe("Glossary inferred");
@@ -370,6 +372,14 @@ describe("StudyWorkbench evidence helpers", () => {
     expect(reviewReasonBadges(candidate({ review_state: "red", warnings: [], confidence: 0.92 }))).toEqual(["Blocked"]);
     expect(reviewReasonBadges(candidate({ review_state: "yellow", warnings: [], confidence: 0.92 }))).toEqual(["Needs review"]);
     expect(reviewReasonBadges(candidate({ source: { answer_source: "local_glossary" }, warnings: [] }))).toEqual([]);
+    expect(
+      reviewReasonBadges(
+        candidate({
+          source: { warning_codes: ["MISSING_SURFACE", "MISSING_READING", "MISSING_KOREAN_MEANING", "WEAK_OCR_EVIDENCE", "SCRIPT_MISMATCH"] },
+          warnings: []
+        })
+      )
+    ).toEqual(["Missing surface", "Missing reading", "Missing Korean meaning", "Weak OCR evidence", "Script mismatch"]);
   });
 
   it("applies field OCR previews to source, evidence, and derived answer text", () => {
@@ -438,10 +448,10 @@ describe("StudyWorkbench evidence helpers", () => {
     expect(withExistingEvidence.source.field_evidence).toMatchObject({ sentence: { text: "old" }, target: { text: "上" } });
   });
 
-  it("updates vocabulary facts and derived semantic cards together", () => {
+  it("updates vocabulary facts and generated note previews together", () => {
     const card = candidate({
       source_type: "vocab_item",
-      note_type: "jp_vocab_writing",
+      note_type: "jp_vocab_entry",
       source: { surface: "学校", reading: "がっこう", meaning_ko: "학교" },
       front: "old front",
       back: "old back"
@@ -472,14 +482,27 @@ describe("StudyWorkbench evidence helpers", () => {
     expect(previewed.front).toContain("せんせい");
     expect(previewed.back).toBe("先生");
 
-    const readingCard = { ...card, note_type: "jp_vocab_reading" };
-    const meaningCard = { ...card, note_type: "jp_vocab_meaning" };
     const entryCard = { ...card, note_type: "jp_vocab_entry" };
     const unknownCard = { ...card, note_type: "unknown_vocab" };
-    expect(syncVocabCardText(readingCard, { surface: "<語>", reading: "ご", meaning_ko: "뜻&의미" }).front).toContain("&lt;語&gt;");
-    expect(syncVocabCardText(readingCard, { surface: "<語>", reading: "ご", meaning_ko: "뜻&의미" }).back).toBe("ご");
-    expect(syncVocabCardText(meaningCard, meaningCard.source).back).toBe("학교");
-    expect(syncVocabCardText(entryCard, { surface: "語", reading: "ご", meaning_ko: "뜻" }).back).toBe("語");
+    const synced = syncVocabCardText(entryCard, { surface: "語", reading: "ご", meaning_ko: "뜻&의미" });
+    expect(synced.front).toBe("ご");
+    expect(synced.back).toBe("語");
+    expect(synced.source).toMatchObject({ study_writing: true, study_reading: false, study_meaning: false });
+    expect(applyVocabStudyToggle(entryCard, "study_meaning", false).source).toMatchObject({
+      study_writing: true,
+      study_reading: false,
+      study_meaning: false
+    });
+    expect(
+      applyVocabStudyToggle(
+        {
+          ...entryCard,
+          source: { ...entryCard.source, study_writing: false, study_reading: false, study_meaning: true }
+        },
+        "study_meaning",
+        false
+      ).source
+    ).toMatchObject({ study_writing: true, study_reading: false, study_meaning: false });
     expect(syncVocabCardText(unknownCard, unknownCard.source)).toBe(unknownCard);
     expect(syncVocabCardText(candidate({ source_type: "question_item" }), {})).toEqual(candidate({ source_type: "question_item" }));
   });

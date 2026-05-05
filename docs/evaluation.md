@@ -24,7 +24,7 @@ image preprocessing
 
 PaddleOCR is still the production default because it is faster and currently scores better overall locally. PaddleOCR-VL is now supported as a real processing engine through the same downstream card interfaces, but its visual evidence is document-block evidence rather than word-token evidence and it is benchmarked honestly. Google Cloud Vision, Ollama, and llama.cpp remain diagnostics or optional comparison paths; they do not create or approve cards.
 
-Interpret the benchmark as regression coverage for the four canonical workbook pages, not as a claim that arbitrary new pages will be perfect. Vocab row accuracy is intentionally strict: surface, reading, and Korean meaning must come from OCR-backed field evidence, so glossary-filled or manually inferred values do not inflate OCR accuracy. New uploads still need focused evidence review, warnings, and approval before export.
+Interpret the benchmark as regression coverage for the four canonical workbook pages, not as a claim that arbitrary new pages will be perfect. Vocab row accuracy is intentionally strict: surface, reading, and Korean meaning must come from live OCR-backed field evidence whose text supports the extracted value, so glossary-filled, stale, or manually inferred values do not inflate OCR accuracy. Vocab results also report layout recall and per-field surface/reading/meaning accuracy to show whether failures come from row detection or text recognition. New uploads still need focused evidence review, warnings, and approval before export.
 
 ## Format
 

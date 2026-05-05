@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from PIL import Image
 
-from app.core.images import _resize_if_needed
+from app.core.images import _resize_if_needed, preprocess_image
 from app.ocr import paddle_provider
 from app.ocr.paddle_provider import PaddleOcrProvider
 
@@ -16,6 +16,21 @@ def test_resize_if_needed_downscales_large_images() -> None:
 
     assert resized.size == (1800, 900)
     assert warnings == ["Preprocessed image was downscaled from 4000x2000 to 1800x900."]
+
+
+def test_preprocess_image_records_original_and_processed_dimensions(tmp_path) -> None:
+    original = tmp_path / "original.png"
+    processed = tmp_path / "processed.png"
+    Image.new("RGB", (320, 180), "white").save(original)
+
+    result = preprocess_image(original, processed)
+
+    assert result.original_width == 320
+    assert result.original_height == 180
+    assert result.width == 320
+    assert result.height == 180
+    assert result.processed_path == processed
+    assert processed.exists()
 
 
 def test_paddle_box_to_bbox_handles_rectangles_and_polygons() -> None:
