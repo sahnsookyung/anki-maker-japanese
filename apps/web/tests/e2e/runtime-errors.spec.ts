@@ -1,5 +1,7 @@
 import { expect, test, type ConsoleMessage, type Page } from "@playwright/test";
 
+import { mockOcrProfiles } from "./fixtures";
+
 type BrowserIssue = {
   message: string;
   source: string;
@@ -85,4 +87,5 @@ async function mockEmptyBackend(page: Page) {
   await page.route("**/api/pages", async (route) => {
     await route.fulfill({ contentType: "application/json", body: "[]" });
   });
+  await mockOcrProfiles(page);
 }

@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { mockOcrProfiles } from "./fixtures";
+
 const transparentPng = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/az4F7QAAAAASUVORK5CYII=",
   "base64"
@@ -55,6 +57,7 @@ test("reload keeps token-only persisted OCR evidence visible", async ({ page }) 
   await page.route("**/api/pages", async (route) => {
     await route.fulfill({ contentType: "application/json", body: JSON.stringify([persistedPage]) });
   });
+  await mockOcrProfiles(page);
   await page.route("**/api/pages/page-vl/ocr", async (route) => {
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ page: persistedPage, tokens }) });
   });
