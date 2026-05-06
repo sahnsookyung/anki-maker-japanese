@@ -123,7 +123,6 @@ class OcrModelProfile:
                     "package_versions",
                     "model_cache_fingerprints",
                     "engine",
-                    "extraction_variant",
                 ],
             },
         }

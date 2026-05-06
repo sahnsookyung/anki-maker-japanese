@@ -272,6 +272,72 @@ def test_vocab_evaluation_rejects_stale_or_unsupported_evidence(tmp_path) -> Non
     assert result.row_accuracy == pytest.approx(0.0)
 
 
+def test_vocab_evaluation_field_metrics_are_independent_of_full_row_support(tmp_path) -> None:
+    golden = GoldenPage(
+        page_id="vocab-page",
+        image_path=tmp_path / "page.jpg",
+        category="vocab_table",
+        expected_page_type="vocab_table",
+        expected_rows=[
+            GoldenVocabRow(row_id="row-1", section="", column="left", surface="学校", reading="がっこう", meaning_ko="학교"),
+            GoldenVocabRow(row_id="row-2", section="", column="left", surface="先生", reading="せんせい", meaning_ko="선생님"),
+        ],
+    )
+    tokens = [
+        _token("row1-surface", "学校", [1, 1, 20, 10], "kanji"),
+        _token("row1-reading", "がっこう", [22, 1, 60, 10], "hiragana"),
+        _token("row2-surface", "学生", [1, 20, 20, 30], "kanji"),
+        _token("row2-reading", "せん", [22, 20, 60, 30], "hiragana"),
+        _token("row2-meaning", "선생님", [62, 20, 90, 30], "hangul"),
+    ]
+    surface_reading_only = _vocab_eval_card(
+        {
+            "surface": "学校",
+            "reading": "がっこう",
+            "meaning_ko": "학교",
+            "field_evidence": {
+                "surface": {"text": "学校", "provenance": "ocr", "token_ids": ["row1-surface"], "bbox": [1, 1, 20, 10]},
+                "reading": {"text": "がっこう", "provenance": "ocr", "token_ids": ["row1-reading"], "bbox": [22, 1, 60, 10]},
+                "meaning_ko": {"text": "학교", "provenance": "glossary", "bbox": [62, 1, 90, 10]},
+            },
+        }
+    )
+    meaning_only = _vocab_eval_card(
+        {
+            "surface": "学生",
+            "reading": "せん",
+            "meaning_ko": "선생님",
+            "field_evidence": {
+                "surface": {"text": "学生", "provenance": "ocr", "token_ids": ["row2-surface"], "bbox": [1, 20, 20, 30]},
+                "reading": {"text": "せん", "provenance": "ocr", "token_ids": ["row2-reading"], "bbox": [22, 20, 60, 30]},
+                "meaning_ko": {"text": "선생님", "provenance": "ocr", "token_ids": ["row2-meaning"], "bbox": [62, 20, 90, 30]},
+            },
+        }
+    ).model_copy(update={"id": "card-2", "source_id": "row-2"})
+
+    result = evaluate_vocab_page(
+        golden,
+        ProcessResult(
+            page=_page(tmp_path),
+            tokens=tokens,
+            cards=[surface_reading_only, meaning_only],
+            script_summary={},
+            answer_map={},
+        ),
+    )
+
+    assert result.ocr_supported_items == 1
+    assert result.surface_matches == 1
+    assert result.reading_matches == 1
+    assert result.surface_reading_matches == 1
+    assert result.meaning_matches == 1
+    assert result.matched_rows == 0
+    assert result.surface_accuracy == pytest.approx(0.5)
+    assert result.reading_accuracy == pytest.approx(0.5)
+    assert result.meaning_accuracy == pytest.approx(0.5)
+    assert result.row_accuracy == pytest.approx(0.0)
+
+
 def test_benchmark_token_text_coverage_exposes_source_mismatches(tmp_path) -> None:
     golden = GoldenPage(
         page_id="mcq-page",

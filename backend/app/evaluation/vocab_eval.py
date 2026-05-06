@@ -60,24 +60,51 @@ def evaluate_vocab_page(golden: GoldenPage, process_result: ProcessResult) -> Vo
     layout_matched_rows = _layout_matched_rows(golden.expected_rows, items)
     matched: set[str] = set()
     matched_item_indexes: set[int] = set()
+    surface_item_indexes: set[int] = set()
+    reading_item_indexes: set[int] = set()
+    meaning_item_indexes: set[int] = set()
+    surface_reading_item_indexes: set[int] = set()
     surface_matches = 0
     reading_matches = 0
     surface_reading_matches = 0
     meaning_match_count = 0
 
     for row in golden.expected_rows:
-        surface_index = _first_unmatched_field_index(ocr_supported_items, matched_item_indexes, "surface", row.surface)
+        surface_index = _first_unmatched_field_index(items, surface_item_indexes, "surface", row.surface, live_token_ids, live_block_ids)
         if surface_index is not None:
             surface_matches += 1
-        reading_index = _first_unmatched_field_index(ocr_supported_items, matched_item_indexes, "reading", row.reading)
+            surface_item_indexes.add(surface_index)
+        reading_index = _first_unmatched_field_index(items, reading_item_indexes, "reading", row.reading, live_token_ids, live_block_ids)
         if reading_index is not None:
             reading_matches += 1
+            reading_item_indexes.add(reading_index)
+        meaning_index = _first_unmatched_field_index(items, meaning_item_indexes, "meaning_ko", row.meaning_ko, live_token_ids, live_block_ids)
+        if meaning_index is not None:
+            meaning_match_count += 1
+            meaning_item_indexes.add(meaning_index)
 
-        candidate_index = _first_unmatched_row_index(ocr_supported_items, matched_item_indexes, row)
+        surface_reading_index = _first_unmatched_row_index(
+            items,
+            surface_reading_item_indexes,
+            row,
+            ("surface", "reading"),
+            live_token_ids,
+            live_block_ids,
+        )
+        if surface_reading_index is not None:
+            surface_reading_matches += 1
+            surface_reading_item_indexes.add(surface_reading_index)
+
+        candidate_index = _first_unmatched_row_index(
+            items,
+            matched_item_indexes,
+            row,
+            ("surface", "reading", "meaning_ko"),
+            live_token_ids,
+            live_block_ids,
+        )
         if candidate_index is not None:
             matched_item_indexes.add(candidate_index)
-            surface_reading_matches += 1
-            meaning_match_count += 1
             matched.add(row.row_id)
 
     return VocabEvalResult(
@@ -142,12 +169,13 @@ def _first_unmatched_field_index(
     matched_item_indexes: set[int],
     field: str,
     expected: str,
+    live_token_ids: set[str],
+    live_block_ids: set[str],
 ) -> int | None:
-    expected_norm = normalize_text(expected)
     for index, item in enumerate(items):
         if index in matched_item_indexes:
             continue
-        if normalize_text(str(item.get(field, ""))) == expected_norm:
+        if _item_field_matches_with_ocr(item, field, expected, live_token_ids, live_block_ids):
             return index
     return None
 
@@ -156,17 +184,18 @@ def _first_unmatched_row_index(
     items: list[dict[str, Any]],
     matched_item_indexes: set[int],
     row: GoldenVocabRow,
+    fields: tuple[str, ...],
+    live_token_ids: set[str],
+    live_block_ids: set[str],
 ) -> int | None:
     for index, item in enumerate(items):
         if index in matched_item_indexes:
             continue
-        if normalize_text(str(item.get("surface", ""))) != normalize_text(row.surface):
-            continue
-        if normalize_text(str(item.get("reading", ""))) != normalize_text(row.reading):
-            continue
-        if not meaning_matches(str(item.get("meaning_ko", "")), row.meaning_ko):
-            continue
-        return index
+        if all(
+            _item_field_matches_with_ocr(item, field, _expected_field_value(row, field), live_token_ids, live_block_ids)
+            for field in fields
+        ):
+            return index
     return None
 
 
@@ -198,6 +227,37 @@ def _field_has_ocr_evidence(value: Any, expected_value: Any, live_token_ids: set
             return False
         return all(isinstance(block_id, str) and block_id in live_block_ids for block_id in block_ids)
     return False
+
+
+def _item_field_matches_with_ocr(
+    item: dict[str, Any],
+    field: str,
+    expected: str,
+    live_token_ids: set[str],
+    live_block_ids: set[str],
+) -> bool:
+    if not _field_value_matches(field, item.get(field), expected):
+        return False
+    evidence = item.get("field_evidence")
+    if not isinstance(evidence, dict):
+        return False
+    return _field_has_ocr_evidence(evidence.get(field), item.get(field), live_token_ids, live_block_ids)
+
+
+def _field_value_matches(field: str, actual: Any, expected: str) -> bool:
+    if field == "meaning_ko":
+        return meaning_matches(str(actual or ""), expected)
+    return normalize_text(str(actual or "")) == normalize_text(expected)
+
+
+def _expected_field_value(row: GoldenVocabRow, field: str) -> str:
+    if field == "surface":
+        return row.surface
+    if field == "reading":
+        return row.reading
+    if field == "meaning_ko":
+        return row.meaning_ko
+    return ""
 
 
 def _evidence_supports_value(evidence_text: str, expected_text: str) -> bool:

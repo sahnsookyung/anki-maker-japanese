@@ -46,6 +46,7 @@ def test_ocr_model_profile_manifest_records_runtime_and_model_config() -> None:
     assert manifest["cache"]["hit"] is False
     assert manifest["cache"]["key"] == "abc123"
     assert "model_cache_fingerprints" in manifest["cache"]["key_components"]
+    assert "extraction_variant" not in manifest["cache"]["key_components"]
     assert "python" in manifest["runtime"]
 
 
@@ -154,4 +155,47 @@ def test_preprocessing_cache_fingerprint_ignores_runtime_paths(monkeypatch) -> N
         profile_manifest=second_manifest,
         engine="paddleocr",
         extraction_variant="baseline_current",
+    )
+
+
+def test_ocr_cache_key_ignores_extraction_variant_for_reusable_payloads(monkeypatch) -> None:
+    monkeypatch.setattr(pipeline, "PREPROCESS_MAX_SIDE_LEN", 1800)
+    preprocessing_config = pipeline._preprocessing_config(
+        100,
+        200,
+        [],
+        {
+            "schema_version": 1,
+            "coordinate_space": "processed_image",
+            "original_to_processed": {"pipeline": ["resize"]},
+        },
+    )
+    preprocessing_hash = pipeline._preprocessing_hash(preprocessing_config)
+    profile = resolve_ocr_model_profile("jp_v3_mobile_current")
+    line_manifest = profile.manifest(
+        engine="paddleocr",
+        extraction_variant="line_graph_v1",
+        preprocessing_config=preprocessing_config,
+    )
+    table_manifest = profile.manifest(
+        engine="paddleocr",
+        extraction_variant="table_graph_v1",
+        preprocessing_config=preprocessing_config,
+    )
+
+    assert line_manifest["extraction_variant"] == "line_graph_v1"
+    assert table_manifest["extraction_variant"] == "table_graph_v1"
+    assert "extraction_variant" not in line_manifest["cache"]["key_components"]
+    assert pipeline._ocr_cache_key(
+        image_sha="same-image",
+        preprocessing_hash=preprocessing_hash,
+        profile_manifest=line_manifest,
+        engine="paddleocr",
+        extraction_variant="line_graph_v1",
+    ) == pipeline._ocr_cache_key(
+        image_sha="same-image",
+        preprocessing_hash=preprocessing_hash,
+        profile_manifest=table_manifest,
+        engine="paddleocr",
+        extraction_variant="table_graph_v1",
     )

@@ -522,12 +522,13 @@ def _ocr_cache_key(
     engine: str,
     extraction_variant: str,
 ) -> str:
+    # Extraction variants rerun candidate generation from the same OCR payload.
+    # Keep the OCR cache scoped to image/preprocessing/provider/model inputs only.
     payload = {
         "schema_version": 1,
         "image_sha256": image_sha,
         "preprocessing_hash": preprocessing_hash,
         "engine": engine,
-        "extraction_variant": extraction_variant,
         "profile_id": profile_manifest.get("profile_id"),
         "provider": profile_manifest.get("provider"),
         "env_fingerprint": profile_manifest.get("env_fingerprint"),
