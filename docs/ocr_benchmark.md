@@ -43,10 +43,16 @@ Newer models are benchmarked as experimental profiles, not promoted by assumptio
 Candidate profiles:
 
 - `jp_v3_mobile_current`: frozen production control, Japanese PP-OCRv3 mobile plus Korean PP-OCRv5.
+- `jp_v3_det_v3_rec`: explicit model-pair alias for the frozen production control.
+- `jp_v3_det_v5_rec`: PP-OCRv3 mobile detector with PP-OCRv5 mobile recognizer.
+- `jp_v5_det_v3_rec`: PP-OCRv5 mobile detector with Japanese PP-OCRv3 mobile recognizer.
+- `jp_v5_det_v5_rec`: explicit latest local model-pair alias for `jp_v5_mobile_general`.
 - `jp_v5_mobile_general`: newer PP-OCRv5 mobile detector and recognizer.
 - `jp_v5_server_general`: heavier PP-OCRv5 server detector and recognizer.
 - `jp_lang_auto`: PaddleOCR `lang="japan"` profile when supported by the installed PaddleOCR package. This can resolve to server-class models, so default profile-matrix runs skip it unless `--include-heavy-profiles` is set.
-- `ko_v5_current`: Korean PP-OCRv5 diagnostic profile.
+- `ko_v5_current`: default Korean PP-OCRv5 diagnostic profile.
+- `ko_v5_det_v5_rec`: explicit Korean PP-OCRv5 detector plus Korean PP-OCRv5 recognizer alias for the default Korean pass.
+- `ko_lang_auto`: optional PaddleOCR `lang="korean"` diagnostic profile. This is heavy/experimental and should be run only as a Korean OCR comparison.
 - `google_vision`: optional cloud diagnostic profile, not a default candidate-generation path.
 
 Extraction variants:
@@ -57,6 +63,23 @@ Extraction variants:
 - `ranked_rows_v1`: records ranked row-hypothesis scores for evidence quality, script compatibility, alignment, and completeness.
 - `crop_confirm_v1`: runs bounded crop OCR on uncertain field boxes and records the result as review-only diagnostics; it does not silently fill benchmark fields.
 - `provider_agreement_v1`: runs the configured comparison provider as a diagnostic-only agreement hook; it is never an automatic extraction decision.
+- `v5_token_split_v1`: splits merged PP-OCRv5-style vocab tokens into surface/reading candidates with derived boxes.
+- `v5_vocab_rows_v1`: records guarded v5-aware vocab row diagnostics.
+- `ko_alignment_v1`: records Korean gloss pairing, raw recall, unpaired Hangul tokens, stale evidence, and bbox alignment diagnostics.
+- `v5_mcq_v1`: enables PP-OCRv5 MCQ recovery, especially answer-strip and choice parsing recovery.
+- `v5_full_adapted_v1`: combines token splitting, guarded row/Korean diagnostics, and MCQ recovery.
+- `ko_crop_confirm_v1`: experimental Korean meaning recovery from bounded field crops. Unlike `crop_confirm_v1`, this variant may replace uncertain Korean meaning fields, but only with live `crop_ocr` tokens that persist with the run.
+- `ko_region_columns_v1`: experimental Korean meaning-column recovery from derived row/column regions, with duplicate-token and cross-column guards.
+- `ko_consensus_v1`: combines full-page, crop, and region OCR signals for Korean meaning recovery and records accepted/rejected alternatives.
+- `mcq_source_rebuild_v1`: separates strict OCR-backed MCQ source fields from glossary/answer-strip-assisted semantic fields.
+- `mcq_choice_band_ocr_v1`: runs bounded OCR on MCQ choice/answer-strip bands for strict source-field diagnostics.
+- `accuracy_recovery_v1`: combines the Korean recovery and MCQ source-field recovery experiments. It remains benchmark-only.
+- `residual_diagnostics_v1`: benchmark diagnostic mode only. It writes residual miss diagnostics and contact sheets after scoring and never mutates candidates.
+- `jp_region_columns_v1`: benchmark-only Japanese vocab surface/reading recovery from clipped row/column regions. It may create a missing vocab row only when surface, reading, and Korean meaning all have live OCR/image evidence.
+- `ko_residual_glyph_v1`: benchmark-only Korean residual glyph recovery for weak `meaning_ko` fields. It accepts only row-owned, meaning-column-owned Hangul or numeric-unit evidence and fails open when local glyph resources are unavailable.
+- `mcq_prompt_line_ocr_v1`: benchmark-only clipped prompt-line OCR for strict MCQ `source_fields.sentence`; it updates source fields only and does not infer from semantic choices or glossary text.
+- `mcq_choice_glyph_v1`: benchmark-only per-choice glyph recovery for strict spelling-MCQ `source_fields.choices`; it preserves semantic MCQ fields.
+- `accuracy_recovery_v2`: combines all `accuracy_recovery_v1` components with Japanese region recovery, Korean residual glyph recovery, MCQ prompt-line OCR, and MCQ choice-glyph recovery. It does not change production defaults.
 
 Run a cautious profile comparison:
 
@@ -71,21 +94,24 @@ Run the staged ablation protocol without a combinatorial blast:
 
 ```bash
 cd backend
+uv run python scripts/benchmark_ocr_modes.py --experiment-stage 0 --json
 uv run python scripts/benchmark_ocr_modes.py --experiment-stage 1 --json
 uv run python scripts/benchmark_ocr_modes.py --experiment-stage 2 --json
 uv run python scripts/benchmark_ocr_modes.py --experiment-stage 3 --json
 uv run python scripts/benchmark_ocr_modes.py --experiment-stage 4 --json
+uv run python scripts/benchmark_ocr_modes.py --experiment-stage 5 --json
 ```
 
-Stage 1 runs local model profiles against `baseline_current`. Stage 2 runs graph variants on the current baseline and `jp_v5_mobile_general` by default; use `--stage-profiles jp_v3_mobile_current,jp_v5_mobile_general,...` to pin the top profiles from Stage 1. Unknown staged profile ids are skipped with a warning so long experiment runs can continue. Stage 3 isolates crop-confirm diagnostics. Stage 4 runs optional OCR-VL/Google Vision comparisons. Heavy profiles are still skipped unless `--include-heavy-profiles` is explicit.
+Stage 0/1 run the four safe local model pairs against `baseline_current`. Stage 2 runs atomic accuracy variants, including Korean crop/region recovery, MCQ source recovery, `jp_region_columns_v1`, `ko_residual_glyph_v1`, `mcq_prompt_line_ocr_v1`, and `mcq_choice_glyph_v1`. Stage 3 runs combined variants including `ko_consensus_v1`, `accuracy_recovery_v1`, and `accuracy_recovery_v2` on the current, hybrid, and v5/v5 candidates. Stage 4 checks `fresh_cli`, `persisted_db`, and `ui_api` parity. Stage 5 is optional heavy/external diagnostics. Unknown staged profile ids are skipped with a warning so long experiment runs can continue. Heavy profiles are still skipped unless `--include-heavy-profiles` is explicit.
 
-Run one explicit stronger-model experiment:
+Run one explicit latest-model adapted experiment:
 
 ```bash
 cd backend
 uv run python scripts/benchmark_ocr_modes.py \
-  --model-profile jp_v5_mobile_general \
-  --extraction-variant baseline_current \
+  --model-profile jp_v5_det_v5_rec \
+  --korean-profile ko_v5_current \
+  --extraction-variant v5_full_adapted_v1 \
   --json
 ```
 
@@ -112,9 +138,11 @@ When `--work-dir` or `--keep-work-dir` is set, the benchmark writes visual audit
 
 The OCR cache key includes the original-image hash, preprocessing hash, OCR engine/provider, model profile, selected model/config fingerprint, and package versions. It intentionally excludes extraction variant, so graph/ranking/crop diagnostic variants can reuse the same OCR payload while rerunning extraction from cached tokens/document blocks. Benchmark cache hits therefore do not freeze stale candidate logic. Benchmark resource output marks result/model cache status and a `cache_phase`/`timing_bucket` of `cold_or_uncached`, `warm_ocr_cache`, or `unknown`; compare a cold run with a repeated warm run in the same `--work-dir` when timing cache behavior.
 
+Recovery OCR uses a separate region/glyph cache under `backend/ocr_cache/region_ocr`. Its key includes the schema version, processed-image hash, preprocessing hash, clipped processed-image bbox, padding, strategy id, provider/profile fingerprints, Korean profile when relevant, OCR max-side settings, package/model versions, and template/font/glyph-scorer fingerprints when a local glyph strategy is used. Full-page OCR cache hits and repeated region/glyph cache hits are reported separately; the full-page OCR cache remains independent of extraction variant.
+
 All overlay and document-graph boxes are stored in processed-image coordinates, because providers read the preprocessed image. The run transform metadata records both original and processed paths, original/processed dimensions, preprocessing steps, and whether the original-to-processed mapping is invertible for visual audit.
 
-`crop_confirm_v1` is capped by `OCR_CROP_CONFIRM_MAX_FIELDS` per page so it can test uncertain-field crop OCR without turning Stage 3 into a full second OCR pass.
+`crop_confirm_v1` is capped by `OCR_CROP_CONFIRM_MAX_FIELDS` per page so it can test uncertain-field crop OCR without turning a diagnostic run into a full second OCR pass.
 
 The browser review UI also exposes the active run profile, variant, runtime, evidence-alignment score, blocked candidate count, and whether a strict benchmark score is available. Arbitrary uploads do not have a strict OCR score unless they are part of a golden evaluation set.
 
@@ -129,6 +157,7 @@ The benchmark therefore measures:
 - MCQ semantic accuracy for generated Anki cards.
 - MCQ source-field accuracy for sentence, target, all four choices, answer, and answer number.
 - Normalized OCR text coverage, which checks whether PaddleOCR tokens or OCR-VL document text contain expected transcript fields before answer-strip or glossary heuristics can rescue the card.
+- Miss analysis for strict failures, grouped by cause such as Korean OCR error, surface OCR error, missing row, wrong pairing, or MCQ source-field OCR error.
 - Wall time, user/system CPU time, CPU percent relative to one core, peak RSS, RSS samples, and worker failures.
 - NPU/GPU fields are included in the JSON output; they are marked unavailable unless a local collector is configured.
 
@@ -148,6 +177,16 @@ cd backend
 uv run python scripts/benchmark_ocr_modes.py --json
 uv run python scripts/benchmark_ocr_modes.py --json --dashboard-markdown ../benchmark-dashboard.md
 ```
+
+The Markdown dashboard includes overall/strict accuracy, evidence alignment, raw Korean recall, per-field vocab accuracy, miss-cause counts, MCQ field-error counts, review-blocked counts, shadow row diagnostics, resource timing, RSS, and cache-hit status. Use the miss-cause and field-error columns to decide whether the next experiment should target OCR model coverage, Korean recognition, row pairing, or MCQ source-field recovery.
+
+`--miss-inventory-json` writes a diagnostic-only inventory of current misses. `--focus-misses-from` can attach a prior inventory for focused tracing, but benchmark scoring still runs full pages and the inventory must never be used as an extraction oracle.
+
+`--residual-diagnostics-dir` writes diagnostic-only residual artifacts after scoring: `residual-diagnostics.json`, one contact-sheet PNG per page, optional crops under `residual-crops/`, and a README that marks the directory as non-oracle output. The JSON includes page id, miss kind, failed fields, expected/current benchmark values, evidence, token ids, crop bboxes, OCR/recovery candidates, rejected candidates, rejection reasons, cache status, confidence, resource metrics, `diagnostic_only: true`, and `oracle_use_allowed: false`. Extraction code does not read this directory.
+
+The dashboard includes executable gates. The v1 target remains overall at least `72/80`, strict OCR at least `142/160`, vocab meaning at least `52/60`, vocab surface/reading each at least `58/60`, MCQ semantic exactly `20/20`, MCQ source fields at least `90/100`, evidence alignment at least `88.5%`, and safe-local peak RSS under `3.2 GB`. The v2 gate raises the targets to overall at least `75/80`, strict OCR at least `150/160`, vocab meaning at least `55/60`, vocab surface at least `59/60`, vocab reading at least `58/60`, MCQ semantic exactly `20/20`, MCQ source fields at least `95/100`, evidence alignment at least `92%`, warm full-page OCR cache hits `4/4`, repeated region/glyph cache hits where recovery repeats, and safe-local peak RSS under `3.2 GB`.
+
+The dashboard recovery column aggregates schema-v2 recovery payloads: attempts, accepted replacements, rejected buckets, resource caps, cache hits/misses, strict deltas, vocab surface/reading/meaning deltas, and MCQ sentence/choice/source deltas.
 
 Run a cautious one-page PaddleOCR-VL comparison:
 
@@ -205,14 +244,63 @@ Leave caching enabled during normal UI use; disabling it trades memory observabi
 
 ## Latest Local Benchmark Notes
 
-On May 4, 2026, guarded subprocess-isolated local runs with strict OCR-evidence vocab scoring showed:
+On May 8, 2026, the safe-local `accuracy_recovery_v2` gate run was:
 
-- The measured default, Japanese PP-OCRv3 mobile + Korean PP-OCRv5, reached 100% MCQ semantic accuracy on the two MCQ golden pages.
-- Vocab rows are now scored only when surface, reading, and Korean meaning are all OCR-backed and the referenced evidence still exists. Under that stricter rule, PaddleOCR scored 22/36 rows on category 1 and 10/24 rows on category 3; no glossary-supported vocab rows were counted.
-- MCQ source-field accuracy is stricter than card accuracy and currently exposes remaining OCR/layout roughness on the MCQ pages; the two MCQ pages scored 84% source-field accuracy.
-- PaddleOCR-VL generated correct card candidates for both MCQ pages, scoring 10/10 on category 2 and 10/10 on category 4 with 90% source-field accuracy on both. It did not generate benchmark-credit vocab rows for categories 1 or 3 because the local VL document text did not recover complete surface/reading/Korean triples.
-- PaddleOCR-VL document-text coverage was 24.1% on category 1, 90.0% on category 2, 51.4% on category 3, and 70.0% on category 4. Compare this with semantic and source-field accuracy when judging extraction changes.
-- Base PaddleOCR page workers peaked around 2.8 GB RSS per page and finished the four-page run in about 40 seconds on the current machine.
-- PaddleOCR-VL page workers peaked around 12.1 GB RSS per page and took about 8.7 minutes for the same four pages under the 14336 MB guardrail.
+```text
+jp_v3_det_v3_rec + ko_v5_current + accuracy_recovery_v2
+80/80 overall
+160/160 strict OCR fields
+60/60 vocab meaning, surface, and reading
+20/20 MCQ semantic
+100/100 MCQ source fields
+94.3% evidence alignment
+2822.27 MB safe-local peak RSS
+```
 
-Interpret those notes as a local hardware/resource snapshot, not a universal model limit. If you raise `--worker-max-rss-mb`, run one page at a time and keep the JSON metrics so the result is comparable.
+Primary artifacts:
+
+```text
+.benchmark-runs/2026-05-08-accuracy-recovery-v2/accuracy-recovery-v2-final.json
+.benchmark-runs/2026-05-08-accuracy-recovery-v2/accuracy-recovery-v2-final-dashboard.md
+.benchmark-runs/2026-05-08-accuracy-recovery-v2/residual-diagnostics/residual-diagnostics.json
+```
+
+Interpretation:
+
+- `accuracy_recovery_v2` recovers the remaining Japanese surface/missing-row, Korean meaning, MCQ sentence, and MCQ choice strict-source failures from the May 7 run on the four-page golden set.
+- The run is still experimental and benchmark-only. It is not a production default change, and a holdout set is required before promotion.
+- Strict OCR source fields require OCR/image-derived evidence. Glossary-assisted values, golden expected values, and residual miss inventories cannot fill strict fields.
+- Cloud/VL/heavy providers are outside the v2 promotion gate and remain diagnostic-only unless a separate pre-registered gate is created.
+
+On May 6, 2026, the best safe-local adapted run was:
+
+```text
+jp_v3_det_v3_rec + ko_v5_current + v5_full_adapted_v1
+68/80 overall, 85.0% accuracy
+132/160 strict OCR fields, 82.5%
+```
+
+Dashboard artifact:
+
+```text
+.benchmark-runs/2026-05-06-latest-accuracy/miss-analysis-check-dashboard.md
+```
+
+Current interpretation:
+
+- The adapted code beats the earlier measured `52/80` baseline while keeping MCQ semantic accuracy at 100% on both MCQ golden pages.
+- The explicit Korean alias `ko_v5_det_v5_rec` produces the same score as `ko_v5_current` and now reuses warm OCR payloads through canonical cache/work-dir aliases.
+- Vocab surface and reading extraction are no longer the main bottleneck: the latest summary shows 96.7% surface accuracy and 96.7% reading accuracy across vocab pages.
+- Vocab meaning remains the highest-value safe-local target: latest raw Korean recall is 81.7%, meaning accuracy is 80.0%, and miss analysis reports 10 Korean OCR errors.
+- MCQ candidates are semantically correct, but strict source-field scoring still reports 16 source-field OCR errors, mostly choice text plus some sentence text. Future MCQ work should target source-field token reconstruction and choice segmentation, not answer inference.
+- Row-graph and Korean-alignment variants remain diagnostic because their shadow rows still show high risk on the vocab pages. Promoting row replacement before Korean OCR improves would mostly move errors around.
+- Warm-cache runs across extraction variants should show OCR cache hits; if a graph variant goes cold against the same image/profile/preprocessing tuple, check profile alias canonicalization and cache-key fields first.
+
+Worthwhile next experiments:
+
+- Run `accuracy_recovery_v1` against the frozen miss inventory in `.benchmark-runs/2026-05-07-accuracy-recovery/miss-inventory.json`, then score the full golden set.
+- Test Korean `ko_lang_auto` as a diagnostic-only comparison for the remaining meaning misses, with the same cache/resource guardrails as other heavy profiles.
+- Continue MCQ choice/sentence source-field recovery around the category 4 failures while preserving 100% semantic MCQ accuracy.
+- Add a holdout set before any production-default promotion. Without holdout, the current winner is experimental only.
+
+Interpret these notes as a local hardware/resource snapshot, not a universal model limit. If you raise `--worker-max-rss-mb`, run one page at a time and keep the JSON metrics so the result is comparable.

@@ -19,6 +19,7 @@ import {
   apiGet,
   apiErrorMessage,
   activateOcrRun,
+  applyFieldOcr,
   approveCard,
   compareOcr,
   dedupePages,
@@ -31,6 +32,7 @@ import {
   parseDocument,
   previewFieldOcr,
   processPage,
+  preferredExperimentalOcrSelection,
   updateCard,
   updatePage,
   uploadImages
@@ -40,10 +42,10 @@ import {
   type ReviewFilter,
   type EvidenceOverlayMode,
   type EvidenceTokenSource,
-  applyFieldOcrPreview,
   applyQuestionChoicesEdit,
   applyQuestionSourceEdit,
   applyVocabSourceEdit,
+  applyVocabStudyToggle,
   cardForToken,
   cardForDocumentBlock,
   cardMatchesFilter,
@@ -73,6 +75,7 @@ import {
   reviewQualityClass,
   shouldShowDocumentBlocks,
   sourceBbox,
+  studyDirectionEnabled,
   summarizeCards,
   textValue,
   documentBlockDisplayClass,
@@ -121,7 +124,27 @@ const EXTRACTION_VARIANTS = [
   { id: "table_graph_v1", label: "Table graph experiment" },
   { id: "ranked_rows_v1", label: "Ranked row experiment" },
   { id: "crop_confirm_v1", label: "Crop-confirm experiment" },
-  { id: "provider_agreement_v1", label: "Provider agreement diagnostic" }
+  { id: "provider_agreement_v1", label: "Provider agreement diagnostic" },
+  { id: "v5_token_split_v1", label: "v5 token split" },
+  { id: "v5_vocab_rows_v1", label: "v5 vocab rows" },
+  { id: "ko_alignment_v1", label: "Korean alignment" },
+  { id: "v5_mcq_v1", label: "v5 MCQ recovery" },
+  { id: "v5_token_split_plus_vocab_rows_v1", label: "v5 split + rows" },
+  { id: "v5_vocab_rows_plus_ko_alignment_v1", label: "v5 rows + Korean" },
+  { id: "v5_token_split_plus_mcq_v1", label: "v5 split + MCQ" },
+  { id: "v5_full_adapted_v1", label: "v5 full adapted" },
+  { id: "ko_crop_confirm_v1", label: "Korean crop recovery" },
+  { id: "ko_region_columns_v1", label: "Korean column recovery" },
+  { id: "ko_consensus_v1", label: "Korean consensus recovery" },
+  { id: "mcq_source_rebuild_v1", label: "MCQ source rebuild" },
+  { id: "mcq_choice_band_ocr_v1", label: "MCQ choice-band OCR" },
+  { id: "accuracy_recovery_v1", label: "Accuracy recovery" },
+  { id: "residual_diagnostics_v1", label: "Residual diagnostics (diagnostic-only)" },
+  { id: "jp_region_columns_v1", label: "Japanese region recovery" },
+  { id: "ko_residual_glyph_v1", label: "Korean residual glyph recovery" },
+  { id: "mcq_prompt_line_ocr_v1", label: "MCQ prompt-line OCR" },
+  { id: "mcq_choice_glyph_v1", label: "MCQ choice glyph recovery" },
+  { id: "accuracy_recovery_v2", label: "Accuracy recovery v2" }
 ];
 
 function scrollTargetElement(
@@ -199,8 +222,9 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
   const [documentParse, setDocumentParse] = useState<DocumentParseResult | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<OcrRuntimeStatus | null>(null);
   const [ocrProfiles, setOcrProfiles] = useState<OcrProfilePayload | null>(null);
-  const [experimentalProfile, setExperimentalProfile] = useState("jp_v5_mobile_general");
-  const [experimentalVariant, setExperimentalVariant] = useState("baseline_current");
+  const [experimentalProfile, setExperimentalProfile] = useState("jp_v5_det_v5_rec");
+  const [experimentalKoreanProfile, setExperimentalKoreanProfile] = useState("ko_v5_current");
+  const [experimentalVariant, setExperimentalVariant] = useState("v5_full_adapted_v1");
   const [lastExport, setLastExport] = useState<ExportResult | null>(null);
   const [selectedField, setSelectedField] = useState<string | null>(null);
   const [regionDraft, setRegionDraft] = useState<FieldRegionDraft | null>(null);
@@ -286,12 +310,10 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
     try {
       const payload = await getOcrProfiles();
       setOcrProfiles(payload);
-      if (payload.profiles.some((profile) => profile.id === "jp_v5_mobile_general")) {
-        setExperimentalProfile("jp_v5_mobile_general");
-      } else {
-        setExperimentalProfile(payload.default_profile);
-      }
-      setExperimentalVariant(payload.default_variant);
+      const preferred = preferredExperimentalOcrSelection(payload);
+      setExperimentalProfile(preferred.modelProfile);
+      setExperimentalKoreanProfile(preferred.koreanProfile);
+      setExperimentalVariant(preferred.extractionVariant);
     } catch {
       setOcrProfiles(null);
     }
@@ -341,7 +363,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
 
   async function onProcessAllPages(
     engine: OcrEngine = "paddleocr",
-    options: { modelProfile?: string; extractionVariant?: string; label?: string } = {}
+    options: { modelProfile?: string; koreanProfile?: string; extractionVariant?: string; label?: string } = {}
   ) {
     if (!pages.length || !beginOcrAction()) return;
     setIsBatchProcessing(true);
@@ -357,6 +379,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
         try {
           const result = await processPage(page.id, engine, {
             modelProfile: options.modelProfile,
+            koreanProfile: options.koreanProfile,
             extractionVariant: options.extractionVariant
           });
           const elapsedMs = durationMs(startedAt, performance.now());
@@ -396,7 +419,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
   async function onProcessPage(
     page: Page,
     engine: OcrEngine = "paddleocr",
-    options: { modelProfile?: string; extractionVariant?: string; label?: string } = {}
+    options: { modelProfile?: string; koreanProfile?: string; extractionVariant?: string; label?: string } = {}
   ) {
     if (!beginOcrAction()) return;
     if (engine === "paddleocr_vl") setVlProcessingPageId(page.id);
@@ -407,6 +430,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
     try {
       const result = await processPage(page.id, engine, {
         modelProfile: options.modelProfile,
+        koreanProfile: options.koreanProfile,
         extractionVariant: options.extractionVariant
       });
       applyProcessResult(result, true);
@@ -666,10 +690,19 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
 
   async function applySelectedFieldPreview() {
     if (!selectedCard || !fieldPreview) return;
-    const updatedCard = applyFieldOcrPreview(selectedCard, fieldPreview);
-    await saveCard(updatedCard);
+    try {
+      const result = await applyFieldOcr(selectedCard.id, fieldPreview.field, fieldPreview.bbox);
+      const nextCards = cards.map((item) => (item.id === result.card.id ? result.card : item));
+      setCards(nextCards);
+      setTokens((current) => [...current, ...result.tokens]);
+      syncPageCardSummary(result.card.page_id, nextCards);
+      setMessage("Applied OCR preview.");
+    } catch (error) {
+      setMessage(apiErrorMessage(error, "Applying OCR preview failed."));
+      return;
+    }
     setFieldPreview(null);
-    setRegionDraft({ cardId: updatedCard.id, field: fieldPreview.field, bbox: fieldPreview.bbox });
+    setRegionDraft({ cardId: selectedCard.id, field: fieldPreview.field, bbox: fieldPreview.bbox });
   }
 
   async function refreshRuntimeStatus() {
@@ -802,7 +835,7 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
               disabled={anyOcrJobRunning}
               title="Create Anki review candidates by running local PaddleOCR sequentially across all pages."
             >
-              Process pages with PaddleOCR
+              Process with PaddleOCR (Safe local)
             </button>
           ) : null}
           {pages.length ? (
@@ -841,14 +874,27 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
                     ))}
                   </select>
                 </label>
+                {(ocrProfiles.korean_profiles?.length ?? 0) > 0 ? (
+                  <label>
+                    <span>Korean profile</span>
+                    <select value={experimentalKoreanProfile} onChange={(event) => setExperimentalKoreanProfile(event.target.value)}>
+                      {ocrProfiles.korean_profiles?.map((profile) => (
+                        <option value={profile.id} key={profile.id}>
+                          {profile.label} · {profileBudgetLabel(profile.budget)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
                 <button
                   className="secondary experimental-run"
                   disabled={anyOcrJobRunning}
                   onClick={() =>
                     void onProcessAllPages("paddleocr", {
                       modelProfile: experimentalProfile,
+                      koreanProfile: experimentalKoreanProfile,
                       extractionVariant: experimentalVariant,
-                      label: experimentalRunLabel(ocrProfiles, experimentalProfile, experimentalVariant)
+                      label: experimentalRunLabel(ocrProfiles, experimentalProfile, experimentalKoreanProfile, experimentalVariant)
                     })
                   }
                   title="Run an experimental local OCR profile sequentially. Results are benchmark candidates, not a production-default change."
@@ -1246,11 +1292,13 @@ function batchFinishedMessage(report: BatchTimingReport): string {
   return `Finished ${report.engineLabel} batch${issueText}. See Latest batch for timing details.`;
 }
 
-function experimentalRunLabel(payload: OcrProfilePayload, profileId: string, variant: string): string {
+function experimentalRunLabel(payload: OcrProfilePayload, profileId: string, koreanProfileId: string, variant: string): string {
   const profile = payload.profiles.find((item) => item.id === profileId);
+  const koreanProfile = payload.korean_profiles?.find((item) => item.id === koreanProfileId);
   const profileLabel = profile?.label ?? profileId;
-  const variantLabel = EXTRACTION_VARIANTS.find((item) => item.id === variant)?.label ?? variant;
-  return `${profileLabel} / ${variantLabel}`;
+  const koreanLabel = koreanProfile?.label ?? koreanProfileId;
+  const variantLabel = payload.variants.find((item) => item.id === variant)?.label ?? EXTRACTION_VARIANTS.find((item) => item.id === variant)?.label ?? variant;
+  return `${profileLabel} / ${koreanLabel} / ${variantLabel}`;
 }
 
 function RunQualityStrip({ run, cards }: Readonly<{ run: OcrRun | null; cards: CardCandidate[] }>) {
@@ -1285,9 +1333,19 @@ function RunQualityStrip({ run, cards }: Readonly<{ run: OcrRun | null; cards: C
 function profileLabelFromRun(providerConfig: Record<string, unknown>): string {
   const modelProfile = providerConfig.model_profile;
   if (modelProfile && typeof modelProfile === "object") {
-    const label = (modelProfile as Record<string, unknown>).label;
-    const budget = (modelProfile as Record<string, unknown>).budget;
-    return [typeof label === "string" ? label : null, typeof budget === "string" ? profileBudgetLabel(budget) : null].filter(Boolean).join(" · ");
+    const profileRecord = modelProfile as Record<string, unknown>;
+    const label = profileRecord.label;
+    const budget = profileRecord.budget;
+    const koreanProfile = profileRecord.korean_profile;
+    const koreanLabel =
+      koreanProfile && typeof koreanProfile === "object" ? (koreanProfile as Record<string, unknown>).label : null;
+    return [
+      typeof label === "string" ? label : null,
+      typeof koreanLabel === "string" ? koreanLabel : null,
+      typeof budget === "string" ? profileBudgetLabel(budget) : null
+    ]
+      .filter(Boolean)
+      .join(" · ");
   }
   return stringMetric(providerConfig, "engine") ?? "OCR run";
 }
@@ -2303,7 +2361,7 @@ function CandidateBody({
           </label>
         </>
       ) : (
-        <VocabGeneratedPreviews card={draft} />
+        <VocabNotePreview card={draft} />
       )}
       <label>
         <span>Tags</span>
@@ -2570,23 +2628,66 @@ function VocabSourceEditor({
       {fieldInput("surface", "Surface")}
       {fieldInput("reading", "Reading")}
       {fieldInput("meaning_ko", "Korean meaning")}
+      <div className="vocab-study-controls" aria-label="Vocabulary study directions">
+        <label>
+          <input
+            type="checkbox"
+            checked={studyDirectionEnabled(source.study_writing)}
+            onChange={(event) => onChange(applyVocabStudyToggle(card, "study_writing", event.target.checked))}
+          />
+          <span>Kana to Kanji</span>
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={studyDirectionEnabled(source.study_reading, false)}
+            onChange={(event) => onChange(applyVocabStudyToggle(card, "study_reading", event.target.checked))}
+          />
+          <span>Kanji to Kana</span>
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={studyDirectionEnabled(source.study_meaning, false)}
+            onChange={(event) => onChange(applyVocabStudyToggle(card, "study_meaning", event.target.checked))}
+          />
+          <span>Meaning to Japanese</span>
+        </label>
+      </div>
     </fieldset>
   );
 }
 
-function VocabGeneratedPreviews({ card }: Readonly<{ card: CardCandidate }>) {
+function VocabNotePreview({ card }: Readonly<{ card: CardCandidate }>) {
   const source = card.source;
   const surface = textValue(source.surface);
   const reading = textValue(source.reading);
   const meaning = textValue(source.meaning_ko);
+  const enabledTemplates = [
+    {
+      enabled: studyDirectionEnabled(source.study_writing),
+      title: "Kana to Kanji"
+    },
+    {
+      enabled: studyDirectionEnabled(source.study_reading, false),
+      title: "Kanji to Kana"
+    },
+    {
+      enabled: studyDirectionEnabled(source.study_meaning, false),
+      title: "Meaning to Japanese"
+    }
+  ]
+    .filter((template) => template.enabled)
+    .map((template) => template.title)
+    .join(", ") || "None";
   return (
     <div className="vocab-generated-previews">
-      <span>Generated Anki card</span>
+      <span>Anki vocab note</span>
       <div className="vocab-preview">
-        <strong>Kana to Kanji</strong>
-        <p><b>Front</b><span>{reading}</span></p>
-        <p><b>Back</b><span>{surface}</span></p>
-        {meaning ? <p><b>Hidden</b><span>{meaning}</span></p> : null}
+        <p><b>Reading</b><span>{reading}</span></p>
+        <p><b>Surface</b><span>{surface}</span></p>
+        {meaning ? <p><b>Meaning</b><span>{meaning}</span></p> : null}
+        <p><b>Templates</b><span>{enabledTemplates}</span></p>
       </div>
     </div>
   );

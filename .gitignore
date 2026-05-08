@@ -11,6 +11,7 @@ __pycache__/
 coverage/
 htmlcov/
 coverage.xml
+.benchmark-runs/
 playwright-report/
 test-results/
 node_modules/
@@ -32,3 +33,4 @@ backend/*.db
 !backend/ocr_cache/.gitkeep
 !backend/usage/.gitkeep
 !backend/credentials/.gitkeep
+.gitnexus

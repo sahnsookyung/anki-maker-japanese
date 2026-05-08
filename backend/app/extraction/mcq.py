@@ -12,6 +12,7 @@ from app.extraction.field_evidence import static_evidence, token_evidence
 from app.extraction.geometry import group_tokens_by_line, text_of, union_bbox
 from app.extraction.sentence_order import repair_predicate_first_sentence
 from app.models.schemas import OcrToken
+from app.ocr.profiles import extraction_variant_components
 
 
 QUESTION_NO_PATTERN = r"(?:[1-9]\d{0,2}|[①-⑳])"
@@ -43,7 +44,14 @@ CIRCLED = {
 FULLWIDTH_DIGITS = str.maketrans("１２３４５６７８９０", "1234567890")
 
 
-def extract_mcq_items(tokens: list[OcrToken], answer_map: dict[int, int], page_type: str) -> list[dict]:
+def extract_mcq_items(
+    tokens: list[OcrToken],
+    answer_map: dict[int, int],
+    page_type: str,
+    extraction_variant: str = "baseline_current",
+) -> list[dict]:
+    components = extraction_variant_components(extraction_variant)
+    strict_source_fields_enabled = bool({"mcq_source_rebuild_v1", "mcq_choice_band_ocr_v1"} & components)
     lines = group_tokens_by_line(tokens, tolerance=22)
     blocks = _question_blocks(lines)
     if not blocks:
@@ -79,12 +87,20 @@ def extract_mcq_items(tokens: list[OcrToken], answer_map: dict[int, int], page_t
             target = resolved_target
         if resolved_answer:
             resolved_choice_no = _choice_no_for_answer_from_records(resolved_answer, choice_records) or resolved_choice_no
-        correct_choice_no = answer_map.get(question_no) or resolved_choice_no
+        answer_strip_choice_no = answer_map.get(question_no)
+        correct_choice_no = answer_strip_choice_no or resolved_choice_no
         correct_answer = ""
         if correct_choice_no and 1 <= correct_choice_no <= len(choices):
             correct_answer = choices[correct_choice_no - 1]
-        if resolved_answer:
+        if resolved_answer and (page_type == "spelling_mcq" or not answer_strip_choice_no or resolved_choice_no == answer_strip_choice_no):
             correct_answer = resolved_answer
+        answer_source = _answer_source(answer_strip_choice_no, resolved_choice_no, correct_choice_no)
+        source_correct_choice_no = answer_strip_choice_no
+        source_correct_answer = (
+            choices[answer_strip_choice_no - 1]
+            if answer_strip_choice_no and 1 <= answer_strip_choice_no <= len(choices)
+            else ""
+        )
         warnings: list[str] = []
         if not target:
             warnings.append("Could not confidently identify the underlined target.")
@@ -106,11 +122,10 @@ def extract_mcq_items(tokens: list[OcrToken], answer_map: dict[int, int], page_t
             target=target,
             correct_choice_no=correct_choice_no,
             correct_answer=correct_answer,
-            answer_source=_answer_source(question_no, answer_map, resolved_choice_no),
+            answer_source=answer_source,
         )
         confidence = _block_confidence(block)
-        items.append(
-            {
+        item = {
                 "id": new_id("q"),
                 "type": "question_item",
                 "question_type": "spelling_mcq" if page_type == "spelling_mcq" else "reading_mcq",
@@ -121,7 +136,7 @@ def extract_mcq_items(tokens: list[OcrToken], answer_map: dict[int, int], page_t
                 "choices": choices,
                 "correct_choice_no": correct_choice_no,
                 "correct_answer": correct_answer,
-                "answer_source": _answer_source(question_no, answer_map, resolved_choice_no),
+                "answer_source": answer_source,
                 "field_evidence": field_evidence,
                 "bbox": bbox,
                 "evidence_tokens": [token.id for token in block],
@@ -130,7 +145,24 @@ def extract_mcq_items(tokens: list[OcrToken], answer_map: dict[int, int], page_t
                 "needs_review": bool(warnings),
                 "warnings": warnings,
             }
-        )
+        if strict_source_fields_enabled:
+            item["semantic_fields"] = {
+                "sentence": sentence,
+                "target": target,
+                "choices": list(choices),
+                "correct_answer": correct_answer,
+                "correct_choice_no": correct_choice_no,
+                "answer_source": answer_source,
+            }
+            if source_correct_choice_no and source_correct_answer:
+                item["source_fields"] = {
+                    "sentence": sentence,
+                    "target": target,
+                    "choices": list(choices),
+                    "correct_answer": source_correct_answer,
+                    "correct_choice_no": source_correct_choice_no,
+                }
+        items.append(item)
     return sorted(items, key=_question_sort_key)
 
 
@@ -196,9 +228,9 @@ def _question_no(tokens: list[OcrToken]) -> int | None:
         text = _normalize_digits(token.text)
         if text in CIRCLED and (CIRCLED[text] >= 5 or index == 0):
             return CIRCLED[text]
-        if text.isdigit() and int(text) >= 5:
+        if _is_ascii_digits(text) and int(text) >= 5:
             return int(text)
-        if index == 0 and text.isdigit() and int(text) >= 1:
+        if index == 0 and _is_ascii_digits(text) and int(text) >= 1:
             return int(text)
         if _choice_text_after_marker(text) or _choice_chunks(text):
             continue
@@ -472,10 +504,10 @@ def _fill_missing_choices_by_position(found: dict[int, dict[str, object]], order
         used_ids.add(token.id)
 
 
-def _answer_source(question_no: int, answer_map: dict[int, int], resolved_choice_no: int | None) -> str:
-    if question_no in answer_map:
+def _answer_source(answer_strip_choice_no: int | None, resolved_choice_no: int | None, correct_choice_no: int | None) -> str:
+    if answer_strip_choice_no and answer_strip_choice_no == correct_choice_no:
         return "answer_strip"
-    if resolved_choice_no:
+    if resolved_choice_no and resolved_choice_no == correct_choice_no:
         return "local_glossary"
     return "unknown"
 
@@ -728,6 +760,10 @@ def _load_glossary_entries() -> list[dict[str, str]]:
 
 def _normalize_digits(text: str) -> str:
     return text.translate(FULLWIDTH_DIGITS)
+
+
+def _is_ascii_digits(text: str) -> bool:
+    return bool(text) and all(char in "0123456789" for char in text)
 
 
 def _normalize_for_match(text: str) -> str:

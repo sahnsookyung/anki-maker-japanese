@@ -31,6 +31,7 @@ def run_page_process_worker(
     max_rss_mb: float = OCR_PAGE_WORKER_MAX_RSS_MB,
     env_overrides: dict[str, str] | None = None,
     model_profile: str | None = None,
+    korean_profile: str | None = None,
     extraction_variant: str | None = None,
 ) -> ProcessResult:
     normalized_engine = normalize_ocr_engine(engine)
@@ -51,6 +52,8 @@ def run_page_process_worker(
         ]
         if model_profile:
             cmd.extend(["--model-profile", model_profile])
+        if korean_profile:
+            cmd.extend(["--korean-profile", korean_profile])
         if extraction_variant:
             cmd.extend(["--extraction-variant", extraction_variant])
         completed = _run_worker_command(cmd, timeout_seconds=timeout_seconds, max_rss_mb=max_rss_mb, env_overrides=env_overrides)
@@ -238,6 +241,7 @@ def main() -> int:
     parser.add_argument("--page-id", required=True)
     parser.add_argument("--engine", default="paddleocr")
     parser.add_argument("--model-profile", default="")
+    parser.add_argument("--korean-profile", default="")
     parser.add_argument("--extraction-variant", default="baseline_current")
     parser.add_argument("--document-parse", action="store_true")
     parser.add_argument("--image-path")
@@ -259,6 +263,7 @@ def main() -> int:
                 page,
                 engine=normalize_ocr_engine(args.engine),
                 model_profile=args.model_profile or None,
+                korean_profile=args.korean_profile or None,
                 extraction_variant=args.extraction_variant,
             )
         Path(args.output_json).write_text(json.dumps(result.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8")

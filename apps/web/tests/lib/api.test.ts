@@ -14,6 +14,7 @@ import {
   imageUrl,
   listOcrRuns,
   parseDocument,
+  preferredExperimentalOcrSelection,
   previewFieldOcr,
   processPage,
   resolveApiBase,
@@ -92,6 +93,111 @@ describe("apiErrorMessage", () => {
   it("keeps Error messages and falls back for unknown thrown values", () => {
     expect(apiErrorMessage(new Error("Specific failure"), "Fallback")).toBe("Specific failure");
     expect(apiErrorMessage("not an error", "Fallback")).toBe("Fallback");
+  });
+});
+
+describe("preferredExperimentalOcrSelection", () => {
+  it("defaults experiments to the strongest adapted local hypothesis when available", () => {
+    expect(
+      preferredExperimentalOcrSelection({
+        profiles: [
+          {
+            id: "jp_v3_mobile_current",
+            label: "Current",
+            budget: "safe_local",
+            provider: "paddle",
+            creates_candidates: true,
+            description: "Control"
+          },
+          {
+            id: "jp_v5_det_v5_rec",
+            label: "v5 det + v5 rec",
+            budget: "safe_local",
+            provider: "paddle",
+            creates_candidates: true,
+            description: "Latest local pair"
+          }
+        ],
+        korean_profiles: [
+          {
+            id: "ko_v5_current",
+            label: "Korean v5",
+            budget: "safe_local",
+            provider: "paddle_korean",
+            creates_candidates: false,
+            description: "Default Korean pass"
+          }
+        ],
+        variants: [
+          { id: "baseline_current", label: "Baseline", description: "Control" },
+          { id: "v5_full_adapted_v1", label: "v5 full adapted", description: "Adapted hypothesis" }
+        ],
+        default_profile: "jp_v3_mobile_current",
+        default_korean_profile: "ko_v5_current",
+        default_variant: "baseline_current"
+      })
+    ).toEqual({
+      modelProfile: "jp_v5_det_v5_rec",
+      koreanProfile: "ko_v5_current",
+      extractionVariant: "v5_full_adapted_v1"
+    });
+  });
+
+  it("falls back to default safe controls when adapted options are absent", () => {
+    expect(
+      preferredExperimentalOcrSelection({
+        profiles: [
+          {
+            id: "jp_v3_mobile_current",
+            label: "Current",
+            budget: "safe_local",
+            provider: "paddle",
+            creates_candidates: true,
+            description: "Control"
+          }
+        ],
+        variants: [{ id: "baseline_current", label: "Baseline", description: "Control" }],
+        default_profile: "jp_v3_mobile_current",
+        default_variant: "baseline_current"
+      })
+    ).toEqual({
+      modelProfile: "jp_v3_mobile_current",
+      koreanProfile: "ko_v5_current",
+      extractionVariant: "baseline_current"
+    });
+  });
+
+  it("uses an available Korean profile when the default Korean id is absent", () => {
+    expect(
+      preferredExperimentalOcrSelection({
+        profiles: [
+          {
+            id: "jp_v3_mobile_current",
+            label: "Current",
+            budget: "safe_local",
+            provider: "paddle",
+            creates_candidates: true,
+            description: "Control"
+          }
+        ],
+        korean_profiles: [
+          {
+            id: "ko_v5_det_v5_rec",
+            label: "Korean v5 pair",
+            budget: "safe_local",
+            provider: "paddle_korean",
+            creates_candidates: false,
+            description: "Alias"
+          }
+        ],
+        variants: [{ id: "baseline_current", label: "Baseline", description: "Control" }],
+        default_profile: "jp_v3_mobile_current",
+        default_korean_profile: "missing_default",
+        default_variant: "baseline_current"
+      })
+    ).toMatchObject({
+      koreanProfile: "ko_v5_det_v5_rec"
+    });
   });
 });
 
@@ -261,12 +367,13 @@ describe("API helpers", () => {
     await expect(
       processPage("page-exp", "paddleocr", {
         modelProfile: "jp_v5_mobile_general",
+        koreanProfile: "ko_v5_current",
         extractionVariant: "table_graph_v1"
       })
     ).resolves.toEqual({ page_type: "vocab_table" });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/api/pages/page-exp/process?model_profile=jp_v5_mobile_general&extraction_variant=table_graph_v1",
+      "http://127.0.0.1:8000/api/pages/page-exp/process?model_profile=jp_v5_mobile_general&korean_profile=ko_v5_current&extraction_variant=table_graph_v1",
       { method: "POST" }
     );
   });

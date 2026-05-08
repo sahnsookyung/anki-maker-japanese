@@ -378,9 +378,29 @@ def find_succeeded_run_by_cache_key(
         ).fetchall()
     for row in rows:
         run = _ocr_run_from_row(row)
-        if run.provider_config.get("cache_key") == cache_key:
+        if run.provider_config.get("cache_key") == cache_key and _can_seed_full_page_ocr_cache(run):
             return run
     return None
+
+
+def _can_seed_full_page_ocr_cache(run: OcrRun) -> bool:
+    if run.provider_config.get("full_page_cache_write") is False:
+        return False
+    variant = str(run.provider_config.get("extraction_variant") or "")
+    recovery_variants = {
+        "ko_crop_confirm_v1",
+        "ko_region_columns_v1",
+        "ko_consensus_v1",
+        "mcq_source_rebuild_v1",
+        "mcq_choice_band_ocr_v1",
+        "accuracy_recovery_v1",
+        "jp_region_columns_v1",
+        "ko_residual_glyph_v1",
+        "mcq_prompt_line_ocr_v1",
+        "mcq_choice_glyph_v1",
+        "accuracy_recovery_v2",
+    }
+    return variant not in recovery_variants
 
 
 def get_active_document_parse(page_id: str) -> DocumentParseResult | None:

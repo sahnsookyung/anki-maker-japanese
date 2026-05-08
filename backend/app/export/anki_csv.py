@@ -84,10 +84,7 @@ def vocab_notes_to_csv(cards: list[CardCandidate]) -> str:
     output.write("\n".join(VOCAB_FILE_HEADERS))
     output.write("\n")
     writer = csv.writer(output, lineterminator="\n")
-    for card in cards:
-        row = vocab_note_row(card)
-        if row:
-            writer.writerow(row)
+    writer.writerows(vocab_note_rows(cards))
     return output.getvalue()
 
 
@@ -106,11 +103,12 @@ def write_export_csvs(export_dir: Path, export_id: str, cards: list[CardCandidat
     if vocab_cards:
         filename = f"{export_id}_vocab_notes.csv"
         path = export_dir / filename
-        path.write_text(vocab_notes_to_csv(vocab_cards), encoding="utf-8")
-        row_count = len(vocab_cards)
+        vocab_rows = vocab_note_rows(vocab_cards)
+        path.write_text(_vocab_rows_to_csv(vocab_rows), encoding="utf-8")
+        row_count = len(vocab_rows)
         files.append(_file_payload("vocab", filename, path, row_count))
         note_count += row_count
-        generated_card_count += sum(vocab_generated_card_count(card) for card in vocab_cards)
+        generated_card_count += sum(_row_study_direction_count(row) for row in vocab_rows)
 
     if mcq_cards:
         filename = f"{export_id}_mcq_cards.csv"
@@ -148,13 +146,13 @@ def vocab_note_row(card: CardCandidate) -> list[str] | None:
     if not (surface and reading and meaning and has_vocab_card):
         return None
     return [
-        vocab_key(surface, reading, meaning),
+        vocab_key(surface, reading),
         clean_csv_field(surface),
         clean_csv_field(reading),
         clean_csv_field(meaning),
-        "1",
-        "",
-        "",
+        _study_field(source, "study_writing"),
+        _study_field(source, "study_reading"),
+        _study_field(source, "study_meaning"),
         clean_csv_field(card.page_id),
         compact_bbox(card.source_bbox or source.get("bbox")),
         f"{card.confidence:.3f}",
@@ -163,8 +161,31 @@ def vocab_note_row(card: CardCandidate) -> list[str] | None:
     ]
 
 
-def vocab_key(surface: str, reading: str, meaning_ko: str) -> str:
-    normalized = "|".join(_normalize_key_part(part) for part in (surface, reading, meaning_ko))
+def vocab_note_rows(cards: list[CardCandidate]) -> list[list[str]]:
+    selected: dict[str, tuple[list[str], tuple[float, float, float]]] = {}
+    for card in cards:
+        row = vocab_note_row(card)
+        if not row:
+            continue
+        key = row[0]
+        score = _vocab_note_score(card, row)
+        current = selected.get(key)
+        if current is None:
+            selected[key] = (row, score)
+            continue
+        current_row, current_score = current
+        merged_study_fields = ["1" if left or right else "" for left, right in zip(current_row[4:7], row[4:7], strict=True)]
+        if score > current_score:
+            row[4:7] = merged_study_fields
+            selected[key] = (row, score)
+        else:
+            current_row[4:7] = merged_study_fields
+    return [row for row, _score in selected.values()]
+
+
+def vocab_key(surface: str, reading: str, meaning_ko: str = "") -> str:
+    del meaning_ko
+    normalized = "|".join(_normalize_key_part(part) for part in (surface, reading))
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
     return f"vocab_{digest}"
 
@@ -174,7 +195,7 @@ def vocab_generated_card_count(card: CardCandidate) -> int:
 
 
 def study_direction_count(source: dict[str, Any]) -> int:
-    return 1 if any(_study_field(source, field) for field in VOCAB_STUDY_FIELDS) else 0
+    return sum(1 for field in VOCAB_STUDY_FIELDS if _study_field(source, field))
 
 
 def compact_bbox(value: object) -> str:
@@ -197,13 +218,32 @@ def _file_payload(kind: str, filename: str, path: Path, row_count: int) -> dict[
     }
 
 
+def _vocab_rows_to_csv(rows: list[list[str]]) -> str:
+    output = StringIO()
+    output.write("\n".join(VOCAB_FILE_HEADERS))
+    output.write("\n")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerows(rows)
+    return output.getvalue()
+
+
+def _vocab_note_score(card: CardCandidate, row: list[str]) -> tuple[float, float, float]:
+    warning_penalty = float(len(card.warnings))
+    enabled_directions = float(_row_study_direction_count(row))
+    return (-warning_penalty, float(card.confidence), enabled_directions)
+
+
+def _row_study_direction_count(row: list[str]) -> int:
+    return sum(1 for value in row[4:7] if value)
+
+
 def _source_text(source: dict[str, Any], field: str) -> str:
     value = source.get(field)
     return "" if value is None else str(value).strip()
 
 
 def _study_field(source: dict[str, Any], field: str) -> str:
-    value = source.get(field, True)
+    value = source.get(field, field == "study_writing")
     if value is None:
         return ""
     if isinstance(value, bool):

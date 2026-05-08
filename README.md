@@ -135,17 +135,27 @@ The app accepts uploads from the browser. Uploaded pages can be renamed in the U
 
 Approved items export as UTF-8 CSV for Anki text import. Export is CSV-only: the app does not generate TSV, ZIP, `.apkg`, or AnkiConnect pushes.
 
-Vocabulary pages export one semantic `jp_vocab_entry` note row per `(Surface, Reading, MeaningKo)` entry. The recommended Anki setup generates one pronunciation-to-kanji card from each row and keeps the Korean meaning as hidden context on the answer side. The vocab CSV uses:
+Vocabulary pages export one semantic `jp_vocab_entry` note row per `(Surface, Reading)` pair. Duplicate OCR candidates for the same pronunciation-to-kanji pair are collapsed during export, with the best Korean meaning retained as hidden context on the answer side. The vocab CSV uses:
 
 ```csv
 VocabKey,Surface,Reading,MeaningKo,StudyWriting,StudyReading,StudyMeaning,SourcePage,SourceBBox,Confidence,Warnings,tags
 ```
 
-Create a `jp_vocab_entry` note type in Anki with fields matching those column names. `StudyReading` and `StudyMeaning` are compatibility columns and are exported empty for the one-card model. Recommended card template:
+Create a `jp_vocab_entry` note type in Anki with fields matching those column names. `StudyWriting` is enabled by default, so the normal export is one pronunciation-to-kanji card per vocab note. `StudyReading` and `StudyMeaning` can be enabled per note when you intentionally want extra generated cards. Recommended default card template:
 
 ```text
 Kana to Kanji front: {{#StudyWriting}}{{Reading}}{{/StudyWriting}}
 Kana to Kanji back:  {{FrontSide}}<hr id=answer>{{Surface}}<br><details><summary>Meaning</summary>{{MeaningKo}}</details>
+```
+
+Optional templates can use the same conditional-field pattern:
+
+```text
+Kanji to Kana front: {{#StudyReading}}{{Surface}}{{/StudyReading}}
+Kanji to Kana back:  {{FrontSide}}<hr id=answer>{{Reading}}<br><details><summary>Meaning</summary>{{MeaningKo}}</details>
+
+Meaning to Japanese front: {{#StudyMeaning}}{{MeaningKo}}{{/StudyMeaning}}
+Meaning to Japanese back:  {{FrontSide}}<hr id=answer>{{Surface}}<br>{{Reading}}
 ```
 
 Multiple-choice pages keep the current front/back CSV schema:
@@ -176,7 +186,7 @@ uv run pytest -q
 uv run python scripts/evaluate_golden.py
 uv run python scripts/evaluate_golden.py --from-db --json
 uv run python scripts/evaluate_golden.py --from-db --run-id run_... --json
-uv run python scripts/benchmark_ocr_modes.py --include-vl --include-google-vision --json
+uv run python scripts/benchmark_ocr_modes.py --include-vl --include-google-vision --worker-max-rss-mb 14336 --json
 uv run python -m compileall app scripts
 
 cd ../apps/web
@@ -192,14 +202,37 @@ Run OCR mode benchmarks locally when comparing extraction quality or resource us
 ```bash
 cd backend
 uv run python scripts/benchmark_ocr_modes.py --json
-uv run python scripts/benchmark_ocr_modes.py --engine all --vl-limit 1 --worker-max-rss-mb 4096 --json
+uv run python scripts/benchmark_ocr_modes.py --engine all --vl-limit 1 --worker-max-rss-mb 14336 --json
 uv run python scripts/benchmark_ocr_modes.py --profile-matrix --json
-uv run python scripts/benchmark_ocr_modes.py --model-profile jp_v5_mobile_general --extraction-variant baseline_current --json
+uv run python scripts/benchmark_ocr_modes.py --model-profile jp_v5_det_v5_rec --korean-profile ko_v5_current --extraction-variant v5_full_adapted_v1 --json
+uv run python scripts/benchmark_ocr_modes.py --experiment-stage 0 --json
 uv run python scripts/benchmark_ocr_modes.py --experiment-stage 1 --json
 uv run python scripts/benchmark_ocr_modes.py --experiment-stage 2 --json
+uv run python scripts/benchmark_ocr_modes.py --experiment-stage 3 --json
+uv run python scripts/benchmark_ocr_modes.py --experiment-stage 4 --json
 ```
 
 Experimental OCR profiles are intentionally separate from the default workflow. The UI exposes them under “Experimental OCR profile,” and benchmark JSON records the exact profile, extraction variant, runtime/device info, preprocessing, cache status, document-graph metrics, and promotion gates. `--profile-matrix` and staged runs skip heavy server profiles unless `--include-heavy-profiles` is passed. Do not change the production default based only on the four canonical pages; use a holdout set before promoting a newer model.
+
+Accuracy recovery v2 is available only as an experimental benchmark/review variant. It extends `accuracy_recovery_v1` with Japanese region recovery, Korean residual glyph recovery, MCQ prompt-line OCR, and MCQ choice-glyph source-field recovery while leaving the production default, CSV export semantics, and MCQ semantic scoring unchanged. Strict benchmark fields must be backed by live OCR/image evidence; local glossary values and miss-inventory expected values are diagnostics only.
+
+Run the full v2 gate with diagnostics:
+
+```bash
+cd backend
+uv run python scripts/benchmark_ocr_modes.py \
+  --golden ../data/evaluation/golden_pages.example.json \
+  --model-profile jp_v3_det_v3_rec \
+  --korean-profile ko_v5_current \
+  --extraction-variant accuracy_recovery_v2 \
+  --work-dir ../.benchmark-runs/2026-05-08-accuracy-recovery-v2/final-work \
+  --keep-work-dir \
+  --output-json ../.benchmark-runs/2026-05-08-accuracy-recovery-v2/accuracy-recovery-v2-final.json \
+  --dashboard-markdown ../.benchmark-runs/2026-05-08-accuracy-recovery-v2/accuracy-recovery-v2-final-dashboard.md \
+  --residual-diagnostics-dir ../.benchmark-runs/2026-05-08-accuracy-recovery-v2/residual-diagnostics
+```
+
+`--residual-diagnostics-dir` writes diagnostic-only JSON/contact-sheet artifacts after scoring. Extraction code never reads those artifacts, and focused miss inventories never reduce the full golden scoring set.
 
 The Playwright e2e smoke test fails on app-owned browser runtime errors, while ignoring external browser-extension noise such as `Extension context invalidated` from injected `content.js`.
 

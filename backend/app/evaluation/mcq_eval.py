@@ -56,11 +56,15 @@ def evaluate_mcq_page(golden: GoldenPage, process_result: ProcessResult) -> McqE
         item = by_no.get(question.question_no)
         if not item:
             continue
-        sentence_ok = _sentence_matches(str(item.get("sentence", "")), question.sentence)
-        target_ok = normalize_text(str(item.get("target", ""))) == normalize_text(question.target)
-        choices_ok = _choices_match(item.get("choices"), question.choices)
-        answer_ok = normalize_text(str(item.get("correct_answer", ""))) == normalize_text(question.correct_answer)
-        choice_ok = item.get("correct_choice_no") == question.correct_choice_no
+        source_item = _strict_source_fields(item)
+        sentence_ok = _sentence_matches(str(source_item.get("sentence", "")), question.sentence)
+        target_ok = normalize_text(str(source_item.get("target", ""))) == normalize_text(question.target)
+        choices_ok = _choices_match(source_item.get("choices"), question.choices)
+        answer_ok = normalize_text(str(source_item.get("correct_answer", ""))) == normalize_text(question.correct_answer)
+        choice_ok = source_item.get("correct_choice_no") == question.correct_choice_no
+        semantic_target_ok = normalize_text(str(item.get("target", ""))) == normalize_text(question.target)
+        semantic_answer_ok = normalize_text(str(item.get("correct_answer", ""))) == normalize_text(question.correct_answer)
+        semantic_choice_ok = item.get("correct_choice_no") == question.correct_choice_no
         if sentence_ok:
             sentence_matches += 1
         if target_ok:
@@ -71,7 +75,7 @@ def evaluate_mcq_page(golden: GoldenPage, process_result: ProcessResult) -> McqE
             answer_matches += 1
         if choice_ok:
             choice_matches += 1
-        if target_ok and answer_ok and choice_ok:
+        if semantic_target_ok and semantic_answer_ok and semantic_choice_ok:
             matched.add(question.question_id)
         if sentence_ok and target_ok and choices_ok and answer_ok and choice_ok:
             source_matched.add(question.question_id)
@@ -112,6 +116,11 @@ def _question_items_from_cards(cards: list[CardCandidate]) -> list[dict[str, Any
             continue
         by_source.setdefault(card.source_id, card.source)
     return list(by_source.values())
+
+
+def _strict_source_fields(item: dict[str, Any]) -> dict[str, Any]:
+    source_fields = item.get("source_fields")
+    return source_fields if isinstance(source_fields, dict) else item
 
 
 def _sentence_matches(actual: str, expected: str) -> bool:

@@ -218,7 +218,7 @@ def _field_has_ocr_evidence(value: Any, expected_value: Any, live_token_ids: set
     has_bbox = isinstance(bbox, list) and len(bbox) == 4
     if not has_bbox or not _evidence_supports_value(evidence_text, expected_text):
         return False
-    if provenance in {"ocr", "crop_ocr", "google_vision"}:
+    if provenance in {"ocr", "crop_ocr", "region_ocr", "jp_region_ocr", "ko_glyph_ocr", "google_vision"}:
         if not isinstance(token_ids, list) or not token_ids:
             return False
         return all(isinstance(token_id, str) and token_id in live_token_ids for token_id in token_ids)

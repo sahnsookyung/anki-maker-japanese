@@ -429,6 +429,7 @@ def test_benchmark_worker_command_enforces_rss_limit_and_profile_env(monkeypatch
     assert "RSS limit" in completed.stderr
     assert isinstance(captured["env"], dict)
     assert captured["env"]["PADDLE_OCR_TEXT_RECOGNITION_MODEL_NAME"] == "PP-OCRv5_mobile_rec"
+    assert captured["env"]["OCR_RECOVERY_REGION_CACHE_ONLY"] == "true"
 
 
 def test_benchmark_worker_command_enforces_timeout(monkeypatch) -> None:
@@ -640,6 +641,34 @@ def test_crop_ocr_bbox_validation_rejects_unsafe_regions() -> None:
         pass
     else:
         raise AssertionError("oversized crop should be rejected")
+
+
+def test_region_ocr_cache_only_mode_skips_uncached_dispatch(tmp_path, monkeypatch) -> None:
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (100, 80), "white").save(image_path)
+    manager = CropOcrWorkerManager(idle_seconds=999, max_rss_mb=5000, job_timeout_seconds=1)
+    monkeypatch.setenv("OCR_RECOVERY_REGION_CACHE_ONLY", "true")
+    monkeypatch.setattr(crop_worker, "OCR_CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(manager, "_dispatch", lambda _request: (_ for _ in ()).throw(AssertionError("must not dispatch")))
+
+    try:
+        manager.recognize_region(
+            image_path=image_path,
+            page_id="page",
+            region_id="region",
+            field="answer_source",
+            bbox=[5, 5, 60, 25],
+            page_width=100,
+            page_height=80,
+            preprocessing_hash="pre",
+            strategy="mcq_answer_strip",
+            profile_id="jp_v3_det_v3_rec",
+            korean_profile_id="ko_v5_current",
+        )
+    except crop_worker.CropOcrError as exc:
+        assert "cache-only" in str(exc)
+    else:
+        raise AssertionError("uncached region OCR should be skipped in cache-only mode")
 
 
 def test_crop_worker_reuses_offloads_and_reloads(tmp_path, monkeypatch) -> None:

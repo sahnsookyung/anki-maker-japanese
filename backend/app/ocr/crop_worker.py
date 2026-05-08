@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import hashlib
+from importlib import metadata
 import json
 from pathlib import Path
 from queue import Queue
@@ -20,11 +22,13 @@ from PIL import Image, ImageOps
 from app.core.config import (
     BACKEND_DIR,
     CROP_DIR,
+    OCR_CACHE_DIR,
     OCR_CROP_JOB_TIMEOUT_SECONDS,
     OCR_CROP_MAX_SIDE,
     OCR_CROP_MIN_SIDE,
     OCR_CROP_WORKER_IDLE_SECONDS,
     OCR_CROP_WORKER_MAX_RSS_MB,
+    PADDLE_OCR_MAX_SIDE_LEN,
     OCR_PROVIDER,
 )
 from app.extraction.sentence_order import repair_predicate_first_sentence
@@ -43,6 +47,22 @@ class CropOcrMemoryError(CropOcrError):
 @dataclass
 class CropPreview:
     response: FieldOcrPreviewResponse
+
+
+@dataclass
+class RegionOcrResult:
+    page_id: str
+    region_id: str
+    field: str
+    bbox: BBox
+    provider: str
+    text: str
+    confidence: float
+    tokens: list[OcrToken]
+    field_evidence: dict[str, Any]
+    cache: dict[str, Any]
+    resource_metrics: dict[str, Any]
+    warnings: list[str]
 
 
 class CropOcrWorkerManager:
@@ -121,6 +141,107 @@ class CropOcrWorkerManager:
             worker=worker_status,
             warnings=warnings,
         )
+
+    def recognize_region(
+        self,
+        *,
+        image_path: Path,
+        page_id: str,
+        region_id: str,
+        field: str,
+        bbox: BBox,
+        page_width: int,
+        page_height: int,
+        preprocessing_hash: str,
+        strategy: str,
+        profile_id: str,
+        korean_profile_id: str,
+        provider: str | None = None,
+        provenance: str = "region_ocr",
+    ) -> RegionOcrResult:
+        normalized_bbox = normalize_bbox(bbox, page_width, page_height)
+        selected_provider = provider or provider_for_field(field)
+        cache_key = _region_cache_key(
+            image_path=image_path,
+            bbox=normalized_bbox,
+            preprocessing_hash=preprocessing_hash,
+            strategy=strategy,
+            provider=selected_provider,
+            profile_id=profile_id,
+            korean_profile_id=korean_profile_id,
+        )
+        cache_path = _region_cache_path(cache_key)
+        warnings: list[str] = []
+        cached = _read_region_cache(cache_path)
+        if cached is not None:
+            tokens = _cached_region_tokens(cached, page_id)
+            text = str(cached.get("text") or recognized_text(field, tokens))
+            confidence = float(cached.get("confidence") or _mean_confidence(tokens))
+            return RegionOcrResult(
+                page_id=page_id,
+                region_id=region_id,
+                field=field,
+                bbox=normalized_bbox,
+                provider=selected_provider,
+                text=text,
+                confidence=confidence,
+                tokens=tokens,
+                field_evidence=_region_field_evidence(
+                    normalized_bbox,
+                    tokens,
+                    text,
+                    confidence,
+                    selected_provider,
+                    provenance,
+                    cache_key,
+                    strategy,
+                ),
+                cache={"hit": True, "key": cache_key, "path": str(cache_path)},
+                resource_metrics={"worker": self.status().model_dump()},
+                warnings=[str(warning) for warning in cached.get("warnings", [])],
+            )
+        if _region_cache_only_enabled():
+            raise CropOcrError("Region OCR cache miss while recovery cache-only mode is enabled.")
+        crop_path, crop_offset = crop_image(image_path, normalized_bbox, page_id, region_id, field)
+        try:
+            payload = self._dispatch({"image_path": str(crop_path), "page_id": page_id, "provider": selected_provider})
+        finally:
+            crop_path.unlink(missing_ok=True)
+        if not payload.get("ok"):
+            raise CropOcrError(str(payload.get("error") or "Region OCR worker failed."))
+        warnings.extend(str(warning) for warning in payload.get("warnings", []))
+        crop_tokens = [OcrToken(**token) for token in payload.get("tokens", [])]
+        mapped_tokens = [_map_token_to_page(token, page_id, crop_offset) for token in crop_tokens]
+        text = recognized_text(field, mapped_tokens)
+        confidence = _mean_confidence(mapped_tokens)
+        if not text:
+            warnings.append("Region OCR returned no text.")
+        worker_status = self.status().model_dump()
+        result = RegionOcrResult(
+            page_id=page_id,
+            region_id=region_id,
+            field=field,
+            bbox=normalized_bbox,
+            provider=selected_provider,
+            text=text,
+            confidence=confidence,
+            tokens=mapped_tokens,
+            field_evidence=_region_field_evidence(
+                normalized_bbox,
+                mapped_tokens,
+                text,
+                confidence,
+                selected_provider,
+                provenance,
+                cache_key,
+                strategy,
+            ),
+            cache={"hit": False, "key": cache_key, "path": str(cache_path)},
+            resource_metrics={"worker": worker_status},
+            warnings=warnings,
+        )
+        _write_region_cache(cache_path, result)
+        return result
 
     def status(self) -> OcrRuntimeStatus:
         process = self._process
@@ -276,7 +397,7 @@ def crop_image(image_path: Path, bbox: BBox, page_id: str, card_id: str, field: 
 
 def recognized_text(field: str, tokens: list[OcrToken]) -> str:
     ordered = _tokens_in_reading_order(tokens)
-    separator = " " if field == "meaning_ko" else ""
+    separator = " " if field in {"meaning_ko", "korean_region"} else ""
     return separator.join(token.text for token in ordered if token.text).strip()
 
 
@@ -330,6 +451,163 @@ def _map_token_to_page(token: OcrToken, page_id: str, offset: tuple[float, float
             "bbox": [x1 + x_offset, y1 + y_offset, x2 + x_offset, y2 + y_offset],
         }
     )
+
+
+def _region_field_evidence(
+    bbox: BBox,
+    tokens: list[OcrToken],
+    text: str,
+    confidence: float,
+    provider: str,
+    provenance: str,
+    cache_key: str,
+    strategy: str,
+) -> dict[str, Any]:
+    evidence: dict[str, Any] = {
+        "bbox": bbox,
+        "token_ids": [token.id for token in tokens],
+        "text": text,
+        "confidence": confidence,
+        "provenance": provenance,
+        "provider": provider,
+        "cache_key": cache_key,
+        "region_strategy": strategy,
+    }
+    return evidence
+
+
+def _region_cache_path(cache_key: str) -> Path:
+    return OCR_CACHE_DIR / "region_ocr" / f"{cache_key}.json"
+
+
+def _region_cache_key(
+    *,
+    image_path: Path,
+    bbox: BBox,
+    preprocessing_hash: str,
+    strategy: str,
+    provider: str,
+    profile_id: str,
+    korean_profile_id: str,
+) -> str:
+    payload = {
+        "schema_version": 1,
+        "processed_image_sha256": _sha256_file(image_path),
+        "preprocessing_hash": preprocessing_hash,
+        "bbox": [round(float(value), 3) for value in bbox],
+        "strategy": strategy,
+        "provider": provider,
+        "profile_id": profile_id,
+        "korean_profile_id": korean_profile_id,
+        "model_env": _region_model_env(),
+        "package_versions": _package_versions(["paddleocr", "paddlepaddle", "paddlex"]),
+        "ocr_max_side": PADDLE_OCR_MAX_SIDE_LEN,
+    }
+    glyph_fingerprint = _region_glyph_template_fingerprint(strategy)
+    if glyph_fingerprint:
+        payload["glyph_template"] = glyph_fingerprint
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:24]
+
+
+def _region_glyph_template_fingerprint(strategy: str) -> dict[str, str] | None:
+    if "glyph" not in strategy and "template" not in strategy:
+        return None
+    candidates = [
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+        "/System/Library/Fonts/ヒラギノ角ゴシック W4.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    font_path = next((Path(candidate) for candidate in candidates if Path(candidate).exists()), None)
+    return {
+        "schema_version": "1",
+        "scorer": "local_glyph_shape_v1",
+        "font_path": str(font_path) if font_path else "",
+        "font_sha256": (_sha256_file(font_path)[:24] if font_path else ""),
+    }
+
+
+def _region_model_env() -> dict[str, str | None]:
+    keys = [
+        "PADDLE_OCR_TEXT_DETECTION_MODEL_NAME",
+        "PADDLE_OCR_TEXT_RECOGNITION_MODEL_NAME",
+        "PADDLE_OCR_USE_LANGUAGE_PROFILE",
+        "PADDLE_OCR_LANG",
+        "PADDLE_OCR_KOREAN_TEXT_DETECTION_MODEL_NAME",
+        "PADDLE_OCR_KOREAN_TEXT_RECOGNITION_MODEL_NAME",
+        "PADDLE_OCR_KOREAN_USE_LANGUAGE_PROFILE",
+        "PADDLE_OCR_KOREAN_LANG",
+    ]
+    return {key: os.getenv(key) for key in keys}
+
+
+def _region_cache_only_enabled() -> bool:
+    return os.getenv("OCR_RECOVERY_REGION_CACHE_ONLY", "false").lower() in {"1", "true", "yes", "on"}
+
+
+def _package_versions(names: list[str]) -> dict[str, str | None]:
+    versions: dict[str, str | None] = {}
+    for name in names:
+        try:
+            versions[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            versions[name] = None
+    return versions
+
+
+def _sha256_file(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _read_region_cache(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) and payload.get("schema_version") == 1 else None
+
+
+def _write_region_cache(path: Path, result: RegionOcrResult) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "page_id": result.page_id,
+        "region_id": result.region_id,
+        "field": result.field,
+        "bbox": result.bbox,
+        "provider": result.provider,
+        "text": result.text,
+        "confidence": result.confidence,
+        "tokens": [token.model_dump() for token in result.tokens],
+        "warnings": result.warnings,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _cached_region_tokens(payload: dict[str, Any], page_id: str) -> list[OcrToken]:
+    tokens: list[OcrToken] = []
+    for token_payload in payload.get("tokens", []):
+        if not isinstance(token_payload, dict):
+            continue
+        token = OcrToken(**token_payload)
+        tokens.append(
+            token.model_copy(
+                update={
+                    "id": f"region_{uuid4().hex}",
+                    "page_id": page_id,
+                }
+            )
+        )
+    return tokens
 
 
 def _tokens_in_reading_order(tokens: list[OcrToken]) -> list[OcrToken]:

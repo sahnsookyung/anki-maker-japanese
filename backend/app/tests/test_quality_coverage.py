@@ -8,7 +8,7 @@ import pytest
 
 from app.core.script import char_script, classify_script, script_summary
 from app.evaluation.golden import load_golden_pages, meaning_matches
-from app.export.anki_csv import VOCAB_FILE_HEADERS, cards_to_csv, vocab_key, write_csv
+from app.export.anki_csv import VOCAB_FILE_HEADERS, cards_to_csv, vocab_key, write_csv, write_export_csvs
 from app.models.schemas import CardCandidate
 from app.validation.dictionary import DictionaryValidator
 
@@ -129,7 +129,7 @@ def test_vocab_csv_omits_notes_with_no_enabled_study_direction() -> None:
     assert csv_text.splitlines() == VOCAB_FILE_HEADERS
 
 
-def test_vocab_csv_collapses_legacy_enabled_direction_to_one_card() -> None:
+def test_vocab_csv_preserves_enabled_study_direction_fields() -> None:
     card = CardCandidate(
         id="vocab-card",
         page_id="page-1",
@@ -149,9 +149,113 @@ def test_vocab_csv_collapses_legacy_enabled_direction_to_one_card() -> None:
     )
 
     csv_text = cards_to_csv([card])
-    row = csv_text.splitlines()[-1]
+    data_lines = [line for line in csv_text.splitlines() if not line.startswith("#")]
+    [row] = list(csv.reader(StringIO("\n".join(data_lines))))
 
-    assert ",1,,,page-1," in row
+    assert row[4:7] == ["", "1", ""]
+
+
+def test_vocab_csv_deduplicates_notes_by_surface_and_reading() -> None:
+    weaker = CardCandidate(
+        id="vocab-card-weak",
+        page_id="page-1",
+        source_type="vocab_item",
+        source_id="vocab-1",
+        source={
+            "surface": "学校",
+            "reading": "がっこう",
+            "meaning_ko": "학",
+            "study_writing": True,
+            "study_reading": False,
+            "study_meaning": False,
+        },
+        note_type="jp_vocab_entry",
+        front="がっこう",
+        back="学校",
+        confidence=0.62,
+        warnings=["Weak OCR evidence; verify this row manually."],
+    )
+    stronger = CardCandidate(
+        id="vocab-card-strong",
+        page_id="page-2",
+        source_type="vocab_item",
+        source_id="vocab-2",
+        source={
+            "surface": "学校",
+            "reading": "がっこう",
+            "meaning_ko": "학교",
+            "study_writing": False,
+            "study_reading": True,
+            "study_meaning": False,
+        },
+        note_type="jp_vocab_entry",
+        front="学校",
+        back="がっこう",
+        confidence=0.96,
+        warnings=[],
+    )
+
+    csv_text = cards_to_csv([weaker, stronger])
+    data_lines = [line for line in csv_text.splitlines() if not line.startswith("#")]
+    [row] = list(csv.reader(StringIO("\n".join(data_lines))))
+
+    assert vocab_key("学校", "がっこう", "학") == vocab_key("学校", "がっこう", "학교")
+    assert row[:4] == [vocab_key("学校", "がっこう"), "学校", "がっこう", "학교"]
+    assert row[4:7] == ["1", "1", ""]
+
+
+def test_vocab_export_counts_deduplicated_notes_and_generated_cards(tmp_path) -> None:
+    first = CardCandidate(
+        id="vocab-card-first",
+        page_id="page-1",
+        source_type="vocab_item",
+        source_id="vocab-1",
+        source={
+            "surface": "学校",
+            "reading": "がっこう",
+            "meaning_ko": "학교",
+            "study_writing": True,
+            "study_reading": False,
+            "study_meaning": False,
+        },
+        note_type="jp_vocab_entry",
+        front="がっこう",
+        back="学校",
+        confidence=0.94,
+    )
+    duplicate_with_extra_direction = CardCandidate(
+        id="vocab-card-duplicate",
+        page_id="page-2",
+        source_type="vocab_item",
+        source_id="vocab-2",
+        source={
+            "surface": " 学校 ",
+            "reading": "がっこう",
+            "meaning_ko": "학교",
+            "study_writing": False,
+            "study_reading": True,
+            "study_meaning": False,
+        },
+        note_type="jp_vocab_entry",
+        front="学校",
+        back="がっこう",
+        confidence=0.82,
+    )
+
+    files, note_count, generated_card_count = write_export_csvs(
+        tmp_path,
+        "export-test",
+        [first, duplicate_with_extra_direction],
+    )
+    csv_text = (tmp_path / files[0]["filename"]).read_text(encoding="utf-8")
+    data_lines = [line for line in csv_text.splitlines() if not line.startswith("#")]
+    [row] = list(csv.reader(StringIO("\n".join(data_lines))))
+
+    assert files[0]["row_count"] == 1
+    assert note_count == 1
+    assert generated_card_count == 2
+    assert row[:4] == [vocab_key("学校", "がっこう"), "学校", "がっこう", "학교"]
+    assert row[4:7] == ["1", "1", ""]
 
 
 def test_dictionary_validator_handles_missing_invalid_and_unknown_pairs(tmp_path) -> None:

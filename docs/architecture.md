@@ -48,7 +48,7 @@ Why this matters:
 - Review state, warnings, and evidence overlays remain part of the product because benchmark accuracy is not a guarantee for arbitrary new pages.
 - PaddleOCR-VL is optional and can be run as a card-generation engine, but it remains visually separated from the default PaddleOCR path and is scored honestly in benchmarks.
 - OCR-VL document-block preview is separate from OCR-VL processing: previewing blocks does not create, approve, or export cards.
-- Experimental OCR profiles and extraction variants are recorded as run metadata and benchmark diagnostics. They do not change the safe default unless holdout results pass the promotion gates.
+- Experimental OCR profiles and extraction variants are recorded as run metadata and benchmark diagnostics. `accuracy_recovery_v2` adds Japanese region, Korean residual glyph, MCQ prompt-line, and MCQ choice-glyph recovery for benchmark/review inspection only. These variants do not change the safe default unless holdout results pass the promotion gates.
 - The backend caches OCR providers by default for UI responsiveness; benchmark scripts run pages in subprocesses so Paddle memory is released after each page.
 
 ## System Diagram
@@ -151,6 +151,8 @@ Why this matters:
    For vocabulary pages, the pipeline extracts one candidate per surface/reading/Korean meaning row, plus source_bbox and evidence_tokens.
    For MCQ pages, the pipeline extracts question_no, sentence, target, choices, correct_answer, correct_choice_no, answer_source, source_bbox, evidence_tokens, and token_roles.
    Vocab rows are not supplemented from glossary data; benchmark row accuracy only credits rows whose fields are backed by OCR evidence.
+   Experimental recovery variants may add persisted crop/region/glyph OCR tokens before candidate mutation. V2 recovery is ordered after base extraction: v1 Korean recovery, Japanese vocab region recovery, Korean residual glyph recovery, v1 MCQ source rebuild/choice-band recovery, prompt-line recovery, then choice-glyph recovery.
+   Residual diagnostics and focus-miss inventories are written after scoring and are never extraction inputs.
    The card generator turns each extracted item into reviewable CardCandidate rows scoped to the OCR run.
 
 4. Review
@@ -348,7 +350,7 @@ uv run pytest -q
 uv run python scripts/evaluate_golden.py
 uv run python scripts/evaluate_golden.py --from-db --json
 uv run python scripts/benchmark_ocr_modes.py --json
-uv run python scripts/benchmark_ocr_modes.py --engine all --vl-limit 1 --worker-max-rss-mb 4096 --json
+uv run python scripts/benchmark_ocr_modes.py --engine all --vl-limit 1 --worker-max-rss-mb 14336 --json
 uv run python -m compileall app scripts
 
 cd ../apps/web

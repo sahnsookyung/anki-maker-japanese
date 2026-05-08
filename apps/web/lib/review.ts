@@ -423,6 +423,14 @@ export function candidateSubtitle(card: CardCandidate): string {
 
 export function provenanceLabel(value: string): string {
   if (value === "answer_strip") return "Answer key";
+  if (value === "answer_strip_ocr") return "Answer-strip OCR";
+  if (value === "crop_ocr") return "Crop OCR";
+  if (value === "region_ocr") return "Region OCR";
+  if (value === "jp_region_ocr") return "Japanese region OCR";
+  if (value === "ko_glyph_ocr") return "Korean glyph OCR";
+  if (value === "prompt_line_ocr") return "Prompt-line OCR";
+  if (value === "choice_glyph_ocr") return "Choice glyph OCR";
+  if (value === "source_rebuild") return "Source rebuild";
   if (value === "local_glossary") return "Glossary inferred";
   if (value === "manual") return "Manual edit";
   return value.replaceAll("_", " ");
@@ -520,11 +528,17 @@ export function syncVocabCardText(card: CardCandidate, source: Record<string, un
 }
 
 function normalizeVocabStudySource(source: Record<string, unknown>): Record<string, unknown> {
-  return {
+  const studySource = {
     ...source,
-    study_writing: true,
-    study_reading: false,
-    study_meaning: false
+    study_writing: studyDirectionEnabled(source.study_writing, true),
+    study_reading: studyDirectionEnabled(source.study_reading, false),
+    study_meaning: studyDirectionEnabled(source.study_meaning, false)
+  };
+  if (!studySource.study_writing && !studySource.study_reading && !studySource.study_meaning) {
+    studySource.study_writing = true;
+  }
+  return {
+    ...studySource
   };
 }
 
@@ -556,8 +570,8 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#x27;");
 }
 
-export function studyDirectionEnabled(value: unknown): boolean {
-  if (value === undefined) return true;
+export function studyDirectionEnabled(value: unknown, defaultEnabled = true): boolean {
+  if (value === undefined) return defaultEnabled;
   if (value === false || value === null) return false;
   if (typeof value === "number") return value !== 0;
   if (typeof value === "string") return !["", "0", "false", "no"].includes(value.trim().toLowerCase());

@@ -7,6 +7,8 @@ from app.core.config import (
     PADDLE_OCR_LANG,
     PADDLE_OCR_KOREAN_TEXT_DETECTION_MODEL_NAME,
     PADDLE_OCR_KOREAN_TEXT_RECOGNITION_MODEL_NAME,
+    PADDLE_OCR_KOREAN_LANG,
+    PADDLE_OCR_KOREAN_USE_LANGUAGE_PROFILE,
     PADDLE_OCR_MAX_SIDE_LEN,
     PADDLE_OCR_TEXT_DETECTION_MODEL_NAME,
     PADDLE_OCR_TEXT_RECOGNITION_MODEL_NAME,
@@ -29,6 +31,7 @@ class PaddleOcrProvider:
         text_detection_model_name: str = PADDLE_OCR_TEXT_DETECTION_MODEL_NAME,
         text_recognition_model_name: str = PADDLE_OCR_TEXT_RECOGNITION_MODEL_NAME,
         use_language_profile: bool = PADDLE_OCR_USE_LANGUAGE_PROFILE,
+        lang: str = PADDLE_OCR_LANG,
     ) -> None:
         self.name = name
         os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
@@ -47,8 +50,8 @@ class PaddleOcrProvider:
             "use_textline_orientation": PADDLE_OCR_USE_TEXTLINE_ORIENTATION,
             "text_det_limit_side_len": PADDLE_OCR_MAX_SIDE_LEN,
         }
-        if use_language_profile and PADDLE_OCR_LANG:
-            init_kwargs["lang"] = PADDLE_OCR_LANG
+        if use_language_profile and lang:
+            init_kwargs["lang"] = lang
         else:
             init_kwargs["text_detection_model_name"] = text_detection_model_name
             init_kwargs["text_recognition_model_name"] = text_recognition_model_name
@@ -119,5 +122,6 @@ class PaddleKoreanOcrProvider(PaddleOcrProvider):
             name="paddleocr_korean",
             text_detection_model_name=PADDLE_OCR_KOREAN_TEXT_DETECTION_MODEL_NAME,
             text_recognition_model_name=PADDLE_OCR_KOREAN_TEXT_RECOGNITION_MODEL_NAME,
-            use_language_profile=False,
+            use_language_profile=PADDLE_OCR_KOREAN_USE_LANGUAGE_PROFILE,
+            lang=PADDLE_OCR_KOREAN_LANG,
         )

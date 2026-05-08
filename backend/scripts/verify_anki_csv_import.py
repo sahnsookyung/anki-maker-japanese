@@ -153,6 +153,16 @@ def _ensure_vocab_model(collection) -> int:
             "{{#StudyWriting}}{{Reading}}{{/StudyWriting}}",
             "{{FrontSide}}<hr id=answer>{{Surface}}<br><details><summary>Meaning</summary>{{MeaningKo}}</details>",
         ),
+        (
+            "Kanji to Kana",
+            "{{#StudyReading}}{{Surface}}{{/StudyReading}}",
+            "{{FrontSide}}<hr id=answer>{{Reading}}<br><details><summary>Meaning</summary>{{MeaningKo}}</details>",
+        ),
+        (
+            "Meaning to Japanese",
+            "{{#StudyMeaning}}{{MeaningKo}}{{/StudyMeaning}}",
+            "{{FrontSide}}<hr id=answer>{{Surface}}<br>{{Reading}}",
+        ),
     ]
     for name, question, answer in templates:
         template = collection.models.new_template(name)

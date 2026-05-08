@@ -311,6 +311,10 @@ describe("StudyWorkbench evidence helpers", () => {
     expect(candidateSubtitle(question)).toBe("jp_spelling_mcq_recall · OCR 92%");
     expect(provenanceLabel("answer_strip")).toBe("Answer key");
     expect(provenanceLabel("local_glossary")).toBe("Glossary inferred");
+    expect(provenanceLabel("jp_region_ocr")).toBe("Japanese region OCR");
+    expect(provenanceLabel("ko_glyph_ocr")).toBe("Korean glyph OCR");
+    expect(provenanceLabel("prompt_line_ocr")).toBe("Prompt-line OCR");
+    expect(provenanceLabel("choice_glyph_ocr")).toBe("Choice glyph OCR");
     expect(provenanceLabel("manual")).toBe("Manual edit");
     expect(provenanceLabel("model_inferred")).toBe("model inferred");
     expect(textValue(true)).toBe("true");
@@ -491,6 +495,11 @@ describe("StudyWorkbench evidence helpers", () => {
     expect(applyVocabStudyToggle(entryCard, "study_meaning", false).source).toMatchObject({
       study_writing: true,
       study_reading: false,
+      study_meaning: false
+    });
+    expect(applyVocabStudyToggle(entryCard, "study_reading", true).source).toMatchObject({
+      study_writing: true,
+      study_reading: true,
       study_meaning: false
     });
     expect(

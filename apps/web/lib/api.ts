@@ -120,10 +120,38 @@ export type OcrExtractionVariant = {
 
 export type OcrProfilePayload = {
   profiles: OcrModelProfile[];
+  korean_profiles?: OcrModelProfile[];
   variants: OcrExtractionVariant[];
   default_profile: string;
+  default_korean_profile?: string;
   default_variant: string;
 };
+
+export type ExperimentalOcrSelection = {
+  modelProfile: string;
+  koreanProfile: string;
+  extractionVariant: string;
+};
+
+export function preferredExperimentalOcrSelection(payload: OcrProfilePayload): ExperimentalOcrSelection {
+  const profileIds = ["jp_v5_det_v5_rec", "jp_v5_mobile_general", "jp_v3_det_v5_rec", payload.default_profile];
+  const modelProfile =
+    profileIds.find((profileId) =>
+      payload.profiles.some((profile) => profile.id === profileId && profile.creates_candidates !== false)
+    ) ??
+    payload.profiles.find((profile) => profile.creates_candidates !== false)?.id ??
+    payload.default_profile;
+  const variantIds = ["accuracy_recovery_v1", "v5_full_adapted_v1", payload.default_variant];
+  const extractionVariant = variantIds.find((variantId) => payload.variants.some((variant) => variant.id === variantId)) ?? payload.default_variant;
+  const koreanProfiles = payload.korean_profiles ?? [];
+  const koreanProfile =
+    koreanProfiles.find((profile) => profile.id === payload.default_korean_profile)?.id ??
+    koreanProfiles.find((profile) => profile.id === "ko_v5_current")?.id ??
+    koreanProfiles[0]?.id ??
+    payload.default_korean_profile ??
+    "ko_v5_current";
+  return { modelProfile, koreanProfile, extractionVariant };
+}
 
 export type OcrRun = {
   id: string;
@@ -237,6 +265,7 @@ export type ProcessPageOptions = {
   busyRetryAttempts?: number;
   busyRetryDelayMs?: number;
   modelProfile?: string;
+  koreanProfile?: string;
   extractionVariant?: string;
 };
 
@@ -248,6 +277,7 @@ export async function processPage(
   const params = new URLSearchParams();
   if (engine !== "paddleocr") params.set("engine", engine);
   if (options.modelProfile) params.set("model_profile", options.modelProfile);
+  if (options.koreanProfile) params.set("korean_profile", options.koreanProfile);
   if (options.extractionVariant) params.set("extraction_variant", options.extractionVariant);
   const engineQuery = params.toString() ? `?${params}` : "";
   const retryAttempts = options.busyRetryAttempts ?? 240;
@@ -315,6 +345,14 @@ export async function updateCard(card: CardCandidate): Promise<CardCandidate> {
 
 export async function previewFieldOcr(cardId: string, field: string, bbox: number[]): Promise<FieldOcrPreview> {
   return requestJson<FieldOcrPreview>(`/api/cards/${cardId}/field-ocr/preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ field, bbox })
+  });
+}
+
+export async function applyFieldOcr(cardId: string, field: string, bbox: number[]): Promise<{ card: CardCandidate; tokens: OcrToken[] }> {
+  return requestJson<{ card: CardCandidate; tokens: OcrToken[] }>(`/api/cards/${cardId}/field-ocr/apply`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ field, bbox })

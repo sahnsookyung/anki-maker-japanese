@@ -38,6 +38,73 @@ def parse_answer_strip_text(text: str) -> dict[int, int]:
     return spaced_pairs
 
 
+def parse_answer_strip_text_v5(text: str, existing: dict[int, int] | None = None) -> dict[int, int]:
+    existing = existing or {}
+    recovered = _compact_circled_answer_pairs(text)
+    if not recovered:
+        return existing
+    merged = dict(existing)
+    for question, answer in recovered.items():
+        merged.setdefault(question, answer)
+    return merged if len(merged) > len(existing) else existing
+
+
+def parse_answer_strip_v5(tokens: list[OcrToken], image_height: int | None, existing: dict[int, int] | None = None) -> dict[int, int]:
+    if image_height:
+        bottom = [token for token in tokens if token.bbox[1] >= image_height * 0.78]
+    else:
+        bottom = tokens
+    bottom_text = " ".join(token.text for token in sorted(bottom, key=lambda t: (t.bbox[1], t.bbox[0])))
+    all_text = " ".join(token.text for token in sorted(tokens, key=lambda t: (t.bbox[1], t.bbox[0])))
+    recovered = parse_answer_strip_text_v5(bottom_text, existing)
+    return parse_answer_strip_text_v5(all_text, recovered)
+
+
+def _compact_circled_answer_pairs(text: str) -> dict[int, int]:
+    pairs: list[tuple[int, int]] = []
+    index = 0
+    while index < len(text):
+        if text[index] not in "0123456789":
+            index += 1
+            continue
+        end = index + 1
+        while end < len(text) and text[end] in "0123456789":
+            end += 1
+        if end >= len(text) or text[end] not in _CIRCLED:
+            index = end
+            continue
+        digits = text[index:end]
+        answer = _CIRCLED[text[end]]
+        question = _best_question_prefix(digits, answer)
+        if question is not None:
+            pairs.append((question, answer))
+        index = end + 1
+    if not pairs:
+        return {}
+    consecutive = _longest_consecutive_run(pairs)
+    if not consecutive:
+        return dict(sorted(pairs))
+    return _merge_non_conflicting_pairs(consecutive, pairs)
+
+
+def _merge_non_conflicting_pairs(base: dict[int, int], pairs: list[tuple[int, int]]) -> dict[int, int]:
+    merged = dict(base)
+    for question, answer in pairs:
+        if question not in merged and 1 <= answer <= 4:
+            merged[question] = answer
+    return dict(sorted(merged.items()))
+
+
+def _best_question_prefix(digits: str, answer: int) -> int | None:
+    if not digits:
+        return None
+    candidates = [int(digits[start:]) for start in range(len(digits)) if digits[start:].isdigit()]
+    valid = [candidate for candidate in candidates if 1 <= candidate <= 20 and 1 <= answer <= 4]
+    if not valid:
+        return None
+    return min(valid, key=lambda candidate: (candidate < 10 and len(digits) > 1, candidate))
+
+
 def _compact_answer_pairs(text: str, spaced_pairs: dict[int, int] | None = None) -> dict[int, int]:
     digit_parts = [part for part in text.split() if part.isdigit()]
     if not digit_parts:

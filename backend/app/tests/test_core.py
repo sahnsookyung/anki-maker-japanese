@@ -14,7 +14,7 @@ from app.core.script import classify_script
 from app.api import routes
 from app.db import database
 from app.extraction import pipeline
-from app.extraction.answer_strip import parse_answer_strip_text
+from app.extraction.answer_strip import parse_answer_strip_text, parse_answer_strip_text_v5, parse_answer_strip_v5
 from app.extraction.cards import mcq_cards, vocab_cards
 from app.extraction.mcq import extract_mcq_items
 from app.extraction.sentence_order import repair_predicate_first_sentence
@@ -64,6 +64,50 @@ def test_answer_strip_parser() -> None:
         9: 2,
         10: 4,
     }
+    assert parse_answer_strip_text_v5("1①2①3④4④5①6②7③8④9④ 10④") == {
+        1: 1,
+        2: 1,
+        3: 4,
+        4: 4,
+        5: 1,
+        6: 2,
+        7: 3,
+        8: 4,
+        9: 4,
+        10: 4,
+    }
+    assert parse_answer_strip_text_v5("1②203② 4② 5③ 6③ 7③809② 10④") == {
+        1: 2,
+        3: 2,
+        4: 2,
+        5: 3,
+        6: 3,
+        7: 3,
+        9: 2,
+        10: 4,
+    }
+    assert parse_answer_strip_text_v5("7③8④9④10④ 2① 5① 62", existing={6: 2}) == {
+        2: 1,
+        5: 1,
+        6: 2,
+        7: 3,
+        8: 4,
+        9: 4,
+        10: 4,
+    }
+    assert parse_answer_strip_text_v5("7④8①", existing={7: 3}) == {
+        7: 3,
+        8: 1,
+    }
+
+
+def test_v5_answer_strip_merges_bottom_and_all_page_recovery() -> None:
+    tokens = [
+        _token("top-9", "9④10④", 10, 200, "mixed"),
+        _token("bottom-7", "7③8④", 10, 850, "mixed"),
+    ]
+
+    assert parse_answer_strip_v5(tokens, image_height=1000) == {7: 3, 8: 4, 9: 4, 10: 4}
 
 
 def test_mcq_extraction_keeps_printed_question_numbers_when_previous_blocks_are_absent() -> None:
@@ -85,6 +129,64 @@ def test_mcq_extraction_keeps_printed_question_numbers_when_previous_blocks_are_
     items = extract_mcq_items(tokens, {5: 1, 8: 4}, "spelling_mcq")
 
     assert [item["question_no"] for item in items] == [5, 8]
+
+
+def test_mcq_answer_strip_choice_takes_precedence_over_unmatched_glossary_answer() -> None:
+    tokens = [
+        _token("q1-no", "1", 10, 100, "number"),
+        _token("q1-sentence", "会社は", 40, 100, "mixed"),
+        _token("q1-reading-fragment", "かいし", 110, 100, "hiragana"),
+        _token("q1-c1", "1とようび", 40, 130, "mixed"),
+        _token("q1-c2", "2どようび", 140, 130, "mixed"),
+        _token("q1-c3", "3かようび", 240, 130, "mixed"),
+        _token("q1-c4", "4がようび", 340, 130, "mixed"),
+    ]
+
+    [item] = extract_mcq_items(tokens, {1: 2}, "reading_mcq")
+
+    assert item["target"] == "会社"
+    assert item["correct_choice_no"] == 2
+    assert item["correct_answer"] == "どようび"
+    assert item["answer_source"] == "answer_strip"
+
+
+def test_mcq_source_fields_require_answer_strip_backed_answer() -> None:
+    tokens = [
+        _token("q1-no", "1", 10, 100, "number"),
+        _token("q1-sentence", "会社は", 40, 100, "mixed"),
+        _token("q1-reading-fragment", "かいし", 110, 100, "hiragana"),
+        _token("q1-c1", "1とようび", 40, 130, "mixed"),
+        _token("q1-c2", "2どようび", 140, 130, "mixed"),
+        _token("q1-c3", "3かようび", 240, 130, "mixed"),
+        _token("q1-c4", "4がようび", 340, 130, "mixed"),
+    ]
+
+    [answer_strip_item] = extract_mcq_items(tokens, {1: 2}, "reading_mcq", extraction_variant="mcq_source_rebuild_v1")
+    [semantic_only_item] = extract_mcq_items(tokens, {}, "reading_mcq", extraction_variant="mcq_source_rebuild_v1")
+
+    assert answer_strip_item["source_fields"]["correct_choice_no"] == 2
+    assert answer_strip_item["source_fields"]["correct_answer"] == "どようび"
+    assert answer_strip_item["semantic_fields"]["correct_answer"] == "どようび"
+    assert "source_fields" not in semantic_only_item
+    assert semantic_only_item["semantic_fields"]["correct_answer"] == "かいしゃ"
+
+
+def test_mcq_spelling_keeps_glossary_answer_text_when_answer_strip_choice_matches() -> None:
+    tokens = [
+        _token("q1-no", "1", 10, 100, "number"),
+        _token("q1-sentence", "どようびは休みです。", 40, 100, "hiragana"),
+        _token("q1-c1", "1火よう日", 40, 130, "mixed"),
+        _token("q1-c2", "2土よう目", 140, 130, "mixed"),
+        _token("q1-c3", "3木よう日", 240, 130, "mixed"),
+        _token("q1-c4", "4金よう日", 340, 130, "mixed"),
+    ]
+
+    [item] = extract_mcq_items(tokens, {1: 2}, "spelling_mcq")
+
+    assert item["target"] == "どようび"
+    assert item["correct_choice_no"] == 2
+    assert item["correct_answer"] == "土よう日"
+    assert item["answer_source"] == "answer_strip"
 
 
 def test_mcq_extraction_accepts_questions_above_ten() -> None:
@@ -167,6 +269,47 @@ def test_mcq_extraction_keeps_number_prefixed_question_sentences() -> None:
     assert items[1]["field_evidence"]["sentence"]["bbox"]
     assert items[1]["field_evidence"]["choice_2"]["text"] == "新しい駅"
     assert items[1]["field_evidence"]["correct_answer"]["text"] == "新しい"
+
+
+def test_mcq_question_number_parser_ignores_mixed_circled_digit_noise() -> None:
+    tokens = [
+        _token("noise", "1②203②", 10, 80, "number"),
+        _token("q1-sentence", "1そのほんはうえのたなにあるよ。", 10, 100, "mixed"),
+        _token("q1-c1", "1上", 30, 130, "mixed"),
+        _token("q1-c2", "2下", 120, 130, "mixed"),
+        _token("q1-c3", "3止", 210, 130, "mixed"),
+        _token("q1-c4", "4午", 300, 130, "mixed"),
+    ]
+
+    [item] = extract_mcq_items(tokens, {1: 1}, "spelling_mcq")
+
+    assert item["question_no"] == 1
+    assert item["correct_answer"] == "上"
+
+
+def test_v5_mcq_page_type_recovery_uses_spelling_header() -> None:
+    tokens = [
+        _token("header-1", "もんだい2", 10, 10, "mixed"),
+        _token("header-2", "のことばはどうかきますか。1・2・3・4からいちばん", 80, 10, "mixed"),
+        _token("header-3", "いいものをひとつえらんでください。", 10, 40, "hiragana"),
+    ]
+
+    page_type, confidence = pipeline._recover_v5_mcq_page_type(tokens, "reading_mcq", 0.72)
+
+    assert page_type == "spelling_mcq"
+    assert confidence == pytest.approx(0.78)
+
+
+def test_v5_mcq_page_type_recovery_keeps_hiragana_answer_header_reading() -> None:
+    tokens = [
+        _token("header-1", "もんだい1", 10, 10, "mixed"),
+        _token("header-2", "のことばはひらがなでどうかきますか。1・2・3・4から", 80, 10, "mixed"),
+    ]
+
+    page_type, confidence = pipeline._recover_v5_mcq_page_type(tokens, "spelling_mcq", 0.72)
+
+    assert page_type == "reading_mcq"
+    assert confidence == pytest.approx(0.78)
 
 
 def test_mcq_sentence_pass_excludes_choices_and_bleedthrough_noise() -> None:
@@ -769,13 +912,13 @@ def test_export_csv_route_filters_and_writes_anki_csv(tmp_path, monkeypatch) -> 
     assert response.status_code == 200
     payload = response.json()
     assert payload["note_count"] == 1
-    assert payload["estimated_generated_card_count"] == 1
+    assert payload["estimated_generated_card_count"] == 2
     assert payload["files"][0]["kind"] == "vocab"
     assert payload["files"][0]["download_url"].endswith(".csv")
     csv_text = (tmp_path / "exports" / payload["files"][0]["filename"]).read_text(encoding="utf-8")
     assert "#notetype:jp_vocab_entry" in csv_text
     assert "学校" in csv_text
-    assert ",1,,," in csv_text
+    assert ",1,1,," in csv_text
     assert "危険" not in csv_text
     assert "先生" not in csv_text
 
@@ -1136,6 +1279,7 @@ def test_process_page_accepts_explicit_ocr_engine(tmp_path, monkeypatch) -> None
         captured["engine"] = engine
         captured["max_rss_mb"] = kwargs["max_rss_mb"]
         captured["model_profile"] = kwargs.get("model_profile")
+        captured["korean_profile"] = kwargs.get("korean_profile")
         captured["extraction_variant"] = kwargs.get("extraction_variant")
         return ProcessResult(page=page, tokens=[], cards=[], script_summary={}, answer_map={})
 
@@ -1157,6 +1301,7 @@ def test_process_page_accepts_explicit_ocr_engine(tmp_path, monkeypatch) -> None
         "engine": "paddleocr_vl",
         "max_rss_mb": routes.OCR_VL_PAGE_WORKER_MAX_RSS_MB,
         "model_profile": "jp_v3_mobile_current",
+        "korean_profile": "ko_v5_current",
         "extraction_variant": "baseline_current",
         "runtime_blocking": False,
     }
@@ -1196,6 +1341,7 @@ def test_process_page_routes_experimental_profiles_through_worker(tmp_path, monk
     assert response.status_code == 200
     assert captured["engine"] == "paddleocr"
     assert captured["model_profile"] == "jp_v5_mobile_general"
+    assert captured["korean_profile"] == "ko_v5_current"
     assert captured["extraction_variant"] == "table_graph_v1"
     assert captured["env_overrides"]["PADDLE_OCR_TEXT_RECOGNITION_MODEL_NAME"] == "PP-OCRv5_mobile_rec"
 
@@ -1237,7 +1383,22 @@ def test_process_page_routes_baseline_through_worker_when_runtime_config_drifted
     assert response.status_code == 200
     assert captured["engine"] == "paddleocr"
     assert captured["model_profile"] == "jp_v3_mobile_current"
+    assert captured["korean_profile"] == "ko_v5_current"
     assert captured["env_overrides"]["PADDLE_OCR_TEXT_RECOGNITION_MODEL_NAME"] == "japan_PP-OCRv3_mobile_rec"
+
+
+def test_profile_runtime_match_includes_korean_language_profile_flags(monkeypatch) -> None:
+    monkeypatch.setattr(routes.runtime_config, "PADDLE_OCR_USE_LANGUAGE_PROFILE", False)
+    monkeypatch.setattr(routes.runtime_config, "PADDLE_OCR_LANG", "")
+    monkeypatch.setattr(routes.runtime_config, "PADDLE_OCR_TEXT_DETECTION_MODEL_NAME", "PP-OCRv3_mobile_det")
+    monkeypatch.setattr(routes.runtime_config, "PADDLE_OCR_TEXT_RECOGNITION_MODEL_NAME", "japan_PP-OCRv3_mobile_rec")
+    monkeypatch.setattr(routes.runtime_config, "PADDLE_OCR_KOREAN_TEXT_DETECTION_MODEL_NAME", "PP-OCRv5_mobile_det")
+    monkeypatch.setattr(routes.runtime_config, "PADDLE_OCR_KOREAN_TEXT_RECOGNITION_MODEL_NAME", "korean_PP-OCRv5_mobile_rec")
+    monkeypatch.setattr(routes.runtime_config, "PADDLE_OCR_KOREAN_USE_LANGUAGE_PROFILE", False)
+    monkeypatch.setattr(routes.runtime_config, "PADDLE_OCR_KOREAN_LANG", "")
+
+    assert routes._profile_matches_active_runtime_config("jp_v3_mobile_current", "ko_v5_current") is True
+    assert routes._profile_matches_active_runtime_config("jp_v3_mobile_current", "ko_lang_auto") is False
 
 
 def test_ocr_profiles_endpoint_lists_default_and_experimental_profiles() -> None:
@@ -1250,9 +1411,15 @@ def test_ocr_profiles_endpoint_lists_default_and_experimental_profiles() -> None
     profile_ids = {profile["id"] for profile in payload["profiles"]}
     variant_ids = {variant["id"] for variant in payload["variants"]}
     assert payload["default_profile"] == "jp_v3_mobile_current"
+    assert payload["default_korean_profile"] == "ko_v5_current"
     assert payload["default_variant"] == "baseline_current"
-    assert {"jp_v3_mobile_current", "jp_v5_mobile_general", "jp_v5_server_general", "jp_lang_auto"}.issubset(profile_ids)
-    assert {"baseline_current", "table_graph_v1", "provider_agreement_v1"}.issubset(variant_ids)
+    assert {"jp_v3_mobile_current", "jp_v3_det_v5_rec", "jp_v5_det_v5_rec", "jp_v5_server_general", "jp_lang_auto"}.issubset(profile_ids)
+    assert {profile["id"] for profile in payload["korean_profiles"]} == {
+        "ko_v5_current",
+        "ko_v5_det_v5_rec",
+        "ko_lang_auto",
+    }
+    assert {"baseline_current", "v5_full_adapted_v1", "provider_agreement_v1"}.issubset(variant_ids)
 
 
 def test_document_parse_route_uses_bounded_worker(tmp_path, monkeypatch) -> None:
@@ -1893,6 +2060,80 @@ def test_field_ocr_preview_does_not_mutate_card(tmp_path, monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json()["suggested_source"] == {"target": "うえ"}
     assert database.get_card("card-field").source == original.source
+
+
+def test_field_ocr_apply_persists_preview_tokens_and_card_source(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "field-apply.db")
+    image_path = tmp_path / "page.png"
+    from PIL import Image
+
+    Image.new("RGB", (120, 80), "white").save(image_path)
+    database.init_db()
+    page = Page(
+        id="page-field",
+        original_image_path=str(image_path),
+        display_name="Field page",
+        page_type="reading_mcq",
+        page_type_confidence=0.9,
+        image_width=120,
+        image_height=80,
+        warnings=[],
+        created_at="2026-04-28T00:00:00+00:00",
+    )
+    database.upsert_page(page)
+    run = database.start_ocr_run("page-field", "paddleocr")
+    database.complete_ocr_run(run.id, warnings=[], metrics={})
+    database.upsert_page(page.model_copy(update={"active_ocr_run_id": run.id}))
+    original = CardCandidate(
+        id="card-field",
+        page_id="page-field",
+        run_id=run.id,
+        source_type="question_item",
+        source_id="q-field",
+        source={"target": "上", "field_evidence": {}},
+        note_type="jp_reading_mcq_recall",
+        front="front",
+        back="back",
+        confidence=0.9,
+        review_state="green",
+        warnings=[],
+    )
+    database.replace_cards("page-field", [original], run.id)
+
+    class FakeWorker:
+        def preview(self, **kwargs):
+            token = OcrToken(
+                id="crop-token",
+                page_id=kwargs["page_id"],
+                text="うえ",
+                bbox=[5, 5, 80, 30],
+                confidence=0.99,
+                script_class="hiragana",
+                source="paddleocr",
+            )
+            return FieldOcrPreviewResponse(
+                card_id=kwargs["card_id"],
+                page_id=kwargs["page_id"],
+                field=kwargs["field"],
+                bbox=kwargs["bbox"],
+                provider="paddle",
+                text="うえ",
+                confidence=0.99,
+                tokens=[token],
+                suggested_source={"target": "うえ"},
+                field_evidence={"bbox": kwargs["bbox"], "text": "うえ", "token_ids": [token.id], "provenance": "crop_ocr"},
+                worker={"state": "running"},
+            )
+
+    monkeypatch.setattr(routes, "crop_ocr_worker", FakeWorker())
+    client = TestClient(app)
+
+    response = client.post("/api/cards/card-field/field-ocr/apply", json={"field": "target", "bbox": [5, 5, 80, 30]})
+
+    assert response.status_code == 200
+    assert response.json()["card"]["source"]["target"] == "うえ"
+    assert response.json()["card"]["source"]["field_evidence"]["target"]["token_ids"] == ["crop-token"]
+    assert [token.id for token in database.get_tokens("page-field", run.id)] == ["crop-token"]
 
 
 def _card(card_id: str, *, status: str, review_state: str) -> CardCandidate:
