@@ -138,10 +138,10 @@ Approved items export as UTF-8 CSV for Anki text import. Export is CSV-only: the
 Vocabulary pages export one semantic `jp_vocab_entry` note row per `(Surface, Reading)` pair. Duplicate OCR candidates for the same pronunciation-to-kanji pair are collapsed during export, with the best Korean meaning retained as hidden context on the answer side. The vocab CSV uses:
 
 ```csv
-VocabKey,Surface,Reading,MeaningKo,StudyWriting,StudyReading,StudyMeaning,SourcePage,SourceBBox,Confidence,Warnings,tags
+VocabKey,Surface,Reading,MeaningKo,StudyWriting,StudyReading,StudyMeaning,StudyJapaneseToKorean,SourcePage,SourceBBox,Confidence,Warnings,tags
 ```
 
-Create a `jp_vocab_entry` note type in Anki with fields matching those column names. `StudyWriting` is enabled by default, so the normal export is one pronunciation-to-kanji card per vocab note. `StudyReading` and `StudyMeaning` can be enabled per note when you intentionally want extra generated cards. Recommended default card template:
+Create a `jp_vocab_entry` note type in Anki with fields matching those column names. `StudyWriting` is enabled by default, so the normal export is one pronunciation-to-kanji card per vocab note. `StudyReading`, `StudyMeaning`, and `StudyJapaneseToKorean` can be enabled per note when you intentionally want extra generated cards. Recommended default card template:
 
 ```text
 Kana to Kanji front: {{#StudyWriting}}{{Reading}}{{/StudyWriting}}
@@ -156,6 +156,9 @@ Kanji to Kana back:  {{FrontSide}}<hr id=answer>{{Reading}}<br><details><summary
 
 Meaning to Japanese front: {{#StudyMeaning}}{{MeaningKo}}{{/StudyMeaning}}
 Meaning to Japanese back:  {{FrontSide}}<hr id=answer>{{Surface}}<br>{{Reading}}
+
+Japanese to Korean front: {{#StudyJapaneseToKorean}}{{Surface}}{{/StudyJapaneseToKorean}}
+Japanese to Korean back:  {{FrontSide}}<hr id=answer>{{MeaningKo}}
 ```
 
 Multiple-choice pages keep the current front/back CSV schema:
@@ -166,7 +169,7 @@ notetype,front,back,source_page,source_bbox,confidence,tags
 
 Only approved candidates are exported by default, and red/blocked candidates stay excluded. When a selection contains both vocab and MCQ items, the export action returns separate CSV downloads by schema.
 
-The CSV is designed for Anki's text import flow. The target Anki collection must have matching note types such as `jp_vocab_entry` or `jp_spelling_mcq_recall` before import. Meaning-only Japanese-to-Korean vocab pages use the same `jp_vocab_entry` schema with a blank reading field and `study_meaning` enabled.
+The CSV is designed for Anki's text import flow. The target Anki collection must have matching note types such as `jp_vocab_entry` or `jp_spelling_mcq_recall` before import. Meaning-only Japanese-to-Korean vocab pages use the same `jp_vocab_entry` schema with a blank reading field and `study_japanese_to_korean` enabled.
 
 Optional local verification against Anki's Python importer:
 

@@ -268,13 +268,13 @@ def _text_supports_value(actual: str, expected: str) -> bool:
     expected_norm = normalize_text(expected)
     if not expected_norm:
         return False
-    if expected_norm in actual_norm or actual_norm in expected_norm:
+    if expected_norm in actual_norm:
         return True
     actual_compact = _strip_loose_punctuation(actual_norm)
     expected_compact = _strip_loose_punctuation(expected_norm)
     if not expected_compact:
         return False
-    return expected_compact in actual_compact or actual_compact in expected_compact
+    return expected_compact in actual_compact
 
 
 def _strip_loose_punctuation(value: str) -> str:

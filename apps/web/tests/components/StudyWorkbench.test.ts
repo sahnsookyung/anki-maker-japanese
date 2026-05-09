@@ -491,16 +491,23 @@ describe("StudyWorkbench evidence helpers", () => {
     const synced = syncVocabCardText(entryCard, { surface: "語", reading: "ご", meaning_ko: "뜻&의미" });
     expect(synced.front).toBe("ご");
     expect(synced.back).toBe("語");
-    expect(synced.source).toMatchObject({ study_writing: true, study_reading: false, study_meaning: false });
+    expect(synced.source).toMatchObject({
+      study_writing: true,
+      study_reading: false,
+      study_meaning: false,
+      study_japanese_to_korean: false
+    });
     expect(applyVocabStudyToggle(entryCard, "study_meaning", false).source).toMatchObject({
       study_writing: true,
       study_reading: false,
-      study_meaning: false
+      study_meaning: false,
+      study_japanese_to_korean: false
     });
     expect(applyVocabStudyToggle(entryCard, "study_reading", true).source).toMatchObject({
       study_writing: true,
       study_reading: true,
-      study_meaning: false
+      study_meaning: false,
+      study_japanese_to_korean: false
     });
     expect(
       applyVocabStudyToggle(
@@ -511,7 +518,37 @@ describe("StudyWorkbench evidence helpers", () => {
         "study_meaning",
         false
       ).source
-    ).toMatchObject({ study_writing: true, study_reading: false, study_meaning: false });
+    ).toMatchObject({ study_writing: true, study_reading: false, study_meaning: false, study_japanese_to_korean: false });
+    const meaningOnly = syncVocabCardText(entryCard, {
+      vocab_type: "jp_ko_meaning",
+      surface: "エアコン",
+      reading: "",
+      meaning_ko: "에어컨"
+    });
+    expect(meaningOnly.front).toBe("エアコン");
+    expect(meaningOnly.back).toBe("에어컨");
+    expect(meaningOnly.source).toMatchObject({
+      study_writing: false,
+      study_reading: false,
+      study_meaning: false,
+      study_japanese_to_korean: true
+    });
+    expect(
+      syncVocabCardText(entryCard, {
+        vocab_type: "jp_ko_meaning",
+        surface: "学校",
+        reading: "",
+        meaning_ko: "학교",
+        study_writing: false,
+        study_reading: false,
+        study_meaning: true
+      }).source
+    ).toMatchObject({
+      study_writing: false,
+      study_reading: false,
+      study_meaning: false,
+      study_japanese_to_korean: true
+    });
     expect(syncVocabCardText(unknownCard, unknownCard.source)).toBe(unknownCard);
     expect(syncVocabCardText(candidate({ source_type: "question_item" }), {})).toEqual(candidate({ source_type: "question_item" }));
   });

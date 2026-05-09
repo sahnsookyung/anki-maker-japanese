@@ -174,7 +174,8 @@ def extract_jp_ko_meaning_items(
                 "warnings": ["Meaning-only vocab row; no reading OCR field expected."],
                 "study_writing": False,
                 "study_reading": False,
-                "study_meaning": True,
+                "study_meaning": False,
+                "study_japanese_to_korean": True,
             }
         )
     return items

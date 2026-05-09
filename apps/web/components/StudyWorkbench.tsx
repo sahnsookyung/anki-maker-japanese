@@ -2665,6 +2665,14 @@ function VocabSourceEditor({
           />
           <span>Meaning to Japanese</span>
         </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={studyDirectionEnabled(source.study_japanese_to_korean, source.vocab_type === "jp_ko_meaning")}
+            onChange={(event) => onChange(applyVocabStudyToggle(card, "study_japanese_to_korean", event.target.checked))}
+          />
+          <span>Japanese to Korean</span>
+        </label>
       </div>
     </fieldset>
   );
@@ -2687,6 +2695,10 @@ function VocabNotePreview({ card }: Readonly<{ card: CardCandidate }>) {
     {
       enabled: studyDirectionEnabled(source.study_meaning, false),
       title: "Meaning to Japanese"
+    },
+    {
+      enabled: studyDirectionEnabled(source.study_japanese_to_korean, source.vocab_type === "jp_ko_meaning"),
+      title: "Japanese to Korean"
     }
   ]
     .filter((template) => template.enabled)

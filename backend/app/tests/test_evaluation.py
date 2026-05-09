@@ -68,7 +68,8 @@ def test_jp_ko_meaning_vocab_extracts_without_fabricating_reading(tmp_path: Path
     assert item["vocab_type"] == "jp_ko_meaning"
     assert card.front == "学校"
     assert card.back == "학교"
-    assert card.source["study_meaning"] is True
+    assert card.source["study_meaning"] is False
+    assert card.source["study_japanese_to_korean"] is True
     assert result.matched_rows == 1
     assert result.reading_expected == 0
     assert result.reading_accuracy == 0.0
@@ -544,6 +545,40 @@ def test_vocab_evaluation_accepts_crop_ocr_only_with_live_supporting_tokens(tmp_
 
     assert result.ocr_supported_items == 1
     assert result.row_accuracy == pytest.approx(1.0)
+
+
+def test_vocab_evaluation_rejects_partial_token_support_for_strict_field(tmp_path) -> None:
+    golden = GoldenPage(
+        page_id="vocab-page",
+        image_path=tmp_path / "page.jpg",
+        category="vocab_table",
+        expected_page_type="vocab_table",
+        expected_rows=[
+            GoldenVocabRow(row_id="row-1", section="", column="left", surface="学校", reading="がっこう", meaning_ko="학교")
+        ],
+    )
+    tokens = [
+        _token("surface", "学", [1, 1, 12, 10], "kanji"),
+        _token("reading", "がっこう", [22, 1, 48, 10], "hiragana"),
+        _token("meaning", "학교", [50, 1, 70, 10], "hangul"),
+    ]
+    card = _vocab_eval_card(
+        {
+            "surface": "学校",
+            "reading": "がっこう",
+            "meaning_ko": "학교",
+            "field_evidence": {
+                "surface": {"text": "学校", "provenance": "crop_ocr", "token_ids": ["surface"], "bbox": [1, 1, 20, 10]},
+                "reading": {"text": "がっこう", "provenance": "crop_ocr", "token_ids": ["reading"], "bbox": [22, 1, 48, 10]},
+                "meaning_ko": {"text": "학교", "provenance": "crop_ocr", "token_ids": ["meaning"], "bbox": [50, 1, 70, 10]},
+            },
+        }
+    )
+
+    result = evaluate_vocab_page(golden, ProcessResult(page=_page(tmp_path), tokens=tokens, cards=[card], script_summary={}))
+
+    assert result.ocr_supported_items == 0
+    assert result.row_accuracy == pytest.approx(0.0)
 
 
 def test_vocab_evaluation_rejects_stale_or_unsupported_evidence(tmp_path) -> None:
@@ -2263,6 +2298,75 @@ def test_mcq_evaluator_scores_source_fields_separately_from_semantics(tmp_path) 
     assert result.source_field_expected == 5
 
 
+def test_mcq_evaluator_rejects_partial_token_support_for_strict_sentence(tmp_path) -> None:
+    golden = GoldenPage(
+        page_id="mcq-page",
+        image_path=tmp_path / "page.jpg",
+        category="reading_mcq",
+        expected_page_type="reading_mcq",
+        expected_questions=[
+            GoldenQuestion(
+                question_id="q1",
+                question_no=1,
+                sentence="学校へ行きます。",
+                target="学校",
+                choices=["がっこう", "せんせい", "でんしゃ", "きょうしつ"],
+                correct_answer="がっこう",
+                correct_choice_no=1,
+                answer_source="answer_strip",
+            )
+        ],
+    )
+    card = CardCandidate(
+        id="card",
+        page_id="page",
+        source_type="question_item",
+        source_id="q1",
+        note_type="jp_reading_mcq_recall",
+        front="front",
+        back="back",
+        source={
+            "question_no": 1,
+            "sentence": "学校へ行きます。",
+            "target": "学校",
+            "choices": ["がっこう", "せんせい", "でんしゃ", "きょうしつ"],
+            "correct_answer": "がっこう",
+            "correct_choice_no": 1,
+            "source_fields": {
+                "sentence": "学校へ行きます。",
+                "target": "学校",
+                "choices": ["がっこう", "せんせい", "でんしゃ", "きょうしつ"],
+                "correct_answer": "がっこう",
+                "correct_choice_no": 1,
+            },
+            "field_evidence": {
+                "sentence": {"text": "学校へ行きます。", "provenance": "prompt_line_ocr", "token_ids": ["sentence"], "bbox": [10, 8, 120, 24]},
+                "target": {"text": "学校", "provenance": "ocr", "token_ids": ["target"], "bbox": [10, 10, 40, 24]},
+                "choice_1": {"text": "がっこう", "provenance": "ocr", "token_ids": ["choice-1"], "bbox": [10, 30, 60, 44]},
+                "choice_2": {"text": "せんせい", "provenance": "ocr", "token_ids": ["choice-2"], "bbox": [70, 30, 120, 44]},
+                "choice_3": {"text": "でんしゃ", "provenance": "ocr", "token_ids": ["choice-3"], "bbox": [130, 30, 180, 44]},
+                "choice_4": {"text": "きょうしつ", "provenance": "ocr", "token_ids": ["choice-4"], "bbox": [190, 30, 250, 44]},
+                "correct_choice_no": {"text": "1", "provenance": "answer_strip_ocr", "token_ids": ["answer-strip"], "bbox": [10, 80, 80, 96]},
+            },
+        },
+    )
+    tokens = [
+        _token("sentence", "学校", [10, 8, 40, 24], "kanji", source="prompt_line_ocr"),
+        _token("target", "学校", [10, 10, 40, 24], "kanji"),
+        _token("choice-1", "がっこう", [10, 30, 60, 44], "hiragana"),
+        _token("choice-2", "せんせい", [70, 30, 120, 44], "hiragana"),
+        _token("choice-3", "でんしゃ", [130, 30, 180, 44], "hiragana"),
+        _token("choice-4", "きょうしつ", [190, 30, 250, 44], "hiragana"),
+        _token("answer-strip", "1①", [10, 80, 80, 96], "mixed"),
+    ]
+
+    result = evaluate_mcq_page(golden, ProcessResult(page=_page(tmp_path), tokens=tokens, cards=[card], script_summary={}))
+
+    assert result.matched_questions == 1
+    assert result.source_field_matches == 4
+    assert result.source_field_expected == 5
+
+
 def test_mcq_source_recovery_does_not_copy_glossary_answer_into_strict_fields(tmp_path) -> None:
     item = {
         "id": "q1",
@@ -2857,7 +2961,7 @@ def test_result_cache_lookup_is_keyed_by_image_and_profile_not_benchmark_page_id
     assert database.find_succeeded_run_by_cache_key("page-b", "paddleocr", "same-image", "profile-key") is None
 
 
-def test_v2_recovery_variants_do_not_seed_full_page_ocr_cache() -> None:
+def test_v2_recovery_variants_seed_full_page_cache_with_filtered_sources() -> None:
     manifest = {
         "cache": {"key": "cache-key"},
         "profile_id": "jp_v3_det_v3_rec",
@@ -2871,7 +2975,22 @@ def test_v2_recovery_variants_do_not_seed_full_page_ocr_cache() -> None:
         "mcq_choice_glyph_v1",
         "accuracy_recovery_v2",
     ):
-        assert pipeline._provider_config("paddleocr", manifest, variant)["full_page_cache_write"] is False
+        provider_config = pipeline._provider_config("paddleocr", manifest, variant)
+        assert provider_config["full_page_cache_write"] is True
+        assert provider_config["full_page_cache_token_sources"] == ["paddleocr", "paddleocr_korean"]
+
+
+def test_full_page_cache_tokens_exclude_recovery_only_sources() -> None:
+    tokens = [
+        _token("jp", "学校", [1, 1, 20, 10], "kanji", source="paddleocr"),
+        _token("ko", "학교", [22, 1, 48, 10], "hangul", source="paddleocr_korean"),
+        _token("region", "英語", [1, 20, 30, 30], "kanji", source="jp_region_ocr"),
+        _token("glyph", "돈", [32, 20, 48, 30], "hangul", source="ko_glyph_ocr"),
+        _token("prompt", "学校へ行きます。", [1, 40, 120, 52], "mixed", source="prompt_line_ocr"),
+        _token("choice", "天気", [1, 60, 30, 72], "kanji", source="choice_glyph_ocr"),
+    ]
+
+    assert [token.id for token in pipeline._full_page_cache_tokens(tokens)] == ["jp", "ko"]
 
 
 def test_ocr_cache_key_reuses_payload_across_extraction_variants() -> None:

@@ -20,6 +20,7 @@ VOCAB_HEADER = [
     "StudyWriting",
     "StudyReading",
     "StudyMeaning",
+    "StudyJapaneseToKorean",
     "SourcePage",
     "SourceBBox",
     "Confidence",
@@ -38,10 +39,10 @@ VOCAB_FILE_HEADERS = [
     "#html:true",
     "#notetype:jp_vocab_entry",
     f"#columns:{','.join(VOCAB_HEADER)}",
-    "#tags column:12",
+    "#tags column:13",
 ]
 VOCAB_NOTE_TYPE = "jp_vocab_entry"
-VOCAB_STUDY_FIELDS = ("study_writing", "study_reading", "study_meaning")
+VOCAB_STUDY_FIELDS = ("study_writing", "study_reading", "study_meaning", "study_japanese_to_korean")
 
 
 def clean_csv_field(value: object) -> str:
@@ -138,7 +139,7 @@ def is_mcq_card(card: CardCandidate) -> bool:
 def vocab_note_row(card: CardCandidate) -> list[str] | None:
     if not is_vocab_note(card):
         return None
-    source = card.source
+    source = _normalized_vocab_source(card.source)
     surface = _source_text(source, "surface")
     reading = _source_text(source, "reading")
     meaning = _source_text(source, "meaning_ko")
@@ -154,6 +155,7 @@ def vocab_note_row(card: CardCandidate) -> list[str] | None:
         _study_field(source, "study_writing"),
         _study_field(source, "study_reading"),
         _study_field(source, "study_meaning"),
+        _study_field(source, "study_japanese_to_korean"),
         clean_csv_field(card.page_id),
         compact_bbox(card.source_bbox or source.get("bbox")),
         f"{card.confidence:.3f}",
@@ -175,12 +177,12 @@ def vocab_note_rows(cards: list[CardCandidate]) -> list[list[str]]:
             selected[key] = (row, score)
             continue
         current_row, current_score = current
-        merged_study_fields = ["1" if left or right else "" for left, right in zip(current_row[4:7], row[4:7], strict=True)]
+        merged_study_fields = ["1" if left or right else "" for left, right in zip(current_row[4:8], row[4:8], strict=True)]
         if score > current_score:
-            row[4:7] = merged_study_fields
+            row[4:8] = merged_study_fields
             selected[key] = (row, score)
         else:
-            current_row[4:7] = merged_study_fields
+            current_row[4:8] = merged_study_fields
     return [row for row, _score in selected.values()]
 
 
@@ -196,6 +198,7 @@ def vocab_generated_card_count(card: CardCandidate) -> int:
 
 
 def study_direction_count(source: dict[str, Any]) -> int:
+    source = _normalized_vocab_source(source)
     return sum(1 for field in VOCAB_STUDY_FIELDS if _study_field(source, field))
 
 
@@ -235,12 +238,26 @@ def _vocab_note_score(card: CardCandidate, row: list[str]) -> tuple[float, float
 
 
 def _row_study_direction_count(row: list[str]) -> int:
-    return sum(1 for value in row[4:7] if value)
+    return sum(1 for value in row[4:8] if value)
 
 
 def _source_text(source: dict[str, Any], field: str) -> str:
     value = source.get(field)
     return "" if value is None else str(value).strip()
+
+
+def _normalized_vocab_source(source: dict[str, Any]) -> dict[str, Any]:
+    if source.get("vocab_type") != "jp_ko_meaning":
+        return source
+    normalized = dict(source)
+    normalized.setdefault("study_writing", False)
+    normalized.setdefault("study_reading", False)
+    normalized.setdefault("study_meaning", False)
+    if normalized.get("study_japanese_to_korean") is None:
+        normalized["study_japanese_to_korean"] = True
+        if not normalized.get("reading") and _study_field(normalized, "study_meaning"):
+            normalized["study_meaning"] = False
+    return normalized
 
 
 def _study_field(source: dict[str, Any], field: str) -> str:

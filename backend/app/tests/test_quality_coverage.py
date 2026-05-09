@@ -64,6 +64,7 @@ def test_cards_to_csv_writes_anki_headers_and_round_trips_fields(tmp_path) -> No
             "1",
             "",
             "",
+            "",
             "page-1",
             "[1,2,3,4]",
             "0.877",
@@ -142,6 +143,7 @@ def test_vocab_csv_preserves_enabled_study_direction_fields() -> None:
             "study_writing": False,
             "study_reading": True,
             "study_meaning": False,
+            "study_japanese_to_korean": False,
         },
         note_type="jp_vocab_entry",
         front="がっこう",
@@ -152,10 +154,39 @@ def test_vocab_csv_preserves_enabled_study_direction_fields() -> None:
     data_lines = [line for line in csv_text.splitlines() if not line.startswith("#")]
     [row] = list(csv.reader(StringIO("\n".join(data_lines))))
 
-    assert row[4:7] == ["", "1", ""]
+    assert row[4:8] == ["", "1", "", ""]
 
 
 def test_vocab_csv_allows_meaning_only_vocab_without_reading() -> None:
+    card = CardCandidate(
+        id="vocab-card",
+        page_id="page-1",
+        source_type="vocab_item",
+        source_id="vocab-1",
+        source={
+            "vocab_type": "jp_ko_meaning",
+            "surface": "学校",
+            "reading": "",
+            "meaning_ko": "학교",
+            "study_writing": False,
+            "study_reading": False,
+            "study_meaning": False,
+            "study_japanese_to_korean": True,
+        },
+        note_type="jp_vocab_entry",
+        front="学校",
+        back="학교",
+    )
+
+    csv_text = cards_to_csv([card])
+    data_lines = [line for line in csv_text.splitlines() if not line.startswith("#")]
+    [row] = list(csv.reader(StringIO("\n".join(data_lines))))
+
+    assert row[:4] == [vocab_key("学校", "", "학교"), "学校", "", "학교"]
+    assert row[4:8] == ["", "", "", "1"]
+
+
+def test_vocab_csv_migrates_legacy_meaning_only_study_flag() -> None:
     card = CardCandidate(
         id="vocab-card",
         page_id="page-1",
@@ -179,8 +210,7 @@ def test_vocab_csv_allows_meaning_only_vocab_without_reading() -> None:
     data_lines = [line for line in csv_text.splitlines() if not line.startswith("#")]
     [row] = list(csv.reader(StringIO("\n".join(data_lines))))
 
-    assert row[:4] == [vocab_key("学校", "", "학교"), "学校", "", "학교"]
-    assert row[4:7] == ["", "", "1"]
+    assert row[4:8] == ["", "", "", "1"]
 
 
 def test_vocab_csv_deduplicates_notes_by_surface_and_reading() -> None:
@@ -229,7 +259,7 @@ def test_vocab_csv_deduplicates_notes_by_surface_and_reading() -> None:
 
     assert vocab_key("学校", "がっこう", "학") == vocab_key("学校", "がっこう", "학교")
     assert row[:4] == [vocab_key("学校", "がっこう"), "学校", "がっこう", "학교"]
-    assert row[4:7] == ["1", "1", ""]
+    assert row[4:8] == ["1", "1", "", ""]
 
 
 def test_vocab_export_counts_deduplicated_notes_and_generated_cards(tmp_path) -> None:
@@ -283,7 +313,7 @@ def test_vocab_export_counts_deduplicated_notes_and_generated_cards(tmp_path) ->
     assert note_count == 1
     assert generated_card_count == 2
     assert row[:4] == [vocab_key("学校", "がっこう"), "学校", "がっこう", "학교"]
-    assert row[4:7] == ["1", "1", ""]
+    assert row[4:8] == ["1", "1", "", ""]
 
 
 def test_dictionary_validator_handles_missing_invalid_and_unknown_pairs(tmp_path) -> None:

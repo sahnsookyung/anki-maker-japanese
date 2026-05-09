@@ -521,21 +521,39 @@ export function syncVocabCardText(card: CardCandidate, source: Record<string, un
   if (card.source_type !== "vocab_item") return card;
   const surface = textValue(source.surface);
   const reading = textValue(source.reading);
+  const meaning = textValue(source.meaning_ko);
+  const meaningOnly = source.vocab_type === "jp_ko_meaning";
   if (card.note_type === "jp_vocab_entry") {
-    return { ...card, source: normalizeVocabStudySource(source), front: escapeHtml(reading), back: escapeHtml(surface) };
+    return {
+      ...card,
+      source: normalizeVocabStudySource(source),
+      front: escapeHtml(meaningOnly ? surface : reading),
+      back: escapeHtml(meaningOnly ? meaning : surface)
+    };
   }
   return card;
 }
 
 function normalizeVocabStudySource(source: Record<string, unknown>): Record<string, unknown> {
+  const meaningOnly = source.vocab_type === "jp_ko_meaning";
+  const legacyMeaningOnlyStudy = meaningOnly &&
+    source.study_japanese_to_korean === undefined &&
+    studyDirectionEnabled(source.study_meaning, false);
   const studySource = {
     ...source,
-    study_writing: studyDirectionEnabled(source.study_writing, true),
+    study_writing: studyDirectionEnabled(source.study_writing, !meaningOnly),
     study_reading: studyDirectionEnabled(source.study_reading, false),
-    study_meaning: studyDirectionEnabled(source.study_meaning, false)
+    study_meaning: legacyMeaningOnlyStudy ? false : studyDirectionEnabled(source.study_meaning, false),
+    study_japanese_to_korean: studyDirectionEnabled(source.study_japanese_to_korean, meaningOnly)
   };
-  if (!studySource.study_writing && !studySource.study_reading && !studySource.study_meaning) {
-    studySource.study_writing = true;
+  if (
+    !studySource.study_writing &&
+    !studySource.study_reading &&
+    !studySource.study_meaning &&
+    !studySource.study_japanese_to_korean
+  ) {
+    studySource.study_japanese_to_korean = meaningOnly;
+    studySource.study_writing = !meaningOnly;
   }
   return {
     ...studySource

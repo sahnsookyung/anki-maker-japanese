@@ -498,7 +498,6 @@ def _sha256_file(path: Path) -> str | None:
 
 def _provider_config(engine: str, profile_manifest: dict[str, object], extraction_variant: str) -> dict[str, object]:
     cache = profile_manifest.get("cache") if isinstance(profile_manifest.get("cache"), dict) else {}
-    components = extraction_variant_components(extraction_variant)
     return {
         "engine": engine,
         "japanese_detection_model": PADDLE_OCR_TEXT_DETECTION_MODEL_NAME,
@@ -510,12 +509,8 @@ def _provider_config(engine: str, profile_manifest: dict[str, object], extractio
         "vlm_cleanup_enabled": VLM_CLEANUP_ENABLED,
         "model_profile": profile_manifest,
         "extraction_variant": extraction_variant,
-        "full_page_cache_write": not (
-            _uses_korean_recovery(components)
-            or _uses_mcq_recovery(components)
-            or _uses_v2_vocab_recovery(components)
-            or _uses_v2_mcq_recovery(components)
-        ),
+        "full_page_cache_write": True,
+        "full_page_cache_token_sources": [PADDLEOCR_ENGINE, "paddleocr_korean"],
     }
 
 
@@ -554,6 +549,9 @@ def _cached_ocr_payload(
     cached_tokens = database.get_tokens(cached_run.page_id, cached_run.id)
     if not cached_tokens:
         return None
+    cached_tokens = _full_page_cache_tokens(cached_tokens)
+    if not cached_tokens:
+        return None
     cloned_tokens = _clone_tokens_for_page(cached_tokens, page_id)
     japanese_tokens = [token for token in cloned_tokens if token.source != "paddleocr_korean"]
     korean_tokens = [token for token in cloned_tokens if token.source == "paddleocr_korean"]
@@ -573,6 +571,14 @@ def _cached_ocr_payload(
 
 def _clone_tokens_for_page(tokens: list[OcrToken], page_id: str) -> list[OcrToken]:
     return [token.model_copy(update={"id": new_id("tok"), "page_id": page_id}) for token in tokens]
+
+
+def _full_page_cache_tokens(tokens: list[OcrToken]) -> list[OcrToken]:
+    return [
+        token
+        for token in tokens
+        if token.source in {PADDLEOCR_ENGINE, "paddleocr_korean"}
+    ]
 
 
 def _transform_metadata(

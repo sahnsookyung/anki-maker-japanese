@@ -132,6 +132,28 @@ def test_classifier_detects_japanese_to_korean_meaning_vocab() -> None:
     assert confidence >= 0.6
 
 
+def test_classifier_detects_japanese_to_korean_meaning_vocab_with_kana_surfaces() -> None:
+    tokens = [
+        _token("jp-1", "エアコン", 10, 100, "katakana"),
+        _token("ko-1", "에어컨", 100, 100, "hangul"),
+        _token("jp-2", "テレビ", 10, 130, "katakana"),
+        _token("ko-2", "텔레비전", 100, 130, "hangul"),
+        _token("jp-3", "ホテル", 10, 160, "katakana"),
+        _token("ko-3", "호텔", 100, 160, "hangul"),
+        _token("jp-4", "カメラ", 10, 190, "katakana"),
+        _token("ko-4", "카메라", 100, 190, "hangul"),
+        _token("jp-5", "ごはん", 10, 220, "hiragana"),
+        _token("ko-5", "밥", 100, 220, "hangul"),
+        _token("jp-6", "バス", 10, 250, "katakana"),
+        _token("ko-6", "버스", 100, 250, "hangul"),
+    ]
+
+    page_type, confidence, _features = pipeline.classify_page(tokens, 400)
+
+    assert page_type == "jp_ko_meaning_vocab"
+    assert confidence >= 0.6
+
+
 def test_mcq_extraction_keeps_printed_question_numbers_when_previous_blocks_are_absent() -> None:
     tokens = [
         _token("q5-no", "5", 10, 100, "number"),
@@ -713,6 +735,52 @@ def test_vocab_cards_create_one_candidate_per_vocab_entry() -> None:
     assert card.source["study_writing"] is True
     assert card.source["study_reading"] is False
     assert card.source["study_meaning"] is False
+    assert card.source["study_japanese_to_korean"] is False
+
+
+def test_vocab_cards_create_japanese_to_korean_candidate_for_meaning_vocab() -> None:
+    [card] = vocab_cards(
+        "page-vocab",
+        {
+            "id": "row-1",
+            "vocab_type": "jp_ko_meaning",
+            "surface": "エアコン",
+            "reading": "",
+            "meaning_ko": "에어컨",
+            "bbox": [1, 2, 3, 4],
+            "confidence": 0.93,
+            "warnings": [],
+        },
+    )
+
+    assert card.front == "エアコン"
+    assert card.back == "에어컨"
+    assert card.source["study_writing"] is False
+    assert card.source["study_reading"] is False
+    assert card.source["study_meaning"] is False
+    assert card.source["study_japanese_to_korean"] is True
+
+
+def test_vocab_cards_migrate_legacy_meaning_only_study_flag() -> None:
+    [card] = vocab_cards(
+        "page-vocab",
+        {
+            "id": "row-1",
+            "vocab_type": "jp_ko_meaning",
+            "surface": "学校",
+            "reading": "",
+            "meaning_ko": "학교",
+            "bbox": [1, 2, 3, 4],
+            "confidence": 0.93,
+            "warnings": [],
+            "study_writing": False,
+            "study_reading": False,
+            "study_meaning": True,
+        },
+    )
+
+    assert card.source["study_meaning"] is False
+    assert card.source["study_japanese_to_korean"] is True
 
 
 def test_failed_rerun_does_not_replace_active_successful_run(tmp_path, monkeypatch) -> None:

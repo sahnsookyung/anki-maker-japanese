@@ -16,6 +16,7 @@ VOCAB_COLUMNS = [
     "StudyWriting",
     "StudyReading",
     "StudyMeaning",
+    "StudyJapaneseToKorean",
     "SourcePage",
     "SourceBBox",
     "Confidence",
@@ -42,6 +43,7 @@ class VocabImportRow(NamedTuple):
     study_writing: str
     study_reading: str
     study_meaning: str
+    study_japanese_to_korean: str
     source_page: str
     source_bbox: str
     confidence: str
@@ -57,7 +59,7 @@ def parse_anki_csv(path: Path) -> list[ImportRow]:
     headers = [line for line in lines if line.startswith("#")]
     body = [line for line in lines if not line.startswith("#")]
     if "#notetype:jp_vocab_entry" in headers:
-        _validate_headers(headers, VOCAB_COLUMNS, tags_column=12, fixed_notetype="#notetype:jp_vocab_entry")
+        _validate_headers(headers, VOCAB_COLUMNS, tags_column=13, fixed_notetype="#notetype:jp_vocab_entry")
         return _parse_rows(body, VOCAB_COLUMNS, VocabImportRow)
     _validate_headers(headers, MCQ_COLUMNS, tags_column=7, notetype_column=True)
     return _parse_rows(body, MCQ_COLUMNS, McqImportRow)
@@ -162,6 +164,11 @@ def _ensure_vocab_model(collection) -> int:
             "Meaning to Japanese",
             "{{#StudyMeaning}}{{MeaningKo}}{{/StudyMeaning}}",
             "{{FrontSide}}<hr id=answer>{{Surface}}<br>{{Reading}}",
+        ),
+        (
+            "Japanese to Korean",
+            "{{#StudyJapaneseToKorean}}{{Surface}}{{/StudyJapaneseToKorean}}",
+            "{{FrontSide}}<hr id=answer>{{MeaningKo}}",
         ),
     ]
     for name, question, answer in templates:

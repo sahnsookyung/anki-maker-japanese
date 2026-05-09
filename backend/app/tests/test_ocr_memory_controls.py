@@ -512,9 +512,12 @@ def test_crop_ocr_helpers_map_fields_and_tokens() -> None:
     )
 
     mapped = crop_worker._map_token_to_page(token, "page", (100, 200))
+    mapped_with_source = crop_worker._map_token_to_page(token, "page", (100, 200), source="prompt_line_ocr")
 
     assert crop_worker.provider_for_field("meaning_ko") == "paddle_korean"
     assert mapped.page_id == "page"
+    assert mapped.source == "paddleocr"
+    assert mapped_with_source.source == "prompt_line_ocr"
     assert mapped.bbox == [102, 203, 120, 210]
     assert crop_worker.recognized_text("target", [mapped]) == "うえ"
     assert crop_worker.suggested_source_patch({"choices": ["a"], "correct_choice_no": 2}, "choice_2", "b") == {

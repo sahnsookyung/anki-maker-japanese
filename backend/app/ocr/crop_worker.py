@@ -211,7 +211,7 @@ class CropOcrWorkerManager:
             raise CropOcrError(str(payload.get("error") or "Region OCR worker failed."))
         warnings.extend(str(warning) for warning in payload.get("warnings", []))
         crop_tokens = [OcrToken(**token) for token in payload.get("tokens", [])]
-        mapped_tokens = [_map_token_to_page(token, page_id, crop_offset) for token in crop_tokens]
+        mapped_tokens = [_map_token_to_page(token, page_id, crop_offset, source=provenance) for token in crop_tokens]
         text = recognized_text(field, mapped_tokens)
         confidence = _mean_confidence(mapped_tokens)
         if not text:
@@ -442,15 +442,16 @@ def suggested_source_patch(source: dict[str, Any], field: str, text: str) -> dic
     return {}
 
 
-def _map_token_to_page(token: OcrToken, page_id: str, offset: tuple[float, float]) -> OcrToken:
+def _map_token_to_page(token: OcrToken, page_id: str, offset: tuple[float, float], *, source: str | None = None) -> OcrToken:
     x_offset, y_offset = offset
     x1, y1, x2, y2 = token.bbox
-    return token.model_copy(
-        update={
-            "page_id": page_id,
-            "bbox": [x1 + x_offset, y1 + y_offset, x2 + x_offset, y2 + y_offset],
-        }
-    )
+    update = {
+        "page_id": page_id,
+        "bbox": [x1 + x_offset, y1 + y_offset, x2 + x_offset, y2 + y_offset],
+    }
+    if source:
+        update["source"] = source
+    return token.model_copy(update=update)
 
 
 def _region_field_evidence(

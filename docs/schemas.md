@@ -64,7 +64,7 @@ Any `token_ids` stored in field evidence must resolve to rows in `ocr_tokens` fo
 - `status`: `pending_review`, `approved`, or `skipped`.
 - `warnings`: issues that should be inspected before export.
 
-Vocabulary candidates use one active note type: `jp_vocab_entry`. Unsupported older vocab note shapes are deleted during DB initialization instead of being converted or preserved. MCQ candidates keep their current front/back note types.
+Vocabulary candidates use one active note type: `jp_vocab_entry`. The vocab source stores study-direction flags for `study_writing`, `study_reading`, `study_meaning`, and `study_japanese_to_korean`; meaning-only `jp_ko_meaning_vocab` rows enable `study_japanese_to_korean` with a blank reading instead of reusing the Korean-to-Japanese `study_meaning` template. Unsupported older vocab note shapes are deleted during DB initialization instead of being converted or preserved. MCQ candidates keep their current front/back note types.
 
 Experimental MCQ source-recovery variants may add `source.source_fields` and `source.semantic_fields`. `source_fields` contains strict OCR-backed `sentence`, `target`, `choices`, `correct_answer`, and `correct_choice_no` for benchmark source-field scoring. `semantic_fields` contains glossary/answer-strip-assisted values for Anki semantics and export compatibility. When `source_fields` exists, strict MCQ evaluation uses it instead of the legacy top-level fields; glossary-derived values must stay out of `source_fields`. `mcq_prompt_line_ocr_v1` may update only `source_fields.sentence`, and `mcq_choice_glyph_v1` may update only `source_fields.choices` plus mirrored source `correct_answer` when `correct_choice_no` already exists.
 
@@ -125,7 +125,7 @@ Component payloads may include attempts, OCR candidates, rejected candidates, re
 - `note_count`: number of exported Anki notes.
 - `estimated_generated_card_count`: estimated Anki cards after the single vocab template and MCQ cards are applied.
 
-Mixed vocab/MCQ exports return multiple CSV file entries instead of a ZIP. Vocab entries missing `Surface`, `Reading`, `MeaningKo`, or explicitly disabled for all study directions do not produce CSV rows. Duplicate vocab candidates with the same `Surface` and `Reading` export as one `jp_vocab_entry` note.
+Mixed vocab/MCQ exports return multiple CSV file entries instead of a ZIP. Vocab entries missing `Surface`, `MeaningKo`, or explicitly disabled for all study directions do not produce CSV rows. Reading is required for normal vocab rows and optional only for `jp_ko_meaning_vocab` rows. Duplicate vocab candidates with the same `Surface` and `Reading` export as one `jp_vocab_entry` note.
 
 ## SQLite Schema Notes
 

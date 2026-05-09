@@ -21,8 +21,10 @@ def classify_page(tokens: list[OcrToken], image_height: int | None = None) -> tu
     if image_height:
         bottom_tokens = sum(1 for token in tokens if token.bbox[1] > image_height * 0.82)
 
-    has_japanese = scripts["hiragana"] + scripts["katakana"] + scripts["kanji"] + scripts["mixed"] > 3
-    has_hangul = sum(1 for text in texts if _has_hangul(text)) > 2
+    japanese_count = scripts["hiragana"] + scripts["katakana"] + scripts["kanji"] + scripts["mixed"]
+    hangul_count = sum(1 for text in texts if _has_hangul(text))
+    has_japanese = japanese_count > 3
+    has_hangul = hangul_count > 2
     features = {
         "checkbox_count": checkbox_count,
         "question_numbers": question_numbers,
@@ -40,8 +42,7 @@ def classify_page(tokens: list[OcrToken], image_height: int | None = None) -> tu
             return "reading_mcq", 0.72, features
         return "spelling_mcq", 0.72, features
 
-    has_kana = scripts["hiragana"] + scripts["katakana"] > 2
-    if has_japanese and has_hangul and not has_kana and (checkbox_count >= 4 or len(tokens) >= 12):
+    if has_japanese and has_hangul and _looks_like_meaning_only_vocab(scripts, hangul_count, checkbox_count, len(tokens)):
         return "jp_ko_meaning_vocab", 0.66, features
 
     if has_japanese and ((has_hangul and (checkbox_count >= 4 or len(tokens) >= 20)) or checkbox_count >= 8):
@@ -84,6 +85,22 @@ def _normalize_digits(text: str) -> str:
 
 def _has_hangul(text: str) -> bool:
     return any(0xAC00 <= ord(char) <= 0xD7AF for char in text)
+
+
+def _looks_like_meaning_only_vocab(
+    scripts: Counter[str],
+    hangul_count: int,
+    checkbox_count: int,
+    token_count: int,
+) -> bool:
+    if checkbox_count < 4 and token_count < 12:
+        return False
+    hiragana_count = scripts["hiragana"]
+    katakana_count = scripts["katakana"]
+    kanji_like_count = scripts["kanji"] + scripts["mixed"]
+    if hiragana_count <= max(2, kanji_like_count // 2):
+        return True
+    return katakana_count >= hiragana_count and hiragana_count <= max(3, hangul_count // 2)
 
 
 def _kana_count(text: str) -> int:

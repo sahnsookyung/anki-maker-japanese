@@ -27,6 +27,7 @@ def vocab_cards(page_id: str, item: dict[str, Any]) -> list[CardCandidate]:
     confidence = float(item.get("confidence", 0.5))
     warnings = list(item.get("warnings", []))
     meaning_only = item.get("vocab_type") == "jp_ko_meaning"
+    legacy_meaning_only_study = meaning_only and "study_japanese_to_korean" not in item and item.get("study_meaning") is True
     blocked = not (surface and meaning and bbox and (reading or meaning_only))
     state = review_state(confidence, warnings, blocked)
     source_id = item.get("id", new_id("vocab"))
@@ -35,7 +36,8 @@ def vocab_cards(page_id: str, item: dict[str, Any]) -> list[CardCandidate]:
         "id": source_id,
         "study_writing": item.get("study_writing", not meaning_only),
         "study_reading": item.get("study_reading", False),
-        "study_meaning": item.get("study_meaning", meaning_only),
+        "study_meaning": False if legacy_meaning_only_study else item.get("study_meaning", False),
+        "study_japanese_to_korean": item.get("study_japanese_to_korean", meaning_only),
     }
     return [
         CardCandidate(

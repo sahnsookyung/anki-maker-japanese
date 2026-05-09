@@ -281,7 +281,7 @@ def _evidence_supports_value(evidence_text: str, expected_text: str) -> bool:
         return meaning_matches(evidence_text, expected_text)
     evidence_norm = normalize_text(evidence_text)
     expected_norm = normalize_text(expected_text)
-    return bool(expected_norm and (expected_norm in evidence_norm or evidence_norm in expected_norm))
+    return bool(expected_norm and expected_norm in evidence_norm)
 
 
 def _item_has_glossary_evidence(item: dict[str, Any]) -> bool:

@@ -22,6 +22,7 @@ def test_verify_anki_csv_parser_accepts_export_contract(tmp_path) -> None:
     assert rows[0].study_writing == "1"
     assert rows[0].study_reading == ""
     assert rows[0].study_meaning == ""
+    assert rows[0].study_japanese_to_korean == ""
     assert rows[0].tags == "jlpt"
 
 

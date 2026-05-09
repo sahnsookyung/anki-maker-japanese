@@ -384,8 +384,8 @@ def find_succeeded_run_by_cache_key(
 
 
 def _can_seed_full_page_ocr_cache(run: OcrRun) -> bool:
-    if run.provider_config.get("full_page_cache_write") is False:
-        return False
+    if "full_page_cache_write" in run.provider_config:
+        return run.provider_config.get("full_page_cache_write") is not False
     variant = str(run.provider_config.get("extraction_variant") or "")
     recovery_variants = {
         "ko_crop_confirm_v1",
