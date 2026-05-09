@@ -26,15 +26,16 @@ def vocab_cards(page_id: str, item: dict[str, Any]) -> list[CardCandidate]:
     bbox = item.get("bbox")
     confidence = float(item.get("confidence", 0.5))
     warnings = list(item.get("warnings", []))
-    blocked = not (surface and reading and meaning and bbox)
+    meaning_only = item.get("vocab_type") == "jp_ko_meaning"
+    blocked = not (surface and meaning and bbox and (reading or meaning_only))
     state = review_state(confidence, warnings, blocked)
     source_id = item.get("id", new_id("vocab"))
     source = {
         **item,
         "id": source_id,
-        "study_writing": item.get("study_writing", True),
+        "study_writing": item.get("study_writing", not meaning_only),
         "study_reading": item.get("study_reading", False),
-        "study_meaning": item.get("study_meaning", False),
+        "study_meaning": item.get("study_meaning", meaning_only),
     }
     return [
         CardCandidate(
@@ -44,8 +45,8 @@ def vocab_cards(page_id: str, item: dict[str, Any]) -> list[CardCandidate]:
             source_id=source_id,
             source=source,
             note_type="jp_vocab_entry",
-            front=escape(reading),
-            back=escape(surface),
+            front=escape(surface if meaning_only else reading),
+            back=escape(meaning if meaning_only else surface),
             tags=["jlpt", "vocab"],
             confidence=confidence,
             review_state=state,

@@ -166,7 +166,7 @@ notetype,front,back,source_page,source_bbox,confidence,tags
 
 Only approved candidates are exported by default, and red/blocked candidates stay excluded. When a selection contains both vocab and MCQ items, the export action returns separate CSV downloads by schema.
 
-The CSV is designed for Anki's text import flow. The target Anki collection must have matching note types such as `jp_vocab_entry` or `jp_spelling_mcq_recall` before import.
+The CSV is designed for Anki's text import flow. The target Anki collection must have matching note types such as `jp_vocab_entry` or `jp_spelling_mcq_recall` before import. Meaning-only Japanese-to-Korean vocab pages use the same `jp_vocab_entry` schema with a blank reading field and `study_meaning` enabled.
 
 Optional local verification against Anki's Python importer:
 
@@ -214,7 +214,7 @@ uv run python scripts/benchmark_ocr_modes.py --experiment-stage 4 --json
 
 Experimental OCR profiles are intentionally separate from the default workflow. The UI exposes them under “Experimental OCR profile,” and benchmark JSON records the exact profile, extraction variant, runtime/device info, preprocessing, cache status, document-graph metrics, and promotion gates. `--profile-matrix` and staged runs skip heavy server profiles unless `--include-heavy-profiles` is passed. Do not change the production default based only on the four canonical pages; use a holdout set before promoting a newer model.
 
-Accuracy recovery v2 is available only as an experimental benchmark/review variant. It extends `accuracy_recovery_v1` with Japanese region recovery, Korean residual glyph recovery, MCQ prompt-line OCR, and MCQ choice-glyph source-field recovery while leaving the production default, CSV export semantics, and MCQ semantic scoring unchanged. Strict benchmark fields must be backed by live OCR/image evidence; local glossary values and miss-inventory expected values are diagnostics only.
+Accuracy recovery v2 is available only as an experimental benchmark variant. It extends `accuracy_recovery_v1` with Japanese region recovery, Korean residual glyph recovery, MCQ prompt-line OCR, and MCQ choice-glyph source-field recovery while leaving the production default, CSV export semantics, and MCQ semantic scoring unchanged. Normal API/UI processing rejects benchmark-only variants unless the benchmark harness explicitly opts in. Strict benchmark fields must be backed by live OCR/image evidence; local glossary values and miss-inventory expected values are diagnostics only.
 
 Run the full v2 gate with diagnostics:
 

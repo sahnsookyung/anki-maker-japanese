@@ -145,10 +145,10 @@ Why this matters:
    Backend creates a new OCR run with engine, image hash, preprocessing metadata, provider config, metrics, warnings, and lifecycle status.
    The selected OCR engine emits normalized OCR tokens with text, bbox, confidence, script_class, and source.
    Vocab-table pages can run a second Korean PaddleOCR pass for gloss columns.
-   The classifier decides whether the page is vocab_table, reading_mcq, spelling_mcq, or unknown_review_required.
+   The classifier decides whether the page is vocab_table, jp_ko_meaning_vocab, reading_mcq, spelling_mcq, or unknown_review_required.
 
 3. Extract
-   For vocabulary pages, the pipeline extracts one candidate per surface/reading/Korean meaning row, plus source_bbox and evidence_tokens.
+   For vocabulary pages, the pipeline extracts one candidate per surface/reading/Korean meaning row, or surface/Korean meaning row for `jp_ko_meaning_vocab`, plus source_bbox and evidence_tokens.
    For MCQ pages, the pipeline extracts question_no, sentence, target, choices, correct_answer, correct_choice_no, answer_source, source_bbox, evidence_tokens, and token_roles.
    Vocab rows are not supplemented from glossary data; benchmark row accuracy only credits rows whose fields are backed by OCR evidence.
    Experimental recovery variants may add persisted crop/region/glyph OCR tokens before candidate mutation. V2 recovery is ordered after base extraction: v1 Korean recovery, Japanese vocab region recovery, Korean residual glyph recovery, v1 MCQ source rebuild/choice-band recovery, prompt-line recovery, then choice-glyph recovery.

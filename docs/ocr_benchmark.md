@@ -76,10 +76,10 @@ Extraction variants:
 - `accuracy_recovery_v1`: combines the Korean recovery and MCQ source-field recovery experiments. It remains benchmark-only.
 - `residual_diagnostics_v1`: benchmark diagnostic mode only. It writes residual miss diagnostics and contact sheets after scoring and never mutates candidates.
 - `jp_region_columns_v1`: benchmark-only Japanese vocab surface/reading recovery from clipped row/column regions. It may create a missing vocab row only when surface, reading, and Korean meaning all have live OCR/image evidence.
-- `ko_residual_glyph_v1`: benchmark-only Korean residual glyph recovery for weak `meaning_ko` fields. It accepts only row-owned, meaning-column-owned Hangul or numeric-unit evidence and fails open when local glyph resources are unavailable.
+- `ko_residual_glyph_v1`: benchmark-only Korean residual glyph recovery for weak `meaning_ko` fields. It accepts only row-owned, meaning-column-owned text returned by live crop/region OCR tokens and fails open when local glyph resources are unavailable.
 - `mcq_prompt_line_ocr_v1`: benchmark-only clipped prompt-line OCR for strict MCQ `source_fields.sentence`; it updates source fields only and does not infer from semantic choices or glossary text.
-- `mcq_choice_glyph_v1`: benchmark-only per-choice glyph recovery for strict spelling-MCQ `source_fields.choices`; it preserves semantic MCQ fields.
-- `accuracy_recovery_v2`: combines all `accuracy_recovery_v1` components with Japanese region recovery, Korean residual glyph recovery, MCQ prompt-line OCR, and MCQ choice-glyph recovery. It does not change production defaults.
+- `mcq_choice_glyph_v1`: benchmark-only per-choice glyph recovery for strict spelling-MCQ `source_fields.choices`; it uses the text returned by each isolated choice crop and preserves semantic MCQ fields.
+- `accuracy_recovery_v2`: combines all `accuracy_recovery_v1` components with Japanese region recovery, Korean residual glyph recovery, MCQ prompt-line OCR, and MCQ choice-glyph recovery. It does not change production defaults. Normal API/UI processing rejects benchmark-only variants unless the benchmark harness explicitly opts in.
 
 Run a cautious profile comparison:
 
@@ -248,13 +248,8 @@ On May 8, 2026, the safe-local `accuracy_recovery_v2` gate run was:
 
 ```text
 jp_v3_det_v3_rec + ko_v5_current + accuracy_recovery_v2
-80/80 overall
-160/160 strict OCR fields
-60/60 vocab meaning, surface, and reading
-20/20 MCQ semantic
-100/100 MCQ source fields
-94.3% evidence alignment
-2822.27 MB safe-local peak RSS
+Historical May 8 run artifacts are preserved under .benchmark-runs/2026-05-08-accuracy-recovery-v2/.
+After evidence-hardening changes, rerun the full golden, parity, and warm-cache gates before treating v2 scores as current.
 ```
 
 Primary artifacts:

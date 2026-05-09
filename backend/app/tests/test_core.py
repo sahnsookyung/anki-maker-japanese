@@ -110,6 +110,28 @@ def test_v5_answer_strip_merges_bottom_and_all_page_recovery() -> None:
     assert parse_answer_strip_v5(tokens, image_height=1000) == {7: 3, 8: 4, 9: 4, 10: 4}
 
 
+def test_classifier_detects_japanese_to_korean_meaning_vocab() -> None:
+    tokens = [
+        _token("jp-1", "学校", 10, 100, "kanji"),
+        _token("ko-1", "학교", 80, 100, "hangul"),
+        _token("jp-2", "先生", 10, 130, "kanji"),
+        _token("ko-2", "선생님", 80, 130, "hangul"),
+        _token("jp-3", "電車", 10, 160, "kanji"),
+        _token("ko-3", "전철", 80, 160, "hangul"),
+        _token("jp-4", "会社", 10, 190, "kanji"),
+        _token("ko-4", "회사", 80, 190, "hangul"),
+        _token("jp-5", "病院", 10, 220, "kanji"),
+        _token("ko-5", "병원", 80, 220, "hangul"),
+        _token("jp-6", "友達", 10, 250, "kanji"),
+        _token("ko-6", "친구", 80, 250, "hangul"),
+    ]
+
+    page_type, confidence, _features = pipeline.classify_page(tokens, 400)
+
+    assert page_type == "jp_ko_meaning_vocab"
+    assert confidence >= 0.6
+
+
 def test_mcq_extraction_keeps_printed_question_numbers_when_previous_blocks_are_absent() -> None:
     tokens = [
         _token("q5-no", "5", 10, 100, "number"),
@@ -1344,6 +1366,27 @@ def test_process_page_routes_experimental_profiles_through_worker(tmp_path, monk
     assert captured["korean_profile"] == "ko_v5_current"
     assert captured["extraction_variant"] == "table_graph_v1"
     assert captured["env_overrides"]["PADDLE_OCR_TEXT_RECOGNITION_MODEL_NAME"] == "PP-OCRv5_mobile_rec"
+
+
+def test_process_page_rejects_benchmark_only_variants_without_opt_in(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "process-benchmark-only.db")
+    database.init_db()
+    page = Page(
+        id="page-benchmark-only",
+        original_image_path=str(tmp_path / "page.jpg"),
+        display_name="Benchmark-only page",
+        page_type="uploaded",
+        page_type_confidence=0.0,
+        warnings=[],
+        created_at="2026-04-28T00:00:00+00:00",
+    )
+    database.upsert_page(page)
+    client = TestClient(app)
+
+    response = client.post("/api/pages/page-benchmark-only/process?extraction_variant=accuracy_recovery_v2")
+
+    assert response.status_code == 400
+    assert "benchmark-only" in response.json()["detail"]
 
 
 def test_process_page_routes_baseline_through_worker_when_runtime_config_drifted(tmp_path, monkeypatch) -> None:

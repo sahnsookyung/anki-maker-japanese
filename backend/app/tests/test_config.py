@@ -116,6 +116,7 @@ def test_accuracy_recovery_v2_variant_payload_and_components_are_exposed() -> No
     assert variants["mcq_choice_glyph_v1"]["label"] == "MCQ choice glyph recovery"
     assert variants["accuracy_recovery_v2"]["label"] == "Accuracy recovery v2"
     assert "Benchmark-only" in variants["residual_diagnostics_v1"]["description"]
+    assert variants["accuracy_recovery_v2"]["benchmark_only"] is True
     assert v1_components < v2_components
     assert {
         "jp_region_columns_v1",

@@ -167,6 +167,33 @@ describe("preferredExperimentalOcrSelection", () => {
     });
   });
 
+  it("does not choose benchmark-only extraction variants for normal experimental runs", () => {
+    expect(
+      preferredExperimentalOcrSelection({
+        profiles: [
+          {
+            id: "jp_v3_mobile_current",
+            label: "Current",
+            budget: "safe_local",
+            provider: "paddle",
+            creates_candidates: true,
+            description: "Control"
+          }
+        ],
+        variants: [
+          { id: "accuracy_recovery_v2", label: "Accuracy recovery v2", benchmark_only: true },
+          { id: "baseline_current", label: "Baseline", description: "Control" }
+        ],
+        default_profile: "jp_v3_mobile_current",
+        default_variant: "baseline_current"
+      })
+    ).toEqual({
+      modelProfile: "jp_v3_mobile_current",
+      koreanProfile: "ko_v5_current",
+      extractionVariant: "baseline_current"
+    });
+  });
+
   it("uses an available Korean profile when the default Korean id is absent", () => {
     expect(
       preferredExperimentalOcrSelection({

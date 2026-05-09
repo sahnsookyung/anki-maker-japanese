@@ -46,7 +46,7 @@ def load_golden_pages(path: Path, repo_root: Path) -> list[GoldenPage]:
         if page_data.get("stub"):
             continue
         category = str(page_data.get("category") or "")
-        if category not in {"vocab_table", "spelling_vocab_table", "reading_mcq", "spelling_mcq"}:
+        if category not in {"vocab_table", "spelling_vocab_table", "jp_ko_meaning_vocab", "reading_mcq", "spelling_mcq"}:
             continue
         image_path = Path(page_data.get("image_path") or "")
         if not image_path.is_absolute():
@@ -96,7 +96,7 @@ def _row_from_dict(data: dict[str, Any]) -> GoldenVocabRow:
         section=str(data.get("section") or ""),
         column=str(data.get("column") or ""),
         surface=str(data["surface"]),
-        reading=str(data["reading"]),
+        reading=str(data.get("reading") or ""),
         meaning_ko=str(data["meaning_ko"]),
     )
 

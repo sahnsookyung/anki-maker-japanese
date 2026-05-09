@@ -123,6 +123,70 @@ def extract_vocab_items_dual_ocr(
     return items
 
 
+def extract_jp_ko_meaning_items(
+    japanese_tokens: list[OcrToken],
+    korean_tokens: list[OcrToken] | None = None,
+    validator: DictionaryValidator | None = None,
+) -> list[dict]:
+    del validator
+    combined = _unique_tokens([*japanese_tokens, *(korean_tokens or [])])
+    items: list[dict] = []
+    for line in group_tokens_by_line(combined):
+        content = [token for token in line if token.script_class != "punctuation" and token.text not in {"□", "☐", "▢"}]
+        if len(content) < 2:
+            continue
+        surface_candidates = [
+            token
+            for token in content
+            if _has_japanese(token.text) and not _has_hangul(token.text) and _clean_surface(token.text)
+        ]
+        meaning_candidates = [token for token in content if _has_hangul(token.text) and _clean_korean_meaning(token.text)]
+        if not surface_candidates or not meaning_candidates:
+            continue
+        surface_token = min(surface_candidates, key=lambda token: (token.bbox[0], -token.confidence))
+        meaning_token = max(meaning_candidates, key=lambda token: (token.confidence, token.bbox[2] - token.bbox[0]))
+        surface = _clean_surface(surface_token.text)
+        meaning = _clean_korean_meaning(meaning_token.text)
+        if not surface or not meaning:
+            continue
+        bbox = union_bbox([surface_token.bbox, meaning_token.bbox])
+        confidence = min(surface_token.confidence, meaning_token.confidence)
+        token_ids = [surface_token.id, meaning_token.id]
+        items.append(
+            {
+                "id": new_id("vocab"),
+                "type": "vocab_item",
+                "vocab_type": "jp_ko_meaning",
+                "surface": surface,
+                "reading": "",
+                "meaning_ko": meaning,
+                "field_evidence": {
+                    "surface": token_evidence([surface_token], surface),
+                    "meaning_ko": token_evidence([meaning_token], meaning),
+                },
+                "evidence_tokens": token_ids,
+                "bbox": bbox,
+                "row_bbox": bbox,
+                "surface_bbox": surface_token.bbox,
+                "meaning_bbox": meaning_token.bbox,
+                "confidence": round(confidence, 3),
+                "needs_review": confidence < 0.75,
+                "warnings": ["Meaning-only vocab row; no reading OCR field expected."],
+                "study_writing": False,
+                "study_reading": False,
+                "study_meaning": True,
+            }
+        )
+    return items
+
+
+def _unique_tokens(tokens: list[OcrToken]) -> list[OcrToken]:
+    unique: dict[str, OcrToken] = {}
+    for token in tokens:
+        unique.setdefault(token.id, token)
+    return list(unique.values())
+
+
 def _candidate_extraction_components(components: frozenset[str]) -> frozenset[str]:
     """Keep failed row-alignment experiments diagnostic until a benchmark gate admits them."""
     return frozenset(component for component in components if component not in ROW_ALIGNMENT_DIAGNOSTIC_COMPONENTS)

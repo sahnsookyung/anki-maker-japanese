@@ -40,6 +40,10 @@ def classify_page(tokens: list[OcrToken], image_height: int | None = None) -> tu
             return "reading_mcq", 0.72, features
         return "spelling_mcq", 0.72, features
 
+    has_kana = scripts["hiragana"] + scripts["katakana"] > 2
+    if has_japanese and has_hangul and not has_kana and (checkbox_count >= 4 or len(tokens) >= 12):
+        return "jp_ko_meaning_vocab", 0.66, features
+
     if has_japanese and ((has_hangul and (checkbox_count >= 4 or len(tokens) >= 20)) or checkbox_count >= 8):
         return "vocab_table", 0.68, features
 

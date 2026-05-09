@@ -155,6 +155,34 @@ def test_vocab_csv_preserves_enabled_study_direction_fields() -> None:
     assert row[4:7] == ["", "1", ""]
 
 
+def test_vocab_csv_allows_meaning_only_vocab_without_reading() -> None:
+    card = CardCandidate(
+        id="vocab-card",
+        page_id="page-1",
+        source_type="vocab_item",
+        source_id="vocab-1",
+        source={
+            "vocab_type": "jp_ko_meaning",
+            "surface": "学校",
+            "reading": "",
+            "meaning_ko": "학교",
+            "study_writing": False,
+            "study_reading": False,
+            "study_meaning": True,
+        },
+        note_type="jp_vocab_entry",
+        front="学校",
+        back="학교",
+    )
+
+    csv_text = cards_to_csv([card])
+    data_lines = [line for line in csv_text.splitlines() if not line.startswith("#")]
+    [row] = list(csv.reader(StringIO("\n".join(data_lines))))
+
+    assert row[:4] == [vocab_key("学校", "", "학교"), "学校", "", "학교"]
+    assert row[4:7] == ["", "", "1"]
+
+
 def test_vocab_csv_deduplicates_notes_by_surface_and_reading() -> None:
     weaker = CardCandidate(
         id="vocab-card-weak",

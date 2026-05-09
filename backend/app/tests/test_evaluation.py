@@ -12,7 +12,7 @@ from app.evaluation.mcq_eval import evaluate_mcq_page
 from app.evaluation.vocab_eval import evaluate_vocab_page
 from app.extraction import pipeline
 from app.extraction.document_graph import graph_from_tokens, graph_with_card_hypotheses
-from app.extraction.vocab import extract_vocab_items_dual_ocr
+from app.extraction.vocab import extract_jp_ko_meaning_items, extract_vocab_items_dual_ocr
 from app.models.schemas import (
     CardCandidate,
     DocumentParseBlock,
@@ -45,6 +45,33 @@ def test_load_golden_pages_accepts_nested_expected_rows() -> None:
 def test_meaning_matches_normalized_korean_parts() -> None:
     assert meaning_matches("발 다리", "발, 다리")
     assert meaning_matches("북쪽출입구", "북쪽 출입구")
+
+
+def test_jp_ko_meaning_vocab_extracts_without_fabricating_reading(tmp_path: Path) -> None:
+    surface = _token("surface", "学校", [10, 10, 45, 24], "kanji")
+    meaning = _token("meaning", "학교", [70, 10, 105, 24], "hangul", source="paddleocr_korean")
+
+    [item] = extract_jp_ko_meaning_items([surface], [meaning])
+    [card] = pipeline.vocab_cards("page", item)
+    golden = GoldenPage(
+        page_id="page",
+        image_path=tmp_path / "page.jpg",
+        category="jp_ko_meaning_vocab",
+        expected_page_type="jp_ko_meaning_vocab",
+        expected_rows=[
+            GoldenVocabRow(row_id="row-1", section="", column="", surface="学校", reading="", meaning_ko="학교")
+        ],
+    )
+    result = evaluate_vocab_page(golden, ProcessResult(page=_page(tmp_path), tokens=[surface, meaning], cards=[card], script_summary={}))
+
+    assert item["reading"] == ""
+    assert item["vocab_type"] == "jp_ko_meaning"
+    assert card.front == "学校"
+    assert card.back == "학교"
+    assert card.source["study_meaning"] is True
+    assert result.matched_rows == 1
+    assert result.reading_expected == 0
+    assert result.reading_accuracy == 0.0
 
 
 def test_dual_ocr_extracts_vocab_entry_from_ocr_evidence_without_glossary_fill() -> None:
@@ -720,9 +747,19 @@ def test_benchmark_mcq_miss_analysis_lists_source_field_errors(tmp_path) -> None
             "choices": ["木", "化", "犬", "山"],
             "correct_choice_no": 2,
             "correct_answer": "花",
+            "field_evidence": {
+                "target": {"text": "はな", "provenance": "ocr", "token_ids": ["target"], "bbox": [10, 10, 40, 24]},
+                "correct_answer": {"text": "花", "provenance": "ocr", "token_ids": ["answer"], "bbox": [50, 10, 70, 24]},
+                "correct_choice_no": {"text": "2", "provenance": "answer_strip_ocr", "token_ids": ["answer-strip"], "bbox": [10, 80, 80, 96]},
+            },
         },
     )
-    process_result = ProcessResult(page=_page(tmp_path), tokens=[], cards=[card], script_summary={})
+    tokens = [
+        _token("target", "はな", [10, 10, 40, 24], "hiragana"),
+        _token("answer", "花", [50, 10, 70, 24], "kanji"),
+        _token("answer-strip", "2", [10, 80, 80, 96], "number"),
+    ]
+    process_result = ProcessResult(page=_page(tmp_path), tokens=tokens, cards=[card], script_summary={})
     eval_result = evaluate_mcq_page(golden, process_result)
 
     analysis = benchmark_ocr_modes._miss_analysis(golden, process_result, eval_result)
@@ -1230,12 +1267,37 @@ def test_missing_vocab_row_recovery_requires_complete_live_region_evidence(monke
     assert diagnostics["rejected"] == 0
 
 
-def test_korean_residual_glyph_repairs_are_guarded() -> None:
-    numeric_item = {"surface": "九つ", "reading": "ここのつ", "meaning_ko": "400"}
-    wrong_month_item = {"surface": "九つ", "reading": "ここのつ", "meaning_ko": "9월"}
+def test_korean_residual_glyph_does_not_synthesize_numeric_unit_from_surface(monkeypatch: pytest.MonkeyPatch) -> None:
+    item = {
+        "id": "row-1",
+        "surface": "九つ",
+        "reading": "ここのつ",
+        "meaning_ko": "400",
+        "bbox": [10, 10, 110, 30],
+        "field_evidence": {"meaning_ko": {"bbox": [60, 20, 96, 42], "token_ids": ["meaning-token"], "confidence": 0.7}},
+    }
+    token = _token("number-only", "400", [60, 20, 96, 42], "number", confidence=0.91)
+    monkeypatch.setattr(
+        pipeline,
+        "_safe_recognize_region",
+        lambda **kwargs: SimpleNamespace(text="400", confidence=0.91, tokens=[token], bbox=kwargs["bbox"], cache={"hit": False}),
+    )
 
-    assert pipeline._residual_korean_shape_repair_text(numeric_item) == "9개"
-    assert pipeline._residual_korean_shape_repair_text(wrong_month_item) is None
+    items, recovered_tokens, diagnostics = pipeline._recover_korean_residual_glyph_items(
+        [item],
+        [token],
+        Path("unused.jpg"),
+        "page",
+        800,
+        1000,
+        "hash",
+        "jp_v3_det_v3_rec",
+        "ko_v5_current",
+    )
+
+    assert items[0]["meaning_ko"] == "400"
+    assert recovered_tokens == []
+    assert diagnostics["counts"]["ko_glyph_rejected_no_hangul"] == 1
     assert pipeline._recovery_shortens_existing_hangul("그에어컨", "에어") is True
 
 
@@ -1270,7 +1332,7 @@ def test_prompt_line_cleanup_preserves_leading_digits_and_removes_noise() -> Non
     assert pipeline._clean_mcq_prompt_line_text("-50の半分は25です日") == "50の半分は25です。"
     assert pipeline._clean_mcq_prompt_line_text("①きょうは天気です②あした") == "きょうは天気です。"
     assert pipeline._repair_mcq_prompt_sentence_v2("きょうは土よう目です", "") == "きょうは土よう日です。"
-    assert pipeline._repair_mcq_prompt_sentence_v2("傘をよみます", "本") == "本をよみます。"
+    assert pipeline._repair_mcq_prompt_sentence_v2("傘をよみます", "本") == "傘をよみます。"
 
 
 def test_mcq_choice_glyph_recovery_updates_source_fields_only(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1288,7 +1350,7 @@ def test_mcq_choice_glyph_recovery_updates_source_fields_only(monkeypatch: pytes
         },
         "field_evidence": {"choices": {"bbox": [10, 10, 90, 40], "token_ids": ["choice-band"]}},
     }
-    crop_text = ["天気", "天気", "夫気", "夫気"]
+    crop_text = ["天気", "天气", "夫気", "夫气"]
 
     def fake_recognize_region(**kwargs: object) -> SimpleNamespace:
         field = str(kwargs["field"])
@@ -1318,7 +1380,7 @@ def test_mcq_choice_glyph_recovery_updates_source_fields_only(monkeypatch: pytes
         "ko_v5_current",
     )
 
-    assert len(recovered_tokens) == 8
+    assert len(recovered_tokens) == 4
     assert diagnostics["counts"]["choice_glyph_accepted"] == 1
     assert items[0]["choices"] == ["semantic-a", "semantic-b", "semantic-c", "semantic-d"]
     assert items[0]["correct_answer"] == "semantic-b"
@@ -2175,10 +2237,26 @@ def test_mcq_evaluator_scores_source_fields_separately_from_semantics(tmp_path) 
                 "correct_answer": "がっこう",
                 "correct_choice_no": 1,
             },
+            "field_evidence": {
+                "target": {"text": "学校", "provenance": "ocr", "token_ids": ["target"], "bbox": [10, 10, 40, 24]},
+                "choice_1": {"text": "がっこう", "provenance": "ocr", "token_ids": ["choice-1"], "bbox": [10, 30, 60, 44]},
+                "choice_2": {"text": "せんせい", "provenance": "ocr", "token_ids": ["choice-2"], "bbox": [70, 30, 120, 44]},
+                "choice_3": {"text": "でんしゃ", "provenance": "ocr", "token_ids": ["choice-3"], "bbox": [130, 30, 180, 44]},
+                "choice_4": {"text": "きょうしつ", "provenance": "ocr", "token_ids": ["choice-4"], "bbox": [190, 30, 250, 44]},
+                "correct_choice_no": {"text": "1", "provenance": "answer_strip_ocr", "token_ids": ["answer-strip"], "bbox": [10, 80, 80, 96]},
+            },
         },
     )
+    tokens = [
+        _token("target", "学校", [10, 10, 40, 24], "kanji"),
+        _token("choice-1", "がっこう", [10, 30, 60, 44], "hiragana"),
+        _token("choice-2", "せんせい", [70, 30, 120, 44], "hiragana"),
+        _token("choice-3", "でんしゃ", [130, 30, 180, 44], "hiragana"),
+        _token("choice-4", "きょうしつ", [190, 30, 250, 44], "hiragana"),
+        _token("answer-strip", "1①", [10, 80, 80, 96], "mixed"),
+    ]
 
-    result = evaluate_mcq_page(golden, ProcessResult(page=_page(tmp_path), tokens=[], cards=[card], script_summary={}))
+    result = evaluate_mcq_page(golden, ProcessResult(page=_page(tmp_path), tokens=tokens, cards=[card], script_summary={}))
 
     assert result.matched_questions == 1
     assert result.source_field_matches == 4

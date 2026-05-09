@@ -68,6 +68,14 @@ SUPPORTED_EXTRACTION_VARIANTS = {
     "mcq_choice_glyph_v1",
     "accuracy_recovery_v2",
 }
+BENCHMARK_ONLY_EXTRACTION_VARIANTS = {
+    "residual_diagnostics_v1",
+    "jp_region_columns_v1",
+    "ko_residual_glyph_v1",
+    "mcq_prompt_line_ocr_v1",
+    "mcq_choice_glyph_v1",
+    "accuracy_recovery_v2",
+}
 EXTRACTION_VARIANT_ORDER = [
     DEFAULT_EXTRACTION_VARIANT,
     "line_graph_v1",
@@ -645,12 +653,13 @@ def available_korean_profile_payload() -> list[dict[str, Any]]:
     ]
 
 
-def available_variant_payload() -> list[dict[str, str]]:
+def available_variant_payload() -> list[dict[str, object]]:
     return [
         {
             "id": variant_id,
             "label": EXTRACTION_VARIANT_DESCRIPTIONS[variant_id][0],
             "description": EXTRACTION_VARIANT_DESCRIPTIONS[variant_id][1],
+            "benchmark_only": variant_id in BENCHMARK_ONLY_EXTRACTION_VARIANTS,
         }
         for variant_id in EXTRACTION_VARIANT_ORDER
     ]

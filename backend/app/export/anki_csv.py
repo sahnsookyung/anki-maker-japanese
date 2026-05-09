@@ -143,10 +143,11 @@ def vocab_note_row(card: CardCandidate) -> list[str] | None:
     reading = _source_text(source, "reading")
     meaning = _source_text(source, "meaning_ko")
     has_vocab_card = study_direction_count(source)
-    if not (surface and reading and meaning and has_vocab_card):
+    reading_required = source.get("vocab_type") != "jp_ko_meaning"
+    if not (surface and meaning and has_vocab_card and (reading or not reading_required)):
         return None
     return [
-        vocab_key(surface, reading),
+        vocab_key(surface, reading, meaning),
         clean_csv_field(surface),
         clean_csv_field(reading),
         clean_csv_field(meaning),
@@ -184,8 +185,8 @@ def vocab_note_rows(cards: list[CardCandidate]) -> list[list[str]]:
 
 
 def vocab_key(surface: str, reading: str, meaning_ko: str = "") -> str:
-    del meaning_ko
-    normalized = "|".join(_normalize_key_part(part) for part in (surface, reading))
+    key_parts = (surface, reading) if reading else (surface, f"meaning:{meaning_ko}")
+    normalized = "|".join(_normalize_key_part(part) for part in key_parts)
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
     return f"vocab_{digest}"
 

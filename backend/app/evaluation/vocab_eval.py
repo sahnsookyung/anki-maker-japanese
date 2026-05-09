@@ -15,6 +15,9 @@ class VocabEvalResult:
     expected_page_type: str
     actual_page_type: str
     expected_rows: int
+    surface_expected: int
+    reading_expected: int
+    meaning_expected: int
     extracted_items: int
     layout_matched_rows: int
     ocr_supported_items: int
@@ -39,24 +42,24 @@ class VocabEvalResult:
 
     @property
     def surface_accuracy(self) -> float:
-        return self.surface_matches / self.expected_rows if self.expected_rows else 0.0
+        return self.surface_matches / self.surface_expected if self.surface_expected else 0.0
 
     @property
     def reading_accuracy(self) -> float:
-        return self.reading_matches / self.expected_rows if self.expected_rows else 0.0
+        return self.reading_matches / self.reading_expected if self.reading_expected else 0.0
 
     @property
     def meaning_accuracy(self) -> float:
-        return self.meaning_matches / self.expected_rows if self.expected_rows else 0.0
+        return self.meaning_matches / self.meaning_expected if self.meaning_expected else 0.0
 
 
 def evaluate_vocab_page(golden: GoldenPage, process_result: ProcessResult) -> VocabEvalResult:
     items = _items_from_cards(process_result.cards)
-    live_token_ids = {token.id for token in process_result.tokens}
+    live_tokens = {token.id: token for token in process_result.tokens}
     live_block_ids = {
         block.id for block in (process_result.document_parse.blocks if process_result.document_parse else []) if block.id
     }
-    ocr_supported_items = [item for item in items if _item_has_ocr_evidence(item, live_token_ids, live_block_ids)]
+    ocr_supported_items = [item for item in items if _item_has_ocr_evidence(item, live_tokens, live_block_ids)]
     layout_matched_rows = _layout_matched_rows(golden.expected_rows, items)
     matched: set[str] = set()
     matched_item_indexes: set[int] = set()
@@ -70,37 +73,40 @@ def evaluate_vocab_page(golden: GoldenPage, process_result: ProcessResult) -> Vo
     meaning_match_count = 0
 
     for row in golden.expected_rows:
-        surface_index = _first_unmatched_field_index(items, surface_item_indexes, "surface", row.surface, live_token_ids, live_block_ids)
+        surface_index = _first_unmatched_field_index(items, surface_item_indexes, "surface", row.surface, live_tokens, live_block_ids)
         if surface_index is not None:
             surface_matches += 1
             surface_item_indexes.add(surface_index)
-        reading_index = _first_unmatched_field_index(items, reading_item_indexes, "reading", row.reading, live_token_ids, live_block_ids)
-        if reading_index is not None:
-            reading_matches += 1
-            reading_item_indexes.add(reading_index)
-        meaning_index = _first_unmatched_field_index(items, meaning_item_indexes, "meaning_ko", row.meaning_ko, live_token_ids, live_block_ids)
+        if row.reading:
+            reading_index = _first_unmatched_field_index(items, reading_item_indexes, "reading", row.reading, live_tokens, live_block_ids)
+            if reading_index is not None:
+                reading_matches += 1
+                reading_item_indexes.add(reading_index)
+        meaning_index = _first_unmatched_field_index(items, meaning_item_indexes, "meaning_ko", row.meaning_ko, live_tokens, live_block_ids)
         if meaning_index is not None:
             meaning_match_count += 1
             meaning_item_indexes.add(meaning_index)
 
-        surface_reading_index = _first_unmatched_row_index(
-            items,
-            surface_reading_item_indexes,
-            row,
-            ("surface", "reading"),
-            live_token_ids,
-            live_block_ids,
-        )
-        if surface_reading_index is not None:
-            surface_reading_matches += 1
-            surface_reading_item_indexes.add(surface_reading_index)
+        if row.reading:
+            surface_reading_index = _first_unmatched_row_index(
+                items,
+                surface_reading_item_indexes,
+                row,
+                ("surface", "reading"),
+                live_tokens,
+                live_block_ids,
+            )
+            if surface_reading_index is not None:
+                surface_reading_matches += 1
+                surface_reading_item_indexes.add(surface_reading_index)
 
+        row_fields = ("surface", "reading", "meaning_ko") if row.reading else ("surface", "meaning_ko")
         candidate_index = _first_unmatched_row_index(
             items,
             matched_item_indexes,
             row,
-            ("surface", "reading", "meaning_ko"),
-            live_token_ids,
+            row_fields,
+            live_tokens,
             live_block_ids,
         )
         if candidate_index is not None:
@@ -113,6 +119,9 @@ def evaluate_vocab_page(golden: GoldenPage, process_result: ProcessResult) -> Vo
         expected_page_type=golden.expected_page_type,
         actual_page_type=process_result.page.page_type,
         expected_rows=len(golden.expected_rows),
+        surface_expected=len(golden.expected_rows),
+        reading_expected=sum(1 for row in golden.expected_rows if row.reading),
+        meaning_expected=len(golden.expected_rows),
         extracted_items=len(items),
         layout_matched_rows=layout_matched_rows,
         ocr_supported_items=len(ocr_supported_items),
@@ -169,13 +178,13 @@ def _first_unmatched_field_index(
     matched_item_indexes: set[int],
     field: str,
     expected: str,
-    live_token_ids: set[str],
+    live_tokens: dict[str, Any],
     live_block_ids: set[str],
 ) -> int | None:
     for index, item in enumerate(items):
         if index in matched_item_indexes:
             continue
-        if _item_field_matches_with_ocr(item, field, expected, live_token_ids, live_block_ids):
+        if _item_field_matches_with_ocr(item, field, expected, live_tokens, live_block_ids):
             return index
     return None
 
@@ -185,28 +194,29 @@ def _first_unmatched_row_index(
     matched_item_indexes: set[int],
     row: GoldenVocabRow,
     fields: tuple[str, ...],
-    live_token_ids: set[str],
+    live_tokens: dict[str, Any],
     live_block_ids: set[str],
 ) -> int | None:
     for index, item in enumerate(items):
         if index in matched_item_indexes:
             continue
         if all(
-            _item_field_matches_with_ocr(item, field, _expected_field_value(row, field), live_token_ids, live_block_ids)
+            _item_field_matches_with_ocr(item, field, _expected_field_value(row, field), live_tokens, live_block_ids)
             for field in fields
         ):
             return index
     return None
 
 
-def _item_has_ocr_evidence(item: dict[str, Any], live_token_ids: set[str], live_block_ids: set[str]) -> bool:
+def _item_has_ocr_evidence(item: dict[str, Any], live_tokens: dict[str, Any], live_block_ids: set[str]) -> bool:
     evidence = item.get("field_evidence")
     if not isinstance(evidence, dict):
         return False
-    return all(_field_has_ocr_evidence(evidence.get(field), item.get(field), live_token_ids, live_block_ids) for field in ("surface", "reading", "meaning_ko"))
+    fields = ("surface", "meaning_ko") if item.get("vocab_type") == "jp_ko_meaning" and not item.get("reading") else ("surface", "reading", "meaning_ko")
+    return all(_field_has_ocr_evidence(evidence.get(field), item.get(field), live_tokens, live_block_ids) for field in fields)
 
 
-def _field_has_ocr_evidence(value: Any, expected_value: Any, live_token_ids: set[str], live_block_ids: set[str]) -> bool:
+def _field_has_ocr_evidence(value: Any, expected_value: Any, live_tokens: dict[str, Any], live_block_ids: set[str]) -> bool:
     if not isinstance(value, dict):
         return False
     provenance = value.get("provenance")
@@ -221,7 +231,11 @@ def _field_has_ocr_evidence(value: Any, expected_value: Any, live_token_ids: set
     if provenance in {"ocr", "crop_ocr", "region_ocr", "jp_region_ocr", "ko_glyph_ocr", "google_vision"}:
         if not isinstance(token_ids, list) or not token_ids:
             return False
-        return all(isinstance(token_id, str) and token_id in live_token_ids for token_id in token_ids)
+        tokens = [live_tokens.get(token_id) for token_id in token_ids if isinstance(token_id, str)]
+        if len(tokens) != len(token_ids) or any(token is None for token in tokens):
+            return False
+        token_text = " ".join(str(getattr(token, "text", "") or "") for token in tokens if token)
+        return _evidence_supports_value(token_text, expected_text)
     if provenance == "paddleocr_vl_block":
         if not isinstance(block_ids, list) or not block_ids:
             return False
@@ -233,7 +247,7 @@ def _item_field_matches_with_ocr(
     item: dict[str, Any],
     field: str,
     expected: str,
-    live_token_ids: set[str],
+    live_tokens: dict[str, Any],
     live_block_ids: set[str],
 ) -> bool:
     if not _field_value_matches(field, item.get(field), expected):
@@ -241,7 +255,7 @@ def _item_field_matches_with_ocr(
     evidence = item.get("field_evidence")
     if not isinstance(evidence, dict):
         return False
-    return _field_has_ocr_evidence(evidence.get(field), item.get(field), live_token_ids, live_block_ids)
+    return _field_has_ocr_evidence(evidence.get(field), item.get(field), live_tokens, live_block_ids)
 
 
 def _field_value_matches(field: str, actual: Any, expected: str) -> bool:

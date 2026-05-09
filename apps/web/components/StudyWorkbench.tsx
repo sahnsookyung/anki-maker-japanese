@@ -10,6 +10,7 @@ import {
   type FieldOcrPreview,
   type OcrComparison,
   type OcrEngine,
+  type OcrExtractionVariant,
   type OcrProfilePayload,
   type OcrRun,
   type OcrRuntimeStatus,
@@ -99,6 +100,7 @@ const PAGE_TYPE_LABELS: Record<string, string> = {
   uploaded: "Uploaded",
   vocab_table: "Vocabulary table",
   spelling_vocab_table: "Spelling vocabulary",
+  jp_ko_meaning_vocab: "Japanese to Korean meaning",
   reading_mcq: "Reading MCQ",
   spelling_mcq: "Spelling MCQ",
   unknown_review_required: "Needs manual review"
@@ -118,7 +120,7 @@ const SCRIPT_LABELS = [
 ];
 const BATCH_REPORT_STORAGE_KEY = "anki-maker-latest-batch-report";
 const INITIAL_STATUS_MESSAGE = "Upload a study-book photo to begin.";
-const EXTRACTION_VARIANTS = [
+const EXTRACTION_VARIANTS: OcrExtractionVariant[] = [
   { id: "baseline_current", label: "Frozen current extractor" },
   { id: "line_graph_v1", label: "Line graph experiment" },
   { id: "table_graph_v1", label: "Table graph experiment" },
@@ -146,6 +148,14 @@ const EXTRACTION_VARIANTS = [
   { id: "mcq_choice_glyph_v1", label: "MCQ choice glyph recovery" },
   { id: "accuracy_recovery_v2", label: "Accuracy recovery v2" }
 ];
+const BENCHMARK_ONLY_VARIANT_IDS = new Set([
+  "residual_diagnostics_v1",
+  "jp_region_columns_v1",
+  "ko_residual_glyph_v1",
+  "mcq_prompt_line_ocr_v1",
+  "mcq_choice_glyph_v1",
+  "accuracy_recovery_v2"
+]);
 
 function scrollTargetElement(
   target: CardScrollTarget,
@@ -867,11 +877,13 @@ export function StudyWorkbench() { // NOSONAR: orchestration root delegates rend
                 <label>
                   <span>Extraction variant</span>
                   <select value={experimentalVariant} onChange={(event) => setExperimentalVariant(event.target.value)}>
-                    {(ocrProfiles.variants.length ? ocrProfiles.variants : EXTRACTION_VARIANTS).map((variant) => (
-                      <option value={variant.id} key={variant.id}>
-                        {variant.label}
-                      </option>
-                    ))}
+                    {(ocrProfiles.variants.length ? ocrProfiles.variants : EXTRACTION_VARIANTS)
+                      .filter((variant) => variant.benchmark_only !== true && !BENCHMARK_ONLY_VARIANT_IDS.has(variant.id))
+                      .map((variant) => (
+                        <option value={variant.id} key={variant.id}>
+                          {variant.label}
+                        </option>
+                      ))}
                   </select>
                 </label>
                 {(ocrProfiles.korean_profiles?.length ?? 0) > 0 ? (

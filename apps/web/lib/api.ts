@@ -115,7 +115,8 @@ export type OcrModelProfile = {
 export type OcrExtractionVariant = {
   id: string;
   label: string;
-  description: string;
+  description?: string;
+  benchmark_only?: boolean;
 };
 
 export type OcrProfilePayload = {
@@ -142,7 +143,9 @@ export function preferredExperimentalOcrSelection(payload: OcrProfilePayload): E
     payload.profiles.find((profile) => profile.creates_candidates !== false)?.id ??
     payload.default_profile;
   const variantIds = ["accuracy_recovery_v1", "v5_full_adapted_v1", payload.default_variant];
-  const extractionVariant = variantIds.find((variantId) => payload.variants.some((variant) => variant.id === variantId)) ?? payload.default_variant;
+  const extractionVariant =
+    variantIds.find((variantId) => payload.variants.some((variant) => variant.id === variantId && variant.benchmark_only !== true)) ??
+    payload.default_variant;
   const koreanProfiles = payload.korean_profiles ?? [];
   const koreanProfile =
     koreanProfiles.find((profile) => profile.id === payload.default_korean_profile)?.id ??

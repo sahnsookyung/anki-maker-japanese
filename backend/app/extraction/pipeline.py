@@ -30,7 +30,7 @@ from app.extraction.cards import mcq_cards, vocab_cards
 from app.extraction.classifier import classify_page
 from app.extraction.document_graph import graph_from_document_parse, graph_from_tokens, graph_with_card_hypotheses
 from app.extraction.mcq import extract_mcq_items
-from app.extraction.vocab import extract_vocab_items, extract_vocab_items_dual_ocr, vocab_alignment_diagnostics
+from app.extraction.vocab import extract_jp_ko_meaning_items, extract_vocab_items, extract_vocab_items_dual_ocr, vocab_alignment_diagnostics
 from app.extraction.vl_document import extract_from_document_parse
 from app.extraction.vlm_cleanup import cleanup_mcq_items, cleanup_vocab_items
 from app.models.schemas import CardCandidate, DocumentParseResult, OcrRun, OcrToken, Page, ProcessResult
@@ -160,7 +160,8 @@ def process_page(
         cards: list[CardCandidate] = []
         all_tokens = list(evidence_tokens)
         recovery_diagnostics: dict[str, object] = {}
-        if page_type == "vocab_table":
+        if page_type in {"vocab_table", "jp_ko_meaning_vocab"}:
+            meaning_only_vocab = page_type == "jp_ko_meaning_vocab"
             if VOCAB_DUAL_OCR_ENABLED and not any(token.source == PADDLEOCR_VL_ENGINE for token in tokens):
                 if cached_payload and cached_payload.korean_tokens:
                     korean_tokens = cached_payload.korean_tokens
@@ -170,11 +171,14 @@ def process_page(
                 all_tokens.extend(korean_tokens)
                 document_graph = graph_from_tokens(page.id, all_tokens, source=engine_result.engine, transform=transform)
                 ocr_warnings.extend(korean_ocr_warnings)
-                items = extract_vocab_items_dual_ocr(tokens, korean_tokens, validator, extraction_variant=normalized_variant)
+                if meaning_only_vocab:
+                    items = extract_jp_ko_meaning_items(tokens, korean_tokens, validator)
+                else:
+                    items = extract_vocab_items_dual_ocr(tokens, korean_tokens, validator, extraction_variant=normalized_variant)
                 if not items:
-                    items = extract_vocab_items(tokens, validator)
+                    items = extract_jp_ko_meaning_items(tokens, [], validator) if meaning_only_vocab else extract_vocab_items(tokens, validator)
             else:
-                items = extract_vocab_items(tokens, validator)
+                items = extract_jp_ko_meaning_items(tokens, [], validator) if meaning_only_vocab else extract_vocab_items(tokens, validator)
             vlm_warnings: list[str] = []
             if VLM_CLEANUP_ENABLED and items:
                 items, vlm_warnings = cleanup_vocab_items(processed_path, items, tokens, validator)
@@ -194,7 +198,7 @@ def process_page(
                 if recovered_tokens:
                     all_tokens.extend(recovered_tokens)
                     document_graph = graph_from_tokens(page.id, all_tokens, source=engine_result.engine, transform=transform)
-            if _uses_v2_vocab_recovery(variant_components) and items:
+            if _uses_v2_vocab_recovery(variant_components) and items and not meaning_only_vocab:
                 items, recovered_tokens, v2_vocab_diagnostics = _recover_v2_vocab_items(
                     items,
                     all_tokens,
@@ -381,7 +385,7 @@ def _process_document_parse_result(
     extraction = extract_from_document_parse(document_parse, validator)
     document_graph = graph_from_document_parse(document_parse, transform=transform)
     cards: list[CardCandidate] = []
-    if extraction.page_type == "vocab_table":
+    if extraction.page_type in {"vocab_table", "jp_ko_meaning_vocab"}:
         for item in extraction.items:
             cards.extend(vocab_cards(page.id, item))
     elif extraction.page_type in {"reading_mcq", "spelling_mcq"}:
@@ -1970,8 +1974,7 @@ def _recover_korean_residual_glyph_items(
     for item in sorted(items, key=_korean_residual_priority):
         if counts["ko_glyph_attempted"] >= OCR_RECOVERY_MAX_FIELDS:
             break
-        shape_repair = _residual_korean_shape_repair_text(item)
-        if _korean_uncertainty_bucket(item) is None and not shape_repair:
+        if _korean_uncertainty_bucket(item) is None:
             continue
         bbox = _meaning_recovery_bbox(item, anchors, page_width, page_height, prefer_existing=True) or _meaning_recovery_bbox(
             item,
@@ -2008,15 +2011,7 @@ def _recover_korean_residual_glyph_items(
         else:
             attempt["text"] = getattr(result, "text", "")
             attempt["cache"] = getattr(result, "cache", {})
-        selection = _selected_recovered_korean_evidence(result, item) or _numeric_unit_glyph_candidate(item, result)
-        if shape_repair:
-            prior = _residual_korean_shape_repair_token(item, page_id, bbox)
-            if prior:
-                text, confidence, token, evidence_bbox = prior
-                if not selection or _recovery_shortens_existing_hangul(text, selection[0]) or selection[0] != text:
-                    selection = (text, confidence, [token.id], evidence_bbox)
-                    recovered_tokens.append(token)
-                    attempt["strategy"] = "korean_residual_glyph_shape"
+        selection = _selected_recovered_korean_evidence(result, item)
         if not selection:
             counts["ko_glyph_rejected_no_hangul"] += 1
             attempts.append(attempt)
@@ -2049,99 +2044,9 @@ def _recover_korean_residual_glyph_items(
         "attempts": attempts,
     }
 
-
-def _residual_korean_shape_repair_token(item: dict, page_id: str, fallback_bbox: list[float] | None = None) -> tuple[str, float, OcrToken, list[float]] | None:
-    evidence = _field_evidence_for(item, "meaning_ko")
-    bbox = _valid_bbox(evidence.get("bbox") if isinstance(evidence, dict) else None) or _valid_bbox(item.get("meaning_bbox")) or _valid_bbox(fallback_bbox)
-    if not bbox:
-        return None
-    repaired = _residual_korean_shape_repair_text(item)
-    if not repaired:
-        return None
-    confidence = max(0.78, min(0.9, _evidence_confidence(evidence) + 0.08))
-    token = OcrToken(
-        id=new_id("tok"),
-        page_id=page_id,
-        text=repaired,
-        bbox=bbox,
-        confidence=round(confidence, 3),
-        script_class="mixed" if _has_digit_and_hangul(repaired) else "hangul",
-        source="ko_glyph_ocr",
-    )
-    return repaired, token.confidence, token, bbox
-
-
 def _korean_residual_priority(item: dict) -> tuple[int, float]:
-    if _residual_korean_shape_repair_text(item):
-        return (0, 0.0)
     base_priority, confidence = _korean_recovery_priority(item)
     return (base_priority + 1, confidence)
-
-
-def _residual_korean_shape_repair_text(item: dict) -> str | None:
-    current = _normalized_recovery_text(str(item.get("meaning_ko") or ""))
-    surface = str(item.get("surface") or "")
-    reading = str(item.get("reading") or "")
-    if current == "만니다":
-        return current[:1] + _compose_hangul_syllable("ㄴ", "ㅏ") + current[2:]
-    elif current == "사요일" and ("金" in surface or "きんようび" in reading):
-        return _compose_hangul_syllable("ㄱ", "ㅡ", "ㅁ") + current[1:]
-    elif current == "새다" and ("新" in surface or "あたらしい" in reading):
-        return current[:1] + _compose_hangul_syllable("ㄹ", "ㅗ", "ㅂ") + current[1:]
-    elif current in {"400", "9"} and ("九" in surface or "ここの" in reading):
-        return f"{_japanese_number_from_surface(surface) or 9}{_korean_unit_from_japanese_fields(item) or '개'}"
-    elif current == "어니" and ("母" in surface or "おかあさん" in reading):
-        return current[:1] + _compose_hangul_syllable("ㅁ", "ㅓ") + current[1:]
-    elif current == "어니" and ("金" in surface or "おかね" in reading):
-        return _compose_hangul_syllable("ㄷ", "ㅗ", "ㄴ")
-    return None
-
-
-_HANGUL_LEADS = ["ㄱ", "ㄲ", "ㄴ", "ㄷ", "ㄸ", "ㄹ", "ㅁ", "ㅂ", "ㅃ", "ㅅ", "ㅆ", "ㅇ", "ㅈ", "ㅉ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ"]
-_HANGUL_VOWELS = ["ㅏ", "ㅐ", "ㅑ", "ㅒ", "ㅓ", "ㅔ", "ㅕ", "ㅖ", "ㅗ", "ㅘ", "ㅙ", "ㅚ", "ㅛ", "ㅜ", "ㅝ", "ㅞ", "ㅟ", "ㅠ", "ㅡ", "ㅢ", "ㅣ"]
-_HANGUL_TAILS = ["", "ㄱ", "ㄲ", "ㄳ", "ㄴ", "ㄵ", "ㄶ", "ㄷ", "ㄹ", "ㄺ", "ㄻ", "ㄼ", "ㄽ", "ㄾ", "ㄿ", "ㅀ", "ㅁ", "ㅂ", "ㅄ", "ㅅ", "ㅆ", "ㅇ", "ㅈ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ"]
-
-
-def _compose_hangul_syllable(lead: str, vowel: str, tail: str = "") -> str:
-    try:
-        lead_index = _HANGUL_LEADS.index(lead)
-        vowel_index = _HANGUL_VOWELS.index(vowel)
-        tail_index = _HANGUL_TAILS.index(tail)
-    except ValueError:
-        return ""
-    return chr(0xAC00 + (lead_index * 21 + vowel_index) * 28 + tail_index)
-
-
-def _numeric_unit_glyph_candidate(item: dict, result: object) -> tuple[str, float, list[str], list[float]] | None:
-    unit = _korean_unit_from_japanese_fields(item)
-    number = _japanese_number_from_surface(str(item.get("surface") or ""))
-    if not unit or number is None:
-        return None
-    text = str(getattr(result, "text", "") or "")
-    current = str(item.get("meaning_ko") or "")
-    if not (_bare_numeric_korean_meaning(current) or any(unit_char in text for unit_char in (unit, "개", "건", "분", "부", "엔"))):
-        return None
-    tokens = list(getattr(result, "tokens", []))
-    evidence = _field_evidence_for(item, "meaning_ko")
-    token_ids = (
-        [token.id for token in tokens]
-        or _unique_string_values(item.get("evidence_tokens", []))
-        or _unique_string_values(evidence.get("token_ids") if isinstance(evidence, dict) else [])
-    )
-    if not token_ids:
-        return None
-    confidence = max(
-        [
-            *[float(getattr(token, "confidence", 0.0) or 0.0) for token in tokens],
-            float(getattr(result, "confidence", 0.0) or 0.0),
-            _evidence_confidence(evidence) if isinstance(evidence, dict) else 0.0,
-            0.74,
-        ]
-    )
-    bbox = _bbox_union([token.bbox for token in tokens]) or list(getattr(result, "bbox", [])) or _valid_bbox(evidence.get("bbox") if isinstance(evidence, dict) else None)
-    if not _valid_bbox(bbox):
-        return None
-    return f"{number}{unit}", min(confidence, 0.9), token_ids, [float(value) for value in bbox]
 
 
 def _recover_mcq_source_items(
@@ -2358,30 +2263,7 @@ def _recover_mcq_prompt_lines(
         if not isinstance(source_fields, dict):
             source_fields = _strict_mcq_source_fields_from_item(item)
             item["source_fields"] = source_fields
-        sentence = str(source_fields.get("sentence") or "")
         target = str(source_fields.get("target") or item.get("target") or "")
-        evidence = _field_evidence_for(item, "sentence")
-        evidence_token_ids = _unique_string_values(evidence.get("token_ids") if isinstance(evidence, dict) else [])
-        evidence_repair = _repair_mcq_prompt_sentence_v2(sentence, target)
-        if evidence_repair != sentence and evidence_token_ids and _japanese_sentence_like(evidence_repair):
-            counts["prompt_line_attempted"] += 1
-            _set_mcq_source_field(item, "sentence", evidence_repair, "prompt_line_ocr", raw_text=sentence)
-            if isinstance(item.get("field_evidence"), dict) and isinstance(item["field_evidence"].get("sentence"), dict):
-                item["field_evidence"]["sentence"]["token_ids"] = evidence_token_ids
-                item["field_evidence"]["sentence"]["bbox"] = evidence.get("bbox") if isinstance(evidence, dict) else None
-                item["field_evidence"]["sentence"]["confidence"] = max(0.72, _evidence_confidence(evidence) if isinstance(evidence, dict) else 0.72)
-            counts["prompt_line_accepted"] += 1
-            attempts.append(
-                {
-                    "source_id": item.get("id"),
-                    "question_no": item.get("question_no"),
-                    "bbox": evidence.get("bbox") if isinstance(evidence, dict) else None,
-                    "accepted": True,
-                    "accepted_text": evidence_repair,
-                    "strategy": "prompt_line_existing_ocr_cleanup",
-                }
-            )
-            continue
         if counts["prompt_line_attempted"] >= OCR_RECOVERY_MAX_REGIONS:
             continue
         bbox = _mcq_prompt_line_bbox(item, page_width, page_height)
@@ -2403,11 +2285,9 @@ def _recover_mcq_prompt_lines(
             provenance="prompt_line_ocr",
         )
         attempt: dict[str, object] = {"source_id": item.get("id"), "question_no": item.get("question_no"), "bbox": bbox, "accepted": False}
-        candidate = _clean_mcq_prompt_line_text(str(getattr(result, "text", "") or "") or sentence)
+        candidate = _clean_mcq_prompt_line_text(str(getattr(result, "text", "") or ""))
         repaired = _repair_mcq_prompt_sentence_v2(candidate, target)
-        if repaired == candidate:
-            repaired = _repair_mcq_prompt_sentence_v2(sentence, target)
-        candidate = repaired if repaired != sentence else candidate
+        candidate = repaired if repaired != candidate else candidate
         attempt["text"] = candidate
         if result:
             attempt["cache"] = getattr(result, "cache", {})
@@ -2416,16 +2296,15 @@ def _recover_mcq_prompt_lines(
             attempts.append(attempt)
             continue
         tokens = list(getattr(result, "tokens", []) if result else [])
-        if not tokens and not evidence_token_ids:
+        if not tokens:
             counts["prompt_line_rejected_no_tokens"] += 1
             attempts.append(attempt)
             continue
         confidence = max(
             float(getattr(result, "confidence", 0.0) or 0.0),
-            _evidence_confidence(evidence) if isinstance(evidence, dict) else 0.0,
             max([float(getattr(token, "confidence", 0.0) or 0.0) for token in tokens] or [0.0]),
         )
-        if confidence < 0.72 and repaired == sentence:
+        if confidence < 0.72:
             counts["prompt_line_rejected_low_confidence"] += 1
             attempts.append(attempt)
             continue
@@ -2438,9 +2317,6 @@ def _recover_mcq_prompt_lines(
             attempts.append(attempt)
             continue
         _set_mcq_source_field(item, "sentence", candidate, "prompt_line_ocr", result=result)
-        if not result and isinstance(evidence, dict):
-            item["field_evidence"]["sentence"]["token_ids"] = evidence_token_ids
-            item["field_evidence"]["sentence"]["confidence"] = confidence
         recovered_tokens.extend(tokens)
         counts["prompt_line_accepted"] += 1
         attempt["accepted"] = True
@@ -2474,6 +2350,7 @@ def _recover_mcq_choice_glyphs(
         "choice_glyph_rejected_duplicate_unsupported": 0,
         "choice_glyph_rejected_low_confidence": 0,
         "choice_glyph_rejected_no_crop": 0,
+        "choice_glyph_rejected_no_change": 0,
         "choice_glyph_rejected_semantic_contamination": 0,
     }
     for index, item in enumerate(items):
@@ -2491,7 +2368,6 @@ def _recover_mcq_choice_glyphs(
             counts["choice_glyph_rejected_incomplete_choices"] += 1
             continue
         counts["choice_glyph_attempted"] += 1
-        repaired = _repair_spelling_mcq_source_choices_v2([str(choice) for choice in choices], str(source_fields.get("target") or item.get("target") or ""))
         attempt: dict[str, object] = {"source_id": item.get("id"), "question_no": item.get("question_no"), "accepted": False, "raw_choices": choices}
         choice_bboxes = _mcq_choice_glyph_bboxes(item, page_width, page_height)
         if not choice_bboxes:
@@ -2517,8 +2393,6 @@ def _recover_mcq_choice_glyphs(
                 provenance="choice_glyph_ocr",
             )
             choice_results.append(result)
-            if result:
-                recovered_tokens.extend(result.tokens)
         attempt["crops"] = [
             {
                 "choice_no": choice_no,
@@ -2528,21 +2402,21 @@ def _recover_mcq_choice_glyphs(
             }
             for choice_no, (bbox, result) in enumerate(zip(choice_bboxes, choice_results), start=1)
         ]
-        if repaired == choices:
+        if len(choice_results) != 4 or any(not list(getattr(result, "tokens", []) if result else []) for result in choice_results):
             counts["choice_glyph_rejected_no_crop"] += 1
             attempts.append(attempt)
             continue
-        if len(repaired) != 4:
+        repaired, token_groups, glyph_confidence = _choice_glyph_choices_from_results(choice_results)
+        if len(repaired) != 4 or len(token_groups) != 4:
             counts["choice_glyph_rejected_incomplete_choices"] += 1
             attempts.append(attempt)
             continue
-        if len(set(repaired)) < 4 and len(set(choices)) == len(set(repaired)):
-            counts["choice_glyph_rejected_duplicate_unsupported"] += 1
+        if repaired == [str(choice) for choice in choices]:
+            counts["choice_glyph_rejected_no_change"] += 1
             attempts.append(attempt)
             continue
-        glyph_tokens, glyph_confidence = _choice_glyph_tokens_for_repair(page_id, repaired, choice_bboxes, choice_results)
-        if len(glyph_tokens) != 4:
-            counts["choice_glyph_rejected_no_crop"] += 1
+        if len(set(repaired)) < 4 and not _choice_duplicate_text_is_crop_supported(repaired, token_groups):
+            counts["choice_glyph_rejected_duplicate_unsupported"] += 1
             attempts.append(attempt)
             continue
         if glyph_confidence < 0.76:
@@ -2551,8 +2425,8 @@ def _recover_mcq_choice_glyphs(
             continue
         source_fields["choices"] = repaired
         _sync_source_correct_answer(source_fields)
-        recovered_tokens.extend(glyph_tokens)
-        _mark_choice_glyph_evidence(item, repaired, choices, glyph_tokens, glyph_confidence)
+        recovered_tokens.extend(token for group in token_groups for token in group)
+        _mark_choice_glyph_evidence(item, repaired, choices, token_groups, glyph_confidence)
         field_evidence = item.get("field_evidence") if isinstance(item.get("field_evidence"), dict) else {}
         if isinstance(field_evidence, dict) and isinstance(field_evidence.get("choices"), dict):
             field_evidence["choices"]["provenance"] = "choice_glyph_ocr"
@@ -2581,24 +2455,22 @@ def _recover_mcq_choice_glyphs(
     }
 
 
-def _repair_mcq_prompt_sentence_v2(sentence: str, target: str) -> str:
+def _repair_mcq_prompt_sentence_v2(sentence: str, target: str = "") -> str:
+    del target
     repaired = sentence.strip()
     repaired = re.sub(r"^[円子日しよさい、な\s]+(?=(きょう|ともだち|まいにち|じぶん))", "", repaired)
-    repaired = _normalize_prompt_line_visual_noise(repaired, target)
-    repaired = _drop_target_prefix_noise(repaired, target)
+    repaired = _normalize_prompt_line_visual_noise(repaired)
     repaired = _trim_after_first_japanese_sentence_predicate(repaired)
     if repaired and not repaired.endswith(("。", "？", "?", "！", "!")) and re.search(r"(です|ます|だ)$", repaired):
         repaired = f"{repaired}。"
     return repaired if repaired != sentence.strip() and _japanese_sentence_like(repaired) else sentence
 
 
-def _normalize_prompt_line_visual_noise(text: str, target: str) -> str:
+def _normalize_prompt_line_visual_noise(text: str) -> str:
     text = re.sub(r"^[「]?皆(?=ょう[日目背])", "日", text)
     text = re.sub(r"(?<=[よょ]う)[目背]", "日", text)
     text = re.sub(r"妹(?=みです)", "休", text)
     text = re.sub(r"(?<=外)囲", "国", text)
-    if target and _has_japanese_text(target) and target not in text:
-        text = re.sub(r"^[一-龯]+(?=をよみます)", target, text)
     text = re.sub(r"きれ(?=です)", "きれい", text)
     return re.sub(r"[正店]{2,}$", "", text)
 
@@ -2635,129 +2507,67 @@ def _source_target_bbox_aligns_prompt(item: dict) -> bool:
     )
 
 
-def _repair_spelling_mcq_source_choices_v2(choices: list[str], target: str) -> list[str]:
-    del target
-    raw_choices = [str(choice) for choice in choices]
-    normalized = [_strip_choice_glyph_suffix_noise(choice, raw_choices) for choice in raw_choices]
-    repaired = _apply_choice_duplicate_visual_alternates(normalized)
-    repaired = [_apply_single_choice_visual_alternate(choice, repaired) for choice in repaired]
-    return repaired if repaired != choices and len(repaired) == 4 else choices
-
-
-_CHOICE_CHAR_ALTERNATES = {
-    "気": ["气"],
-    "前": ["萌"],
-    "間": ["問"],
-    "花": ["化"],
-    "茶": ["芙"],
-    "新": ["親"],
-}
-
-
-def _strip_choice_glyph_suffix_noise(choice: str, peer_choices: list[str]) -> str:
-    if not choice:
-        return choice
-    for peer in sorted(set(peer_choices), key=len, reverse=True):
-        suffix = choice[len(peer) :]
-        if (
-            peer
-            and peer != choice
-            and choice.startswith(peer)
-            and len(suffix) <= 2
-            and re.search(r"[ぁ-ん]$", peer)
-            and re.fullmatch(r"[\u3040-\u30ff\u4e00-\u9fff]+", suffix)
-        ):
-            return peer
-    return choice
-
-
-def _apply_choice_duplicate_visual_alternates(choices: list[str]) -> list[str]:
-    seen: dict[str, int] = {}
-    repaired: list[str] = []
-    for choice in choices:
-        occurrence = seen.get(choice, 0)
-        seen[choice] = occurrence + 1
-        if occurrence and len(choice) > 1:
-            repaired.append(_apply_position_visual_alternate(choice, prefer_last=True))
-        elif occurrence == 0 and choices.count(choice) > 1 and len(choice) == 1:
-            repaired.append(_apply_position_visual_alternate(choice, prefer_last=False))
-        else:
-            repaired.append(choice)
-    return repaired
-
-
-def _apply_position_visual_alternate(choice: str, *, prefer_last: bool) -> str:
-    indexes = range(len(choice) - 1, -1, -1) if prefer_last else range(len(choice))
-    for index in indexes:
-        alternates = _CHOICE_CHAR_ALTERNATES.get(choice[index], [])
-        for alternate in alternates:
-            return f"{choice[:index]}{alternate}{choice[index + 1:]}"
-    return choice
-
-
-def _apply_single_choice_visual_alternate(choice: str, peer_choices: list[str]) -> str:
-    if choice.startswith("間") and any(peer.endswith(choice[1:]) for peer in peer_choices if peer != choice):
-        return "問" + choice[1:]
-    if choice == "茶" and any(len(peer) == 1 for peer in peer_choices):
-        return "芙"
-    return choice
-
-
-def _choice_glyph_tokens_for_repair(
-    page_id: str,
-    choices: list[str],
-    bboxes: list[list[float]],
-    results: list[object | None],
-) -> tuple[list[OcrToken], float]:
-    tokens: list[OcrToken] = []
+def _choice_glyph_choices_from_results(results: list[object | None]) -> tuple[list[str], list[list[OcrToken]], float]:
+    choices: list[str] = []
+    token_groups: list[list[OcrToken]] = []
     confidences: list[float] = []
-    for index, (choice, bbox) in enumerate(zip(choices, bboxes), start=1):
-        result = results[index - 1] if index - 1 < len(results) else None
+    for result in results[:4]:
         result_tokens = list(getattr(result, "tokens", []) if result else [])
         if not result_tokens:
-            return [], 0.0
+            return [], [], 0.0
+        text = _clean_choice_glyph_result_text(str(getattr(result, "text", "") or " ".join(str(token.text) for token in result_tokens)))
+        if not text or not _has_japanese_text(text):
+            return [], [], 0.0
         result_confidence = max(
             [float(getattr(result, "confidence", 0.0) or 0.0), *[float(getattr(token, "confidence", 0.0) or 0.0) for token in result_tokens]]
         )
-        confidence = min(0.92, result_confidence)
-        confidences.append(confidence)
-        tokens.append(
-            OcrToken(
-                id=new_id("tok"),
-                page_id=page_id,
-                text=choice,
-                bbox=[float(value) for value in bbox],
-                confidence=round(confidence, 3),
-                script_class="mixed" if _has_japanese_text(choice) else "unknown",
-                source="choice_glyph_ocr",
-            )
-        )
-    return tokens, round(sum(confidences) / len(confidences), 3) if confidences else 0.0
+        choices.append(text)
+        token_groups.append(result_tokens)
+        confidences.append(min(0.92, result_confidence))
+    return choices, token_groups, round(sum(confidences) / len(confidences), 3) if confidences else 0.0
+
+
+def _clean_choice_glyph_result_text(text: str) -> str:
+    text = re.sub(r"^[\s①②③④1-4.、:：)）(（-]+", "", text.strip())
+    text = re.split(r"[\s①②③④]\s*", text, maxsplit=1)[0]
+    text = re.sub(r"\s+", "", text)
+    return text.strip("「」[]()（）")
+
+
+def _choice_duplicate_text_is_crop_supported(choices: list[str], token_groups: list[list[OcrToken]]) -> bool:
+    for index, choice in enumerate(choices):
+        if choices.count(choice) <= 1:
+            continue
+        token_text = "".join(token.text for token in token_groups[index])
+        if choice not in token_text:
+            return False
+    return True
 
 
 def _mark_choice_glyph_evidence(
     item: dict,
     choices: list[str],
     raw_choices: list[object],
-    tokens: list[OcrToken],
+    token_groups: list[list[OcrToken]],
     confidence: float,
 ) -> None:
     field_evidence = item.get("field_evidence")
     if not isinstance(field_evidence, dict):
         field_evidence = {}
         item["field_evidence"] = field_evidence
-    for index, token in enumerate(tokens, start=1):
+    for index, tokens in enumerate(token_groups, start=1):
+        bbox = _bbox_union([token.bbox for token in tokens])
         field_evidence[f"choice_{index}"] = {
-            "bbox": token.bbox,
-            "token_ids": [token.id],
-            "text": token.text,
-            "confidence": token.confidence,
+            "bbox": bbox,
+            "token_ids": [token.id for token in tokens],
+            "text": choices[index - 1],
+            "confidence": max([token.confidence for token in tokens], default=confidence),
             "provenance": "choice_glyph_ocr",
             "region_strategy": f"mcq_choice_glyph_{index}",
         }
     field_evidence["choices"] = {
-        "bbox": _bbox_union([token.bbox for token in tokens]),
-        "token_ids": [token.id for token in tokens],
+        "bbox": _bbox_union([token.bbox for tokens in token_groups for token in tokens]),
+        "token_ids": [token.id for tokens in token_groups for token in tokens],
         "text": json.dumps(choices, ensure_ascii=False),
         "raw_text": json.dumps(raw_choices, ensure_ascii=False),
         "confidence": confidence,

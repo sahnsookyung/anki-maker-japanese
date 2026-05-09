@@ -43,6 +43,7 @@ from app.ocr.engines import PADDLEOCR_ENGINE, PADDLEOCR_VL_ENGINE, SUPPORTED_OCR
 from app.ocr.page_worker import run_document_parse_worker, run_page_process_worker
 from app.ocr.profiles import (
     BASELINE_MODEL_PROFILE,
+    BENCHMARK_ONLY_EXTRACTION_VARIANTS,
     DEFAULT_EXTRACTION_VARIANT,
     DEFAULT_KOREAN_PROFILE,
     available_korean_profile_payload,
@@ -162,6 +163,10 @@ def process(
         str,
         Query(description="Experimental extraction variant. Default keeps the frozen current extractor."),
     ] = DEFAULT_EXTRACTION_VARIANT,
+    allow_benchmark_variant: Annotated[
+        bool,
+        Query(description="Internal benchmark harness opt-in for benchmark-only extraction variants."),
+    ] = False,
 ):
     page = database.get_page(page_id)
     if not page:
@@ -173,6 +178,8 @@ def process(
         normalized_variant = normalize_extraction_variant(extraction_variant)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if normalized_variant in BENCHMARK_ONLY_EXTRACTION_VARIANTS and not allow_benchmark_variant:
+        raise HTTPException(status_code=400, detail=f"Extraction variant {normalized_variant!r} is benchmark-only.")
     if not profile.creates_candidates and normalized_engine == PADDLEOCR_ENGINE:
         raise HTTPException(status_code=400, detail=f"Profile {profile.id!r} is diagnostic-only and cannot create Anki candidates.")
     with ocr_runtime_job(blocking=False) as acquired:

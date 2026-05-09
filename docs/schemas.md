@@ -11,7 +11,7 @@ multi-user service with concurrent reviewers, remote access, role-based permissi
 - `original_image_path`: local upload path.
 - `processed_image_path`: local preprocessed image path.
 - `active_ocr_run_id`: the successful OCR run currently shown in review/export views.
-- `page_type`: `uploaded`, `vocab_table`, `reading_mcq`, `spelling_mcq`, or `unknown_review_required`.
+- `page_type`: `uploaded`, `vocab_table`, `jp_ko_meaning_vocab`, `reading_mcq`, `spelling_mcq`, or `unknown_review_required`.
 - `page_type_confidence`: classifier score.
 - `warnings`: preprocessing/OCR/extraction issues visible in the UI.
 

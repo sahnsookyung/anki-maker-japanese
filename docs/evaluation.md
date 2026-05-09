@@ -46,13 +46,15 @@ Do not treat generated uploads, processed images, crops, exports, or SQLite data
 Each page entry has:
 
 - `image_path`: local path relative to the repo root.
-- `category`: source material category, such as `vocab_table`, `reading_mcq`, or `spelling_mcq`.
+- `category`: source material category, such as `vocab_table`, `jp_ko_meaning_vocab`, `reading_mcq`, or `spelling_mcq`.
 - `expected_page_type`: classifier target.
 - `language_columns`: expected script/language role for each field.
 - `expected_rows`: manually transcribed truth rows.
 - `scoring`: matching policy for a lightweight evaluator.
 
-Each vocab row should include:
+Each standard vocab row should include `surface`, `reading`, and `meaning_ko`. `jp_ko_meaning_vocab` rows omit `reading`; scoring skips the reading field for those rows and requires live OCR evidence for `surface` and `meaning_ko`.
+
+Each standard vocab row should include:
 
 ```json
 {
@@ -104,7 +106,7 @@ Track these separately:
 
 - Page classification accuracy: did the page become `vocab_table`, `reading_mcq`, etc.
 - Row recall: how many golden rows were found.
-- Field exact match: `surface` and `reading`.
+- Field exact match: `surface` and `reading` when a reading field exists.
 - Korean meaning match: exact or contains normalized Korean text.
 - Script confusion: Japanese fields containing Hangul, Korean fields missing Hangul, or Korean fields dominated by kanji/kana.
 - Card generation count: how many usable card candidates were emitted.

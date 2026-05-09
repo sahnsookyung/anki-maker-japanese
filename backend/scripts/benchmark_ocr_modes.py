@@ -1222,6 +1222,7 @@ def _run_api_pipeline(
                 "model_profile": model_profile,
                 "korean_profile": korean_profile,
                 "extraction_variant": extraction_variant,
+                "allow_benchmark_variant": "true",
             },
         )
     memory_samples.append(_memory_sample(f"after_{engine}_api"))
@@ -1795,7 +1796,8 @@ def _raw_field_coverage(golden: GoldenPage, process_result: ProcessResult) -> di
     }
     for row in golden.expected_rows:
         _count_field_match(field_totals["surface"], _contains(all_text, row.surface))
-        _count_field_match(field_totals["reading"], _contains(all_text, row.reading))
+        if row.reading:
+            _count_field_match(field_totals["reading"], _contains(all_text, row.reading))
         _count_field_match(field_totals["meaning_ko"], meaning_matches(korean_text or all_text, row.meaning_ko))
     for question in golden.expected_questions:
         _count_field_match(field_totals["sentence"], _contains(all_text, question.sentence))
@@ -1849,9 +1851,10 @@ def _text_coverage(
         for row in golden.expected_rows:
             checks = [
                 _contains(text, row.surface),
-                _contains(text, row.reading),
                 meaning_matches(text, row.meaning_ko),
             ]
+            if row.reading:
+                checks.insert(1, _contains(text, row.reading))
             fields_expected += len(checks)
             fields_matched += sum(1 for matched in checks if matched)
             items_expected += 1
@@ -1884,7 +1887,8 @@ def _contains(text: str, expected: str) -> bool:
 
 
 def _expected_field_count(golden: GoldenPage) -> int:
-    return len(golden.expected_rows) * 3 + sum(3 + len(question.choices) for question in golden.expected_questions)
+    vocab_fields = sum(2 + int(bool(row.reading)) for row in golden.expected_rows)
+    return vocab_fields + sum(3 + len(question.choices) for question in golden.expected_questions)
 
 
 def _expected_item_count(golden: GoldenPage) -> int:
@@ -1930,9 +1934,12 @@ def _result_dict(result: VocabEvalResult | McqEvalResult, engine: str = PADDLEOC
         "ocr_supported_items": result.ocr_supported_items,
         "glossary_supported_items": result.glossary_supported_items,
         "surface_matches": result.surface_matches,
+        "surface_expected": result.surface_expected,
         "reading_matches": result.reading_matches,
+        "reading_expected": result.reading_expected,
         "surface_reading_matches": result.surface_reading_matches,
         "meaning_matches": result.meaning_matches,
+        "meaning_expected": result.meaning_expected,
         "generated_notes": result.generated_notes,
         "korean_field_missing_hangul": result.korean_field_missing_hangul,
         "japanese_field_has_hangul": result.japanese_field_has_hangul,
@@ -2578,7 +2585,7 @@ def _success_gate_payload(results: list[PageBenchmark]) -> list[dict[str, Any]]:
         for field in ("meaning", "surface", "reading"):
             if isinstance(base.get(f"{field}_matches"), (int, float)):
                 group[field][0] += _numeric(base.get(f"{field}_matches"))
-                group[field][1] += _numeric(base.get("expected"))
+                group[field][1] += _numeric(base.get(f"{field}_expected", base.get("expected")))
         if isinstance(base.get("source_field_matches"), (int, float)):
             group["mcq_semantic"][0] += _numeric(base.get("matched"))
             group["mcq_semantic"][1] += _numeric(base.get("expected"))
