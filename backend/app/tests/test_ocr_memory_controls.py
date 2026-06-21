@@ -652,7 +652,11 @@ def test_region_ocr_cache_only_mode_skips_uncached_dispatch(tmp_path, monkeypatc
     manager = CropOcrWorkerManager(idle_seconds=999, max_rss_mb=5000, job_timeout_seconds=1)
     monkeypatch.setenv("OCR_RECOVERY_REGION_CACHE_ONLY", "true")
     monkeypatch.setattr(crop_worker, "OCR_CACHE_DIR", tmp_path / "cache")
-    monkeypatch.setattr(manager, "_dispatch", lambda _request: (_ for _ in ()).throw(AssertionError("must not dispatch")))
+
+    def fail_dispatch(_request: object) -> object:
+        raise AssertionError("must not dispatch")
+
+    monkeypatch.setattr(manager, "_dispatch", fail_dispatch)
 
     try:
         manager.recognize_region(
