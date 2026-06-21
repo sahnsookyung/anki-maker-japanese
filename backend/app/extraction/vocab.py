@@ -359,7 +359,12 @@ def _layout_vocab_rows(
     table_sections = _section_ranges(japanese_tokens)
     split_embedded = "v5_token_split_v1" in components
     consume_korean = bool({"v5_vocab_rows_v1", "ko_alignment_v1"} & components)
-    row_tolerance_scale = 1.25 if "ko_alignment_v1" in components else (1.1 if "v5_vocab_rows_v1" in components else 1.0)
+    if "ko_alignment_v1" in components:
+        row_tolerance_scale = 1.25
+    elif "v5_vocab_rows_v1" in components:
+        row_tolerance_scale = 1.1
+    else:
+        row_tolerance_scale = 1.0
     for surface_token, surface, column, embedded_reading, surface_bbox, embedded_reading_bbox in _surface_candidates(
         japanese_tokens,
         split_x,
@@ -378,8 +383,15 @@ def _layout_vocab_rows(
             prefer_hiragana_reading=split_embedded,
             allow_noisy_trailing_reading=split_embedded,
         )
-        reading = embedded_reading or (_clean_reading(reading_token.text, allow_noisy_trailing=split_embedded) if reading_token else "")
-        reading_bbox = embedded_reading_bbox if embedded_reading else (reading_token.bbox if reading_token else None)
+        if embedded_reading:
+            reading = embedded_reading
+            reading_bbox = embedded_reading_bbox
+        elif reading_token:
+            reading = _clean_reading(reading_token.text, allow_noisy_trailing=split_embedded)
+            reading_bbox = reading_token.bbox
+        else:
+            reading = ""
+            reading_bbox = None
         row_y_values = [_cy(surface_token)]
         if reading_token:
             row_y_values.append(_cy(reading_token))

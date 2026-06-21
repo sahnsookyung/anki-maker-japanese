@@ -236,6 +236,18 @@ def _suppress_non_actionable_dependency_warnings() -> None:
     warnings.filterwarnings("ignore", message="No ccache found.*")
 
 
+def _validated_worker_output_path(raw_path: str) -> Path:
+    output_path = Path(raw_path).expanduser().resolve()
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    try:
+        output_path.relative_to(temp_root)
+    except ValueError as exc:
+        raise ValueError("--output-json must be inside the system temporary directory.") from exc
+    if output_path.exists() and not output_path.is_file():
+        raise ValueError("--output-json must point to a file.")
+    return output_path
+
+
 def main() -> int:
     _suppress_non_actionable_dependency_warnings()
     parser = argparse.ArgumentParser(description="Run one page through a bounded OCR processing worker.")
@@ -249,6 +261,7 @@ def main() -> int:
     parser.add_argument("--output-json", required=True)
     args = parser.parse_args()
     try:
+        output_path = _validated_worker_output_path(args.output_json)
         if args.document_parse:
             if not args.image_path:
                 print("--image-path is required for document parsing.", file=sys.stderr)
@@ -267,7 +280,7 @@ def main() -> int:
                 korean_profile=args.korean_profile or None,
                 extraction_variant=args.extraction_variant,
             )
-        Path(args.output_json).write_text(json.dumps(result.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8")
+        output_path.write_text(json.dumps(result.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8")
         return 0
     except Exception as exc:
         print(str(exc), file=sys.stderr)

@@ -72,7 +72,7 @@ def test_jp_ko_meaning_vocab_extracts_without_fabricating_reading(tmp_path: Path
     assert card.source["study_japanese_to_korean"] is True
     assert result.matched_rows == 1
     assert result.reading_expected == 0
-    assert result.reading_accuracy == 0.0
+    assert result.reading_accuracy == pytest.approx(0.0)
 
 
 def test_dual_ocr_extracts_vocab_entry_from_ocr_evidence_without_glossary_fill() -> None:
@@ -1320,7 +1320,6 @@ def test_korean_residual_glyph_does_not_synthesize_numeric_unit_from_surface(mon
 
     items, recovered_tokens, diagnostics = pipeline._recover_korean_residual_glyph_items(
         [item],
-        [token],
         Path("unused.jpg"),
         "page",
         800,
@@ -1348,7 +1347,6 @@ def test_korean_residual_glyph_skips_when_region_ocr_unavailable(monkeypatch: py
 
     items, recovered_tokens, diagnostics = pipeline._recover_korean_residual_glyph_items(
         [item],
-        [],
         Path("unused.jpg"),
         "page",
         800,
@@ -1780,7 +1778,6 @@ def test_korean_crop_recovery_persists_live_recovery_tokens(tmp_path, monkeypatc
 
     items, tokens, diagnostics = pipeline._recover_korean_vocab_items(
         [item],
-        [],
         tmp_path / "page.png",
         "page",
         200,
@@ -1842,7 +1839,6 @@ def test_korean_region_recovery_accepts_high_confidence_token_from_noisy_region(
 
     items, tokens, diagnostics = pipeline._recover_korean_vocab_items(
         [item],
-        [],
         tmp_path / "page.png",
         "page",
         200,
@@ -1931,7 +1927,6 @@ def test_korean_recovery_prioritizes_bare_numeric_before_low_confidence_hangul_u
 
     items, _tokens, diagnostics = pipeline._recover_korean_vocab_items(
         [low_confidence_good, bare_numeric],
-        [],
         tmp_path / "page.png",
         "page",
         200,
@@ -1992,7 +1987,6 @@ def test_korean_recovery_completes_numeric_unit_from_ocr_backed_japanese_row(tmp
 
     items, tokens, diagnostics = pipeline._recover_korean_vocab_items(
         [item],
-        [_token("meaning", "5", [96, 10, 110, 24], "number", confidence=0.82, source="paddleocr_korean")],
         tmp_path / "page.png",
         "page",
         200,
@@ -2054,7 +2048,6 @@ def test_korean_recovery_rejects_numeric_unit_when_digits_disagree(tmp_path, mon
 
     items, tokens, diagnostics = pipeline._recover_korean_vocab_items(
         [item],
-        [_token("meaning", "400", [96, 10, 120, 24], "number", confidence=0.9, source="paddleocr_korean")],
         tmp_path / "page.png",
         "page",
         200,
@@ -2117,7 +2110,6 @@ def test_korean_region_recovery_rejects_unrelated_token_for_existing_hangul(tmp_
 
     items, tokens, diagnostics = pipeline._recover_korean_vocab_items(
         [item],
-        [],
         tmp_path / "page.png",
         "page",
         200,
@@ -2175,7 +2167,6 @@ def test_korean_region_recovery_rejects_neighbor_expanded_existing_meaning(tmp_p
 
     items, tokens, diagnostics = pipeline._recover_korean_vocab_items(
         [item],
-        [],
         tmp_path / "page.png",
         "page",
         200,
@@ -2215,7 +2206,6 @@ def test_korean_recovery_skips_header_like_rows_without_reading(tmp_path, monkey
 
     items, tokens, diagnostics = pipeline._recover_korean_vocab_items(
         [item],
-        [],
         tmp_path / "page.png",
         "page",
         200,
@@ -2456,22 +2446,23 @@ def test_mcq_choice_band_ocr_applies_answer_strip_to_strict_fields(tmp_path, mon
     assert items[0]["source_fields"]["correct_choice_no"] == 2
     assert items[0]["source_fields"]["correct_answer"] == "どようび"
     assert items[0]["field_evidence"]["correct_choice_no"]["provenance"] == "answer_strip_ocr"
+    assert calls
     assert calls[0]["bbox"] == [20.0, 76.0, 192.0, 100.0]
 
 
 def test_mcq_answer_strip_image_parser_creates_live_answer_tokens(tmp_path) -> None:
-    Image = pytest.importorskip("PIL.Image")
-    ImageDraw = pytest.importorskip("PIL.ImageDraw")
-    ImageFont = pytest.importorskip("PIL.ImageFont")
+    image_module = pytest.importorskip("PIL.Image")
+    image_draw_module = pytest.importorskip("PIL.ImageDraw")
+    image_font_module = pytest.importorskip("PIL.ImageFont")
 
-    font_path = pipeline._answer_strip_template_font_path(ImageFont)
+    font_path = pipeline._answer_strip_template_font_path(image_font_module)
     if not font_path:
         pytest.skip("No circled-digit font available for answer-strip parser test.")
     image_path = tmp_path / "answer-strip.png"
-    image = Image.new("RGB", (540, 180), (245, 242, 235))
-    draw = ImageDraw.Draw(image)
+    image = image_module.new("RGB", (540, 180), (245, 242, 235))
+    draw = image_draw_module.Draw(image)
     draw.rectangle([20, 70, 520, 120], fill=(178, 178, 172))
-    font = ImageFont.truetype(font_path, 22)
+    font = image_font_module.truetype(font_path, 22)
     draw.text((50, 82), "1② 2① 3④ 4④ 5① 6② 7③ 8④ 9④ 10④", fill=(0, 0, 0), font=font)
     image.save(image_path)
 
@@ -2698,8 +2689,8 @@ def test_residual_diagnostics_exposes_required_schema_fields(tmp_path: Path) -> 
     assert "ko_glyph_rejected_low_confidence" in entry["rejection_reasons"]
     assert entry["cache"]["hits"] == 1
     assert entry["cache"]["misses"] == 1
-    assert entry["confidence"] == 0.73
-    assert entry["resource_metrics"]["peak_rss_mb"] == 42.0
+    assert entry["confidence"] == pytest.approx(0.73)
+    assert entry["resource_metrics"]["peak_rss_mb"] == pytest.approx(42.0)
     assert (diagnostics_dir / "page-1.residuals.png").exists()
     assert (diagnostics_dir / "README.md").exists()
 
@@ -2993,7 +2984,7 @@ def test_full_page_cache_tokens_exclude_recovery_only_sources() -> None:
     assert [token.id for token in pipeline._full_page_cache_tokens(tokens)] == ["jp", "ko"]
 
 
-def test_ocr_cache_key_reuses_payload_across_extraction_variants() -> None:
+def test_ocr_cache_key_reuses_payload_across_extraction_variants(tmp_path: Path) -> None:
     manifest = {
         "profile_id": "jp_v3_det_v3_rec",
         "provider": "paddle",
@@ -3007,8 +2998,8 @@ def test_ocr_cache_key_reuses_payload_across_extraction_variants() -> None:
             "processed_width": 100,
             "processed_height": 200,
             "transform": {
-                "original_image_path": "/tmp/a.png",
-                "processed_image_path": "/tmp/a.processed.png",
+                "original_image_path": str(tmp_path / "a.png"),
+                "processed_image_path": str(tmp_path / "a.processed.png"),
                 "original_to_processed": {"pipeline": ["resize"]},
             },
         },
@@ -3026,7 +3017,7 @@ def test_ocr_cache_key_reuses_payload_across_extraction_variants() -> None:
             **manifest["preprocessing_config"],
             "transform": {
                 **manifest["preprocessing_config"]["transform"],
-                "processed_image_path": "/tmp/b.processed.png",
+                "processed_image_path": str(tmp_path / "b.processed.png"),
             },
         },
     }

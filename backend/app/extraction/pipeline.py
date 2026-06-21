@@ -58,6 +58,9 @@ class CachedOcrPayload:
     source_run_id: str
 
 
+HIRAGANA_READING_RUN_PATTERN = r"[ぁ-んー]+"
+
+
 def process_page(
     page: Page,
     engine: str = PADDLEOCR_ENGINE,
@@ -132,8 +135,7 @@ def process_page(
                 page=page,
                 run_id=run.id,
                 processed_path=processed_path,
-                preprocess_width=preprocess.width,
-                preprocess_height=preprocess.height,
+                preprocess_size=(preprocess.width, preprocess.height),
                 preprocess_warnings=preprocess.warnings,
                 ocr_warnings=engine_result.warnings,
                 document_parse=engine_result.document_parse,
@@ -184,7 +186,6 @@ def process_page(
             if _uses_korean_recovery(variant_components) and items:
                 items, recovered_tokens, recovery_diagnostics = _recover_korean_vocab_items(
                     items,
-                    all_tokens,
                     processed_path,
                     page.id,
                     preprocess.width,
@@ -359,8 +360,7 @@ def _process_document_parse_result(
     page: Page,
     run_id: str,
     processed_path: Path,
-    preprocess_width: int,
-    preprocess_height: int,
+    preprocess_size: tuple[int, int],
     preprocess_warnings: list[str],
     ocr_warnings: list[str],
     document_parse: DocumentParseResult,
@@ -371,6 +371,7 @@ def _process_document_parse_result(
     profile_manifest: dict[str, object] | None = None,
     cache_source_run_id: str | None = None,
 ) -> ProcessResult:
+    preprocess_width, preprocess_height = preprocess_size
     normalized_variant = normalize_extraction_variant(extraction_variant)
     profile = resolve_ocr_model_profile(model_profile)
     korean_ocr_profile = resolve_korean_ocr_profile(korean_profile)
@@ -917,7 +918,6 @@ def _uses_v2_mcq_recovery(components: frozenset[str]) -> bool:
 
 def _recover_korean_vocab_items(
     items: list[dict],
-    all_tokens: list[OcrToken],
     image_path: Path,
     page_id: str,
     page_width: int,
@@ -1241,7 +1241,6 @@ def _recover_v2_vocab_items(
     if "ko_residual_glyph_v1" in components:
         items, tokens, ko_diagnostics = _recover_korean_residual_glyph_items(
             items,
-            all_tokens,
             image_path,
             page_id,
             page_width,
@@ -1362,7 +1361,6 @@ def _jp_field_needs_recovery(item: dict, field: str) -> bool:
     value = str(item.get(field) or "").strip()
     if not value:
         return True
-    evidence = _field_evidence_for(item, field)
     if field == "surface":
         return not _has_japanese_text(value)
     return not _reading_like_text(value)
@@ -1945,12 +1943,14 @@ def _surface_token_from_line(tokens: list[OcrToken]) -> OcrToken | None:
 
 def _reading_token_from_line(tokens: list[OcrToken], surface_token: OcrToken | None) -> OcrToken | None:
     candidates = [token for token in tokens if token is not surface_token and _reading_like_text(token.text)]
-    return min(candidates, key=lambda token: abs(token.bbox[0] - (surface_token.bbox[2] if surface_token else 0.0))) if candidates else None
+    if not candidates:
+        return None
+    target_x = surface_token.bbox[2] if surface_token else 0.0
+    return min(candidates, key=lambda token: abs(token.bbox[0] - target_x))
 
 
 def _recover_korean_residual_glyph_items(
     items: list[dict],
-    all_tokens: list[OcrToken],
     image_path: Path,
     page_id: str,
     page_width: int,
@@ -2470,7 +2470,7 @@ def _repair_mcq_prompt_sentence_v2(sentence: str, target: str = "") -> str:
 
 
 def _normalize_prompt_line_visual_noise(text: str) -> str:
-    text = re.sub(r"^[「]?皆(?=ょう[日目背])", "日", text)
+    text = re.sub(r"^「?皆(?=ょう[日目背])", "日", text)
     text = re.sub(r"(?<=[よょ]う)[目背]", "日", text)
     text = re.sub(r"妹(?=みです)", "休", text)
     text = re.sub(r"(?<=外)囲", "国", text)
@@ -2756,7 +2756,7 @@ def _repair_mcq_source_choices(item: dict, choices: list[object]) -> list[object
 def _repair_reading_mcq_source_choices(choices: list[str]) -> list[str]:
     expanded: list[str] = []
     for choice in choices:
-        runs = re.findall(r"[ぁ-んー]+", choice)
+        runs = re.findall(HIRAGANA_READING_RUN_PATTERN, choice)
         if len(choices) < 4 and len(runs) >= 2 and len(choices) + len(runs) - 1 <= 4:
             expanded.extend(runs)
             continue
@@ -2770,7 +2770,7 @@ def _repair_reading_mcq_source_choices(choices: list[str]) -> list[str]:
 
 
 def _trim_reading_choice_outliers(choices: list[str]) -> list[str]:
-    lengths = [len(choice) for choice in choices if re.fullmatch(r"[ぁ-んー]+", choice)]
+    lengths = [len(choice) for choice in choices if re.fullmatch(HIRAGANA_READING_RUN_PATTERN, choice)]
     if len(lengths) < 4:
         return choices
     ordered = sorted(lengths)
@@ -2779,7 +2779,7 @@ def _trim_reading_choice_outliers(choices: list[str]) -> list[str]:
         return choices
     repaired = list(choices)
     for index, choice in enumerate(repaired):
-        if len(choice) == median_length + 1 and re.fullmatch(r"[ぁ-んー]+", choice):
+        if len(choice) == median_length + 1 and re.fullmatch(HIRAGANA_READING_RUN_PATTERN, choice):
             repaired[index] = choice[:-1]
     return repaired
 
@@ -2879,7 +2879,7 @@ def _apply_mcq_answer_strip_source_fields(
     if not answer_map:
         return 0
     accepted = 0
-    tokens = evidence_tokens if evidence_tokens is not None else [token for token in getattr(result, "tokens", [])]
+    tokens = evidence_tokens if evidence_tokens is not None else list(getattr(result, "tokens", []))
     token_ids = [token.id for token in tokens]
     evidence = {
         "bbox": getattr(result, "bbox", None),
@@ -3111,7 +3111,7 @@ def _answer_strip_templates(image_font: object, image_draw: object, font_path: s
                     fill=0,
                 )
                 array = np.array(image)
-                ys, xs = np.where(array < 240)
+                ys, xs = np.nonzero(array < 240)
                 if len(xs) == 0 or len(ys) == 0:
                     continue
                 templates.append((value, array[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]))
@@ -3121,7 +3121,10 @@ def _answer_strip_templates(image_font: object, image_draw: object, font_path: s
 
 
 def _classify_answer_strip_glyph(image: object, bbox: object, templates: list[tuple[int, object]], cv2: object, np: object) -> tuple[int | None, float]:
-    left, top, right, bottom = [int(round(value)) for value in bbox]
+    valid_bbox = _valid_bbox(bbox)
+    if not valid_bbox:
+        return None, float("inf")
+    left, top, right, bottom = [int(round(value)) for value in valid_bbox]
     pad = 2
     crop = np.array(image)[max(0, top - pad) : bottom + pad, max(0, left - pad) : right + pad]
     if crop.size == 0:
@@ -3150,7 +3153,7 @@ def _mean_token_confidence(tokens: list[OcrToken]) -> float:
 def _safe_recognize_region(**kwargs: object):
     try:
         return crop_ocr_worker.recognize_region(**kwargs)
-    except (OSError, ValueError, TimeoutError, RuntimeError):
+    except (OSError, ValueError, RuntimeError):
         return None
 
 
@@ -3311,7 +3314,6 @@ def _select_korean_recovery_candidate(
         if not selection:
             continue
         text, confidence, token_ids, bbox = selection
-        tokens = list(getattr(result, "tokens", []))
         if not text or not _has_hangul_text(text) or confidence < 0.72:
             continue
         if any(token_id in used_token_ids for token_id in token_ids):
@@ -3426,7 +3428,9 @@ def _korean_recovery_text_overlaps_current(current: str, recovered: str) -> bool
         return False
     current_set = set(current_hangul)
     recovered_set = set(recovered_hangul)
-    if current_set <= recovered_set or recovered_set <= current_set:
+    if current_set.issubset(recovered_set):
+        return True
+    if recovered_set.issubset(current_set):
         return True
     return len(current_set & recovered_set) / max(1, len(current_set)) >= 0.5
 
