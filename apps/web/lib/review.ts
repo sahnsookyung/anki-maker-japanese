@@ -7,6 +7,26 @@ export type EvidenceTokenSource = "local" | "comparison";
 export const HIGH_CONFIDENCE_THRESHOLD = 0.9;
 export const REVIEW_CONFIDENCE_THRESHOLD = 0.75;
 
+const WARNING_CODE_BADGES: Record<string, string> = {
+  MISSING_SURFACE: "Missing surface",
+  MISSING_READING: "Missing reading",
+  MISSING_KOREAN_MEANING: "Missing Korean meaning",
+  WEAK_OCR_EVIDENCE: "Weak OCR evidence",
+  SCRIPT_MISMATCH: "Script mismatch",
+  GLOSSARY_SUGGESTION: "Glossary suggestion"
+};
+
+const WARNING_TEXT_BADGES: Array<[RegExp, string]> = [
+  [/Missing surface/i, "Missing surface"],
+  [/Missing reading/i, "Missing reading"],
+  [/Missing Korean meaning/i, "Missing Korean meaning"],
+  [/Weak OCR evidence/i, "Weak OCR evidence"],
+  [/script/i, "Script mismatch"],
+  [/four choices|exactly four choices|Missing choice/i, "Missing choice"],
+  [/target/i, "Target unclear"],
+  [/Answer source|Correct choice is missing|not export-safe/i, "Needs answer"]
+];
+
 export function workflowClass(index: number, page: Page | null, cards: CardCandidate[], exportableCount: number): string {
   const complete =
     (index === 0 && page) ||
@@ -437,23 +457,12 @@ export function provenanceLabel(value: string): string {
 }
 
 export function reviewReasonBadges(card: CardCandidate): string[] {
-  const badges: string[] = [];
   const warningCodes = Array.isArray(card.source.warning_codes) ? card.source.warning_codes.map(String) : [];
-  if (warningCodes.includes("MISSING_SURFACE")) badges.push("Missing surface");
-  if (warningCodes.includes("MISSING_READING")) badges.push("Missing reading");
-  if (warningCodes.includes("MISSING_KOREAN_MEANING")) badges.push("Missing Korean meaning");
-  if (warningCodes.includes("WEAK_OCR_EVIDENCE")) badges.push("Weak OCR evidence");
-  if (warningCodes.includes("SCRIPT_MISMATCH")) badges.push("Script mismatch");
-  if (warningCodes.includes("GLOSSARY_SUGGESTION")) badges.push("Glossary suggestion");
+  const badges = warningCodes.flatMap((code) => WARNING_CODE_BADGES[code] ?? []);
   const warningText = card.warnings.join(" ");
-  if (/Missing surface/i.test(warningText)) badges.push("Missing surface");
-  if (/Missing reading/i.test(warningText)) badges.push("Missing reading");
-  if (/Missing Korean meaning/i.test(warningText)) badges.push("Missing Korean meaning");
-  if (/Weak OCR evidence/i.test(warningText)) badges.push("Weak OCR evidence");
-  if (/script/i.test(warningText)) badges.push("Script mismatch");
-  if (/four choices|exactly four choices|Missing choice/i.test(warningText)) badges.push("Missing choice");
-  if (/target/i.test(warningText)) badges.push("Target unclear");
-  if (/Answer source|Correct choice is missing|not export-safe/i.test(warningText)) badges.push("Needs answer");
+  for (const [pattern, badge] of WARNING_TEXT_BADGES) {
+    if (pattern.test(warningText)) badges.push(badge);
+  }
   if (card.confidence < REVIEW_CONFIDENCE_THRESHOLD) badges.push("Low OCR confidence");
   if (card.review_state === "red" && !badges.length) badges.push("Blocked");
   if (card.review_state === "yellow" && !badges.length) badges.push("Needs review");

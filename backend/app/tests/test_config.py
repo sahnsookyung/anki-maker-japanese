@@ -155,14 +155,12 @@ def test_preprocessing_hash_and_ocr_cache_key_include_config(monkeypatch) -> Non
         preprocessing_hash=first_hash,
         profile_manifest=first_manifest,
         engine="paddleocr",
-        extraction_variant="baseline_current",
     )
     second_key = pipeline._ocr_cache_key(
         image_sha="same-image",
         preprocessing_hash=second_hash,
         profile_manifest=second_manifest,
         engine="paddleocr",
-        extraction_variant="baseline_current",
     )
 
     assert first_config["preprocess_max_side_len"] == 1800
@@ -213,13 +211,11 @@ def test_preprocessing_cache_fingerprint_ignores_runtime_paths(monkeypatch) -> N
         preprocessing_hash=pipeline._preprocessing_hash(first_config),
         profile_manifest=first_manifest,
         engine="paddleocr",
-        extraction_variant="baseline_current",
     ) == pipeline._ocr_cache_key(
         image_sha="same-image",
         preprocessing_hash=pipeline._preprocessing_hash(second_config),
         profile_manifest=second_manifest,
         engine="paddleocr",
-        extraction_variant="baseline_current",
     )
 
 
@@ -258,13 +254,11 @@ def test_ocr_cache_key_ignores_extraction_variant_for_reusable_payloads(monkeypa
         preprocessing_hash=preprocessing_hash,
         profile_manifest=line_manifest,
         engine="paddleocr",
-        extraction_variant="line_graph_v1",
     ) == pipeline._ocr_cache_key(
         image_sha="same-image",
         preprocessing_hash=preprocessing_hash,
         profile_manifest=table_manifest,
         engine="paddleocr",
-        extraction_variant="table_graph_v1",
     )
 
 
@@ -299,11 +293,9 @@ def test_ocr_cache_key_reuses_exact_model_pair_aliases(monkeypatch) -> None:
         preprocessing_hash=preprocessing_hash,
         profile_manifest=current_manifest,
         engine="paddleocr",
-        extraction_variant="baseline_current",
     ) == pipeline._ocr_cache_key(
         image_sha="same-image",
         preprocessing_hash=preprocessing_hash,
         profile_manifest=explicit_manifest,
         engine="paddleocr",
-        extraction_variant="baseline_current",
     )

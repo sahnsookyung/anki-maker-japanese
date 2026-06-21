@@ -3019,7 +3019,6 @@ def test_ocr_cache_key_reuses_payload_across_extraction_variants() -> None:
         preprocessing_hash="pre-a",
         profile_manifest=manifest,
         engine="paddleocr",
-        extraction_variant="baseline_current",
     )
     path_changed_manifest = {
         **manifest,
@@ -3036,14 +3035,12 @@ def test_ocr_cache_key_reuses_payload_across_extraction_variants() -> None:
         preprocessing_hash="pre-a",
         profile_manifest=path_changed_manifest,
         engine="paddleocr",
-        extraction_variant="v5_full_adapted_v1",
     )
     korean_key = pipeline._ocr_cache_key(
         image_sha="image-a",
         preprocessing_hash="pre-a",
         profile_manifest={**manifest, "korean_profile": "ko_lang_auto"},
         engine="paddleocr",
-        extraction_variant="baseline_current",
     )
 
     assert variant_key == baseline_key

@@ -107,7 +107,7 @@ export type OcrEngine = "paddleocr" | "paddleocr_vl";
 export type OcrModelProfile = {
   id: string;
   label: string;
-  budget: "safe_local" | "heavy_local" | "cloud_optional" | string;
+  budget: string;
   provider: string;
   creates_candidates: boolean;
   description: string;

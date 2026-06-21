@@ -35,7 +35,7 @@ from app.extraction.vl_document import extract_from_document_parse
 from app.extraction.vlm_cleanup import cleanup_mcq_items, cleanup_vocab_items
 from app.models.schemas import CardCandidate, DocumentParseResult, OcrRun, OcrToken, Page, ProcessResult
 from app.ocr.comparison import compare_ocr_tokens
-from app.ocr.crop_worker import CropOcrError, crop_ocr_worker
+from app.ocr.crop_worker import crop_ocr_worker
 from app.ocr.engines import OcrEngineResult, PADDLEOCR_ENGINE, PADDLEOCR_VL_ENGINE, run_ocr_engine
 from app.ocr.profiles import (
     DEFAULT_KOREAN_PROFILE,
@@ -97,7 +97,6 @@ def process_page(
         preprocessing_hash=preprocessing_hash,
         profile_manifest=profile_manifest,
         engine=engine,
-        extraction_variant=normalized_variant,
     )
     cached_run = database.find_succeeded_run_by_cache_key(None, engine, image_sha, cache_key)
     cached_payload = _cached_ocr_payload(cached_run, page.id, processed_path, engine) if cached_run else None
@@ -639,11 +638,9 @@ def _ocr_cache_key(
     preprocessing_hash: str,
     profile_manifest: dict[str, object],
     engine: str,
-    extraction_variant: str,
 ) -> str:
     # Extraction variants rerun candidate generation from the same OCR payload.
     # Keep the OCR cache scoped to image/preprocessing/provider/model inputs only.
-    del extraction_variant
     payload = {
         "schema_version": 1,
         "image_sha256": image_sha,
@@ -3153,7 +3150,7 @@ def _mean_token_confidence(tokens: list[OcrToken]) -> float:
 def _safe_recognize_region(**kwargs: object):
     try:
         return crop_ocr_worker.recognize_region(**kwargs)
-    except (CropOcrError, OSError, ValueError, TimeoutError, RuntimeError):
+    except (OSError, ValueError, TimeoutError, RuntimeError):
         return None
 
 
@@ -3645,7 +3642,7 @@ def _crop_confirmation_diagnostics(
                     "warnings": preview.warnings,
                 }
             )
-        except (CropOcrError, ValueError, TimeoutError, RuntimeError) as exc:
+        except (ValueError, TimeoutError, RuntimeError) as exc:
             result.update({"status": "failed", "error": str(exc)})
         results.append(result)
     return {

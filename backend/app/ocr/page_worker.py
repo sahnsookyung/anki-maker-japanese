@@ -21,6 +21,15 @@ from app.vision.paddle_ocr_vl import get_paddle_ocr_vl_parser
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+MODEL_LOADING_PREFIXES = (
+    "Creating model:",
+    "Model files already exist.",
+    "Loading configuration file",
+    "Loading weights file",
+    "Loaded weights file",
+    "use GQA",
+    "Bucketed engine_config",
+)
 
 
 def run_page_process_worker(
@@ -157,15 +166,7 @@ def _worker_failure_detail(completed: subprocess.CompletedProcess[str], label: s
     actionable_lines = [
         line
         for line in lines
-        if not (
-            line.startswith("Creating model:")
-            or line.startswith("Model files already exist.")
-            or line.startswith("Loading configuration file")
-            or line.startswith("Loading weights file")
-            or line.startswith("Loaded weights file")
-            or line.startswith("use GQA")
-            or line.startswith("Bucketed engine_config")
-        )
+        if not line.startswith(MODEL_LOADING_PREFIXES)
     ]
     if actionable_lines:
         return actionable_lines[-1]
