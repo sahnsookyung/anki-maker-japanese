@@ -2463,7 +2463,11 @@ def test_mcq_answer_strip_image_parser_creates_live_answer_tokens(tmp_path) -> N
     draw = image_draw_module.Draw(image)
     draw.rectangle([20, 70, 520, 120], fill=(178, 178, 172))
     font = image_font_module.truetype(font_path, 22)
-    draw.text((50, 82), "1② 2① 3④ 4④ 5① 6② 7③ 8④ 9④ 10④", fill=(0, 0, 0), font=font)
+    choices = ["②", "①", "④", "④", "①", "②", "③", "④", "④", "④"]
+    for index, choice in enumerate(choices, start=1):
+        x = 30 + (index - 1) * 48
+        draw.text((x, 82), str(index), fill=(0, 0, 0), font=font)
+        draw.text((x + (28 if index == 10 else 18), 82), choice, fill=(0, 0, 0), font=font)
     image.save(image_path)
 
     answer_map, tokens, warnings = pipeline._parse_answer_strip_image(
